@@ -1,0 +1,3 @@
+[submodule "external/reshade"]
+	path = external/reshade
+	url = https://github.com/crosire/reshade.git

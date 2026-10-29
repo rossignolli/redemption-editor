@@ -1,0 +1,789 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Redemption Editor</title>
+<meta name="description" content="A fan-made story-mode mod for Red Dead Redemption 2 on PC: record what just happened, frame it with a free camera on a timeline, and export it as video.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="Redemption Editor">
+<meta property="og:description" content="Replay recorder, editor and video exporter for Red Dead Redemption 2 story mode on PC.">
+<meta property="og:image" content="https://redemption-editor.vercel.app/assets/hero-letterbox.jpg">
+<meta property="og:url" content="https://redemption-editor.vercel.app/">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23000'/%3E%3Ccircle cx='32' cy='32' r='21' fill='none' stroke='%23fff' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%23e1261c'/%3E%3Ccircle cx='32' cy='19' r='5' fill='%23fff'/%3E%3Ccircle cx='32' cy='45' r='5' fill='%23fff'/%3E%3Ccircle cx='19' cy='32' r='5' fill='%23fff'/%3E%3Ccircle cx='45' cy='32' r='5' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Oswald:wght@500;600&family=Zilla+Slab:wght@500&family=Inter+Tight:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#000;
+  --panel:#0a0a0a;
+  --card:#0d0d0d;
+  --card-2:#161616;
+  --line:#262626;
+  --line-strong:#3a3a3a;
+  --ink:#fff;
+  --ink-2:#cfcfcf;
+  --muted:#8e8e8e;
+  --red:#cc1f1f;
+  --red-2:#e1261c;
+  --red-deep:#8f0d0d;
+  --sun:#f5a300;
+  --accent:var(--red-2);
+  --accent-ink:#000;
+  --test:#9fd3a8;
+  --dev:#f5a300;
+  --gutter:16px;
+  --bar-h:60px;
+  --wrap:1180px;
+  --sans:'Inter Tight', system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+  --display:'Anton', 'Oswald', Impact, 'Arial Narrow', sans-serif;
+  --cond:'Oswald', 'Arial Narrow', sans-serif;
+  --slab:'Zilla Slab', Georgia, serif;
+  --grunge:url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUAAAAFAAQMAAAD3XjfpAAAABlBMVEX///8AAABVwtN+AAAAAnRSTlP/AOW3MEoAAA1kSURBVHjajZrPiyxZVsc/90Z0ZtAmVdFjw4SYXS/8AfZuUhCsgaY73iDochYuXIgE4+wtxcUbprHvTM9ihGF4f8As3sr1LAQXinP7gdKLEZ4bGcRFCK0UopLTFkx2dVaGi/v7xs33JjeVlXnjxrnnfM/3fM+JBDTmNb71kYJKAZV6sgMYGDY3sCJ7DYD4AQA35todi5dyby7MH6GBoV8uHLKLal3+roo+Fzq9iSJfuIGhCwvZRAtkvO0dMMLsPrsH4b+czMZru4ueKL/kHyjoMd5sgAmgRwAyWXltbczcJKFOt2zx39jXn+rkCzTCnXudXPpls3Dnluren2ideKqzp2xM/OQYwmOuGFObxm3bA/rCfuFNsTgI/jDu1ium2LgerQn+1cEPsn0eGdf1fEuDP9+QubuKnCQmeiFUjIEYZNZ9DcwdAx8kYEnCKYGWjoF3nkcQWL6ifFjnxrXxhvfh/edCkSRJs7QRgBPww3jhLTDkgcA7J808zeQtN9/0TfJvcJ2OIClji4z3KikS0MoBJk4Ah8R7J4Wk2wHU1MnGpdfOJOO2ENXCwkVWFF/KQlUWgrA6RzU5KawqkeSG8LlsF3oqEUnApFB6QFqnHFPDTq3LIaFOPNY9cm8Qfshi5/EwK+aPFLBPcrTErN47m/LCKEp1CrNdelLKOwJbc1kVFg72jA0KCXd21/8z0LVniLJwdRAJylMGMpE7LM3WGaeZm0+lnPnM30wASAWM3h3SuXfIU/4Un7ixWGnOw6yxXpELkGWgP9gvJafFhll2fFIGY/rqU6/VZzNsZH0o3EwB6NrRqVBMfPNsDaZxEKu0AW+ZDDt3NB3FqF4ibNomedwCXzKUkoFu80mUQeajn8DgFu4YzZf6V4NB3+XI3mDAn3wSd86wSkWHWuWM+wnfM0cf0tPnGBDfo8xrIWRCAsg758wurbARLcjn5nz2nt2upbUAHruQ4Wq27x9ZxO5+MRg2NXbvTyLb37MGNhWLsvzaB1HODHbhIeLWH7s69VQH46uUglf+yJsg60osfZHwyGYVpatMdFALHM0JjtC+2RRKPABX4ZwNbNvOOnyh/f7DEXXFAfb9gZWNyJ8lO0oJCE8GmxYupInx5iE29XTignly5fZuD586mWU/9CBbCGVr489CmtVvG99cxElrFgrFC0udwPH3geOJN4q8H8s5Kw3eRThSKoiFdfKxytgryvHKkemY57GMuN2yZ6yfXsTUcFPaWqiFe+oizco4dcZYNhcl0PV5yk5vac4yiAI7xvcStvRqoUxIdYGQze5/bEOnc5lPSwO73vhoHp6lzot8cMPGWDYGIh4LmfWPN+6sffhwSpLO0NHz3npvT34yaHesGg9Xm1P7RL3WUEsauD/4iFiIe1ftrRuO0O12EXSqUm3aAJLbnbvxQ+rUy6QXA74SpIxoIghdfjtDyT+Ym0pgbq2DnwCH19RCkfv073pXpWH9YbSjktY6VWgPHhyCKsUgEYrB++PW+qYN+qEBOAxSzaXCcQgqeoIH5V0rsqjX55SI910ThHea+DKW6sBTw7JHQCXsKss6U0tQ9tiwDdm0caY1Saclom0csUqzfmNc82uJruuoDAt7PN85ZP0PbbTzLUA1LVsln4vyrHuMudUiDex/XeyDK3jkDzMlvLBL8vEqammFzktV9HqUt60KoUCypN/U+pNnqF3aW24L3bvt+8pfZBwv+8esg29vy10Fw4XkR703U7IJPlWxXvzRhSkuO1emN2zr5bgGaCUS+OnUA/wvd+zhScHGH0pOzFyaE90Bd0f+CtV5LHoqHWFlsrRNhk1Z/fvQ6qWB7I52bNUrL+KmdrJHTKxvm9RHs1Fvlc5nCB8Dq/v0s8kipM0hOiR7LlN9H2TDy1vlfaE97GxWPIHBx6uNZatN2K8b+FZds5zj1DEuvvGhBJgP7WZRE5O292d+jPOd2KxaZsMKxrU0aL19P3C04PW3/m5RbbMUP9kT/NaL2Ictz+6lgbU98GgL7s0+yf+GYU7bmtHIuGo1JQu7djrT/9Q3acx2Glko79Bo5x+z5167pOrONRM3GTUP52ameWV5Tq7Di8DpmiHeaMOqinJGBxa53iTIFMrA2QpsVXsba2ihsaaLDxrrtB44oY5epH32Y7Nc7E0AN3Y3nzHDDRLQf/PrBlfzU6+bZg3jCPA11vBVy783zgqVZt0aeMIaoZEwa1MB60waime2Oh7Pppd25G2nIFpMLjIiaY+1S5oHiqr5UZqinlKlnvvinV2PqCMVfy2bZTOgMz7/Q8DMpEShPukw73gmCa3UvKgXvT/mA/Cv7p9FFdY3YYISzwHqlJauPLj+IusHjS+6i8XJPi1K7+YC29g1eY2Wie8OJ8fTh6RRkYsE2oCs9K7Qwsk0Be9gRj9O+FzDCWQoPRYT89/zJxE9R43VGMFQIvmVqFVZmXQYi5h4I8GQTiTQJnbBQ6x7LwcvaFXevK/iOe/KBU0CPD04PdEAnycCNmX91qnEK3uPodDuAfXeVSw30KtmVZpkBVL8Bbv/OpN3Nengzxy1gcswq7WbSMcwMpSPA2TifNgUhqIXhSGp3jkAVXqOx5Auibr01OlA6RgcXt0EGSmB9pKHALWHFZnHYXiBBPaXyZZ3QToO6a0PV6XONWC3KVCPUEXw7UGGK5u4KieTDyOOdkX0yp9j5P+Kj9KjyHieBAhlpgptQERng7wyQnkdbDkC/eCx9AJYW20xcIvyDB9E79alXhWsWCtAqCdNqvDEAtFWEz9p/MnqJd9PgZgGJOKrhQcLOple2f/PdQDmi2kojXKvo8oiTfk2z2grkSqPfQTEtZcoA1SmXvub7Z2rL3UYC6nAR/ySvXTywHmHL2rrkMGcpl9O2E0X2O3hJvSdsqB/QfDw3q16+TOjxsVwKuR31mWtfAltoyeW9t3GReC/ItKNF7p3dTyLUy/JjlVGPYsKLsdTYPghbXXShTpr7v7FeehxqVWOnnG97z75XYa4yz8nFeBvUe10xoc1Ses6RPgUiRF5E/TbxymdsC8aDuv+5pi3V40z1jLZxtzlYj9GvLLesBgUmUbIm2KGV59Hjnzbfd4AiPejg0lOZhvRAwMVKMntfoUEVYdhL3BhrjejvwpYo+GRNPc251ZDGqUBCawZgpjUiZBpskiNSR/Kq9g0SSeZNRg5CnFthAQFm+zZ3iHgt8lT79L2ytBCZ4P4nUWJ6POBajSMggpGiQKRnc1Lvf8O3aIUC9TuA1UejCUzPDPePPMwrlrk7bYs2t30Qy8W+nzVeqngdeSsJ01d9Lt30Zvu0vp18+aX09UboaTN/BYQ3/2JGyzdG/YYI/XQDMC7vEvydMrerec3fTaoAXikToVKvbK3b4ALiQbGx7eRNnvjo/Cg4GTNesN1SHbu+gCwf2T8dG+D1gH/bkL1fjzUl3x94ZwbG9O3oUd/pSh07cLqeDQo2dOv/ikeLo0vIoY63Map9BuFFm1M982lr0iocBuhPCO8OSw/wteiq4qTYCcCr7yHT7x+X1pp69LD/cuQex2laHdmnPoqVbbcuprnY1SFVmcya56PUSMt458TJJc9CFHP1knCubd1XKHGq9zzFSAOrXFR6we80zZqTS98yK7HGnjwJDgrxyKA4s5zyMdvo1ON0qT3balgbG2sz40XpGLPCbb7qARamulL1NNC73e0Yd22i9kY7AuUf3VdCOdNQZjvV2B8Rg8cPMJltvDTf04iVHup8ZqM/CKFYZm9r0S9OV3l7WlNC274fJGvu1gOtQ3bxDt24bZeQvUqgetb5s+76RrvvcU8+pQyrv8VST54E59mtas5U0NENvXrG4Z8VB57M5sJFh51Xi3g1xuNuTaOXDnDrrz6jJ/4fPZT9QAo4R/r8J/GgOPkfLxNGuHv/3kq7BAqWiiUa0zE8VL7UG4KTaZQ/tcR7y3zIv75z3Db7AF+h48Oi2SLa7IOxX89pSpiIfBv2vCYJiZscfbpSfYEQiw7lB30E1ClLYlsSiTxlLV6+KOXkarHSiKsxnT+10LX5fq8QyzUVIutZJr0x1pttnBwiZoQ3Gg9KZeSslFRE3bra/xfqlc8qnAH6ZYJMPkfoO6C/+Xt0o29ccWLsHAuzm9DkOvyqDWJ+yjP4WBAxLefXvL8L+mowlOY8lwv/m2bzhe+WZgKx5sbL9LxTnnvSxWdny4hoeGdyDtXqYSUMRD7f2OD+5XcfdztBqg+jehrBWxoua7gnJpQIq9x4hWNOzQdQkzw7bPc4tjpGqoJ7U7x/Sj0TeLAzvhfeuvX3gFmJrq0SiiQ9zQeVAf0/aJeS5gVoPzCpHy0MEjO4DVL+WX/9ntlEE0JTmR5x/7stKPwGnUEB7GoVE2GzZVfKEOhMEMUE4BvLfqZ11wBPnLPg3J6aTlmWPv5RDaWb7Md7Tj2r3MhmVGQTB4LwO42G625Q+ZhumwNJvqUvu+jhRY0H8+KeVrGT3oeNz+D+AH0538VrQ2oqqJ5gxs/mPfKnnluX4Kt0f5bveLpcvJosMkW7176S/kl3uI8Gs8WW106Xf/zorVPRNOQkk4XUcYux4QIoya79RdSmRgEldnx/wGEShAyraMGzgAAAABJRU5ErkJggg==");
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{margin:0;background:#000;background-color:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.55;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+img,video{max-width:100%;display:block}
+a{color:var(--ink)}
+:focus-visible{outline:2px solid var(--sun);outline-offset:3px}
+@media (min-width:720px){:root{--gutter:32px}}
+.skip{position:absolute;left:-999px;top:8px;background:var(--sun);color:#000;padding:8px 14px;z-index:99;font-weight:700}
+.skip:focus{left:8px}
+h1,h2,h3,h4{margin:0;font-weight:700;line-height:1.1}
+p{margin:0 0 1em}
+.muted{color:var(--muted)}
+.icon{width:1em;height:1em;flex:none;fill:currentColor}
+kbd{font-family:var(--sans);font-size:.82em;font-weight:600;background:var(--card-2);border:1px solid var(--line-strong);border-radius:4px;padding:1px 6px;color:var(--ink);white-space:nowrap}
+code{font-size:.88em;background:var(--card-2);padding:1px 6px;border-radius:3px;color:var(--ink);word-break:break-word;font-family:ui-monospace,Consolas,monospace}
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 var(--gutter)}
+
+/* distressed display type */
+.rough{-webkit-mask-image:var(--grunge);mask-image:var(--grunge);-webkit-mask-size:240px;mask-size:240px}
+
+/* fan note */
+.fan-note{margin:0;background:var(--panel);border-bottom:1px solid var(--line);color:var(--ink-2);font-size:12.5px;line-height:1.5;text-align:center;padding:7px var(--gutter)}
+.fan-note strong{color:var(--ink)}
+
+/* top bar */
+.bar{position:sticky;top:0;z-index:20;background:#000;border-bottom:1px solid #141414}
+.bar-in{display:flex;align-items:center;justify-content:space-between;gap:16px;height:var(--bar-h);padding:0 var(--gutter)}
+@media (min-width:1100px){.bar-in{padding:0 64px}}
+.brand{display:flex;align-items:center;gap:12px;color:var(--ink);text-decoration:none;white-space:nowrap}
+.brand svg{flex:none}
+.brand .sep{width:1px;height:24px;background:#fff;opacity:.85}
+.wm-bar{font-family:var(--display);font-size:25px;line-height:1;letter-spacing:.01em;text-transform:uppercase;display:inline-flex;gap:.22em}
+.wm-bar b{font-weight:400;color:var(--red-2)}
+.bar nav ul{display:none;list-style:none;margin:0;padding:0;gap:30px}
+.bar nav a{color:var(--ink);text-decoration:none;font-size:13.5px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
+.bar nav a:hover{color:var(--ink-2)}
+@media (min-width:1060px){.bar nav ul{display:flex}}
+.bar-act{display:flex;align-items:center;gap:8px}
+.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid #fff;border-radius:999px;padding:7px 16px;color:var(--ink);text-decoration:none;font-size:13px;font-weight:700;white-space:nowrap}
+.pill:hover{background:#fff;color:#000}
+.pill-quiet{border-color:var(--line-strong)}
+.pill .icon{width:15px;height:15px}
+@media (max-width:640px){.pill .lbl{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.pill-nx{padding:7px 9px}.brand .sep,.brand svg{display:none}}
+@media (max-width:380px){.wm-bar{font-size:21px}.bar-in{gap:8px}.pill{padding:6px 12px}}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:space-between;gap:14px;border:2px solid var(--ink);border-radius:0;padding:12px 18px;color:var(--ink);text-decoration:none;font-family:var(--cond);font-weight:600;font-size:17px;letter-spacing:.06em;text-transform:uppercase;line-height:1.2;background:transparent;cursor:pointer}
+.btn:hover{background:var(--ink);color:#000}
+.btn .icon{width:16px;height:16px}
+.btn small{font-family:var(--sans);font-weight:600;font-size:11px;letter-spacing:.06em;color:var(--muted)}
+.btn:hover small{color:#555}
+.btn[aria-disabled="true"]{cursor:not-allowed}
+.btn-red{background:var(--red);border-color:var(--red)}
+.btn-red small{color:#ffd1cc}
+.btn-red:hover{background:#fff;border-color:#fff}
+.btn-quiet{border-color:#5a5a5a}
+
+/* hero */
+.hero{position:relative;background:var(--red) image-set(url(assets/tex-red.webp) type("image/webp"),url(assets/tex-red.jpg) type("image/jpeg")) center/600px;overflow:hidden}
+.hero-txt{position:relative;z-index:2;padding:34px var(--gutter) 26px}
+.hero-pre{display:inline-block;font-family:var(--cond);font-weight:600;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:#000;padding:4px 10px 3px;margin:0 0 10px}
+.hero h1{font-family:var(--display);font-weight:400;text-transform:uppercase;line-height:.9;letter-spacing:.005em;font-size:clamp(58px,17vw,96px);margin:0}
+.hero h1 span{display:block}
+.hero h1 .w1{color:#fff;text-shadow:0 3px 0 rgba(0,0,0,.35)}
+.hero h1 .w2{color:#000}
+.hero{height:max(460px,min(78vh,56.25vw));background:#000}
+.hero-bg{position:absolute;inset:0;overflow:hidden;background:#000 url(https://i.ytimg.com/vi/_NN1DOta7P0/maxresdefault.jpg) center/cover no-repeat}
+.hero-bg iframe{position:absolute;top:50%;left:50%;width:max(100%,177.78vh);height:max(100%,56.25vw);min-height:100%;transform:translate(-50%,-50%) scale(1.15);border:0;pointer-events:none;opacity:0;transition:opacity 1.2s}
+.hero-bg iframe.on{opacity:1}
+.hero-shade{position:absolute;inset:0;z-index:1;background:linear-gradient(90deg,rgba(0,0,0,.82) 0%,rgba(0,0,0,.45) 45%,rgba(0,0,0,.15) 75%),linear-gradient(180deg,rgba(120,10,10,.25),rgba(0,0,0,0) 40%,#000 100%)}
+.hero-txt{position:absolute;left:var(--gutter);right:var(--gutter);bottom:12%;padding:0}
+.hero h1 .w2{color:var(--red-2,#e1261c)}
+@media (min-width:900px){
+  .hero-txt{left:clamp(32px,3.6vw,72px);right:auto;top:auto;bottom:16%;max-width:52%}
+  .hero-pre{font-size:clamp(13px,1.1vw,17px)}
+  .hero h1{font-size:clamp(64px,7.6vw,170px)}
+}
+
+/* intro */
+.intro{background:#000;text-align:center;padding:34px 0 56px}
+.intro .lede-big{font-family:var(--slab);font-weight:500;font-size:clamp(18px,1.9vw,23px);line-height:1.55;color:#fff;max-width:820px;margin:0 auto 26px}
+.intro .btns{display:flex;flex-wrap:wrap;justify-content:center;gap:12px}
+.intro .btns .btn{min-width:min(100%,300px)}
+
+/* torn cards */
+.tcards{display:grid;gap:28px;grid-template-columns:minmax(0,1fr);margin-top:52px}
+@media (min-width:640px){.tcards{grid-template-columns:repeat(3,minmax(0,1fr));gap:clamp(18px,3vw,48px)}}
+.tcard{display:block;text-decoration:none;color:var(--ink);text-align:center}
+@media (max-width:639px){.tcards .tcard{max-width:300px;margin:0 auto;width:100%}.hero-pre{font-size:12px;letter-spacing:.05em}}
+.tcard .art{display:block;position:relative;aspect-ratio:1/1;overflow:hidden;background:#000}
+.tcard .art picture{display:block;width:100%;height:100%}
+.tcard .art img{width:100%;height:100%;object-fit:cover;transition:transform .5s ease}
+.tcard .art::after{content:"";position:absolute;inset:-1px;background:url(assets/torn-frame.png) center/100% 100% no-repeat;pointer-events:none}
+.tcard:hover .art img,.tcard:focus-visible .art img{transform:scale(1.05)}
+.tcard .t{display:block;font-family:var(--cond);font-weight:500;font-size:clamp(22px,2vw,27px);letter-spacing:.01em;margin-top:14px;line-height:1.15}
+.tcard .s{display:block;font-size:14px;color:var(--muted);margin-top:4px}
+@media (prefers-reduced-motion: reduce){.tcard .art img{transition:none}}
+
+/* bands */
+.band{padding:64px 0 72px}
+.band+.band{border-top:1px solid #151515}
+.sec-t{font-family:var(--display);font-weight:400;text-transform:uppercase;letter-spacing:.01em;line-height:.95;font-size:clamp(38px,6vw,72px);margin:0 0 20px}
+.sec-t .r{color:var(--red-2)}
+.eyebrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-family:var(--cond);font-size:15px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--red-2);margin:0 0 10px}
+.lede{font-family:var(--slab);font-weight:500;font-size:clamp(17px,1.6vw,20px);color:var(--ink-2);line-height:1.55;max-width:820px}
+.band h3{font-family:var(--cond);font-weight:600;font-size:clamp(24px,2.4vw,30px);letter-spacing:.01em;text-transform:uppercase;line-height:1.1}
+.tag{display:inline-block;font-family:var(--sans);font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:3px 7px;border-radius:3px;border:1px solid;vertical-align:middle;margin-left:4px;white-space:nowrap;line-height:1.2}
+.tag-test{color:var(--test);border-color:rgba(159,211,168,.45)}
+.tag-dev{color:var(--dev);border-color:rgba(245,163,0,.55)}
+.more{display:inline-block;color:var(--ink);font-weight:600;font-size:14.5px;text-decoration:underline;text-decoration-color:var(--sun);text-decoration-thickness:2px;text-underline-offset:5px}
+.more:hover{color:var(--sun)}
+.more-wrap{text-align:center;margin:30px 0 0}
+
+/* video / image cards */
+.cards{display:grid;gap:22px;grid-template-columns:minmax(0,1fr)}
+@media (min-width:640px){.cards.c2{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.vcard{margin:0;background:var(--card);border:2px solid transparent;outline:1px solid var(--line);outline-offset:-1px;display:flex;flex-direction:column;transition:border-color .15s}
+.vcard:hover,.vcard:focus-within{border-color:var(--red-2);outline-color:transparent}
+.vcard .media{position:relative;background:#000}
+.vcard .media video,.vcard .media img{width:100%;height:auto}
+.vcard figcaption{padding:16px 18px 20px;font-size:13.5px;color:var(--muted);line-height:1.5}
+.vcard figcaption b{display:block;color:var(--ink);font-family:var(--cond);font-size:20px;font-weight:500;letter-spacing:.01em;margin-bottom:6px;line-height:1.2}
+.hero-card .media video{aspect-ratio:1280/536;object-fit:cover}
+.vctl{position:absolute;right:12px;bottom:12px;z-index:2;display:inline-flex;align-items:center;background:rgba(0,0,0,.72);color:var(--ink);border:1px solid var(--line-strong);border-radius:999px;padding:5px 13px;font:700 12px var(--sans);letter-spacing:.04em;text-transform:uppercase;cursor:pointer}
+.vctl:hover{border-color:var(--ink)}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-top:26px}
+.stat{background:#000;padding:20px 16px}
+.stat b{display:block;font-family:var(--display);font-weight:400;font-size:clamp(32px,3.6vw,44px);letter-spacing:.01em;line-height:1;color:#fff}
+.stat span{display:block;font-size:13px;color:var(--muted);margin-top:8px;line-height:1.4}
+@media (min-width:760px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
+
+/* feature blocks */
+.feat{margin-top:46px;scroll-margin-top:calc(var(--bar-h) + 16px)}
+.feat-h{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+.feat-h .n{font-family:var(--display);font-size:30px;color:var(--red-2);line-height:1}
+.feat>p{color:var(--ink-2);max-width:700px}
+.flist{list-style:none;margin:14px 0 0;padding:0;display:grid;grid-template-columns:minmax(0,1fr);gap:0 36px}
+@media (min-width:760px){.flist{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.flist li{padding:12px 0;border-top:1px solid var(--line);font-size:14.5px;color:var(--ink-2)}
+.flist li strong{color:var(--ink);font-weight:700}
+
+/* split */
+.split{display:grid;gap:26px;grid-template-columns:minmax(0,1fr);align-items:start}
+@media (min-width:1000px){.split{grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:44px}}
+.split-art{display:grid;gap:30px;grid-template-columns:minmax(0,1fr);align-items:start}
+@media (min-width:1000px){.split-art{grid-template-columns:minmax(0,7fr) minmax(0,3fr);gap:56px}.split-art .tcard{position:sticky;top:calc(var(--bar-h) + 24px)}}
+@media (max-width:999px){.split-art .tcard{max-width:340px;margin:0 auto;width:100%}}
+
+/* perf + specs tables */
+.presets{display:grid;gap:24px;grid-template-columns:minmax(0,1fr);margin-top:20px;align-items:start}
+@media (min-width:1100px){.presets{grid-template-columns:minmax(0,6fr) minmax(0,5fr)}}
+.perf{width:100%;border-collapse:collapse;font-size:14px;margin-top:10px}
+.perf th,.perf td{text-align:left;padding:9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.perf th{font-weight:700;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.perf td{color:var(--ink-2)}
+.perf td:last-child,.perf th:last-child{text-align:right;white-space:nowrap;padding-left:12px}
+.perf td:last-child{color:var(--ink);font-weight:700}
+.spec-table{display:grid;grid-template-columns:minmax(0,1fr);margin:6px 0 0}
+.spec-row{display:grid;grid-template-columns:minmax(0,1fr);gap:4px;padding:14px 0;border-top:1px solid var(--line)}
+.spec-row:last-child{border-bottom:1px solid var(--line)}
+.spec-row dt{font-size:14px;color:var(--muted)}
+.spec-row dd{margin:0;font-size:14.5px;color:var(--ink-2)}
+.spec-row dd strong{color:var(--ink);font-weight:700}
+.spec-row dd p{margin:0}
+.spec-row dd p+p{margin-top:10px}
+@media (min-width:640px){.spec-row{grid-template-columns:170px minmax(0,1fr);gap:20px}}
+.note{border-left:4px solid var(--red-2);background:var(--card);padding:14px 18px;color:var(--ink-2);font-size:14.5px;margin-top:24px}
+.note strong{color:var(--ink)}
+
+/* red band (how it works) */
+.band-red{position:relative;background:var(--red) image-set(url(assets/tex-red.webp) type("image/webp"),url(assets/tex-red.jpg) type("image/jpeg")) center/600px;padding:88px 0 92px;border:0!important}
+.band-red::before,.band-red::after{content:"";position:absolute;left:0;right:0;height:clamp(26px,4vw,52px);background:url(assets/torn-edge.png) center top/100% 100% no-repeat;pointer-events:none}
+.band-red::before{top:-1px}
+.band-red::after{bottom:-1px;transform:scaleY(-1)}
+.band-red .sec-t{color:#fff;text-align:center}
+.band-red .sec-t .r{color:#000}
+.band-red .eyebrow{color:#000;justify-content:center}
+.steps{list-style:none;margin:30px 0 0;padding:0;display:grid;gap:18px;grid-template-columns:minmax(0,1fr);counter-reset:s}
+@media (min-width:640px){.steps{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (min-width:1100px){.steps{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.steps li{background:#000;padding:22px 20px 24px;counter-increment:s;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.steps li::before{content:"0" counter(s);display:block;font-family:var(--display);font-size:34px;color:var(--red-2);line-height:1;margin-bottom:10px}
+.steps h3{font-size:24px;margin-bottom:8px}
+.steps p{font-size:14.5px;color:var(--ink-2);margin:0}
+.steps .keys{margin-top:12px;font-size:13px;color:var(--muted)}
+.how-foot{margin:30px auto 0;font-size:15px;color:#fff;max-width:860px;text-align:center;font-family:var(--slab);font-weight:500;line-height:1.55}
+
+/* install */
+.install{margin:0;padding:0;list-style:none;counter-reset:i}
+.install li{counter-increment:i;position:relative;padding:0 0 18px 46px;font-size:14.5px;color:var(--ink-2)}
+.install li::before{content:counter(i);position:absolute;left:0;top:-3px;width:30px;height:30px;background:var(--red);display:grid;place-items:center;font-family:var(--display);font-size:16px;color:#fff}
+.install li strong{color:var(--ink)}
+.files{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.keys-table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+.keys-table td{padding:9px 6px 9px 0;border-top:1px solid var(--line);vertical-align:top;color:var(--ink-2)}
+.keys-table td:first-child{width:120px}
+details.keys-more{margin-top:30px}
+details.keys-more summary{cursor:pointer;font-family:var(--cond);font-weight:600;font-size:24px;text-transform:uppercase;margin-bottom:6px}
+
+/* faq */
+.faq details{border-bottom:1px solid var(--line)}
+.faq details:first-child{border-top:1px solid var(--line)}
+.faq summary{list-style:none;cursor:pointer;padding:18px 40px 18px 0;position:relative;font-size:17px;font-weight:700;color:var(--ink)}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"+";position:absolute;right:4px;top:11px;font-size:26px;font-weight:500;color:var(--red-2)}
+.faq details[open] summary::after{content:"\2212"}
+.faq .a{padding:0 0 18px;color:var(--ink-2);font-size:14.5px}
+
+/* download: red strip + stars */
+.dl{position:relative;padding-top:clamp(26px,4vw,52px)}
+.dl-strip{position:relative;background:var(--red) image-set(url(assets/tex-red.webp) type("image/webp"),url(assets/tex-red.jpg) type("image/jpeg")) center/600px;text-align:center;padding:46px var(--gutter) 30px}
+.dl-strip::before{content:"";position:absolute;left:0;right:0;top:-1px;height:clamp(26px,4vw,52px);background:url(assets/torn-edge.png) center top/100% 100% no-repeat}
+.dl-strip h2{font-family:var(--display);font-weight:400;text-transform:uppercase;font-size:clamp(52px,10vw,124px);line-height:.95;letter-spacing:.01em;color:#fff;margin:0}
+.dl-stars{background:#000 image-set(url(assets/stars.webp) type("image/webp"),url(assets/stars.jpg) type("image/jpeg")) center top/cover no-repeat;padding:clamp(40px,6vw,80px) var(--gutter) clamp(56px,7vw,96px)}
+.dl-box{max-width:620px;margin:0 auto;background:#000;border:1px solid #2a2a2a;padding:26px 24px;text-align:center}
+.dl-box .lede{margin:0 auto 20px;color:#fff}
+.dl-box .btns{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:6px}
+.status{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;color:var(--ink-2);margin-top:18px}
+.status i{width:8px;height:8px;border-radius:50%;background:var(--test);display:inline-block}
+
+/* footer */
+footer{background:#000;padding:44px var(--gutter) 52px;color:var(--muted);font-size:13.5px}
+footer .f-in{display:grid;gap:16px;max-width:var(--wrap);margin:0 auto}
+footer .f-top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px}
+footer .fan-line{font-size:15px;color:var(--ink-2);margin:0}
+footer .fan-line strong{color:var(--ink)}
+.disclaimer{max-width:860px;line-height:1.6;margin:0}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-nexus" viewBox="0 0 24 24"><path d="M17.376 0c-.993 0-2.18.686-2.907 1.182-1.676-.36-4.036-.545-6.787.635-1.365-.513-2.425-.562-3.32-.488a2.16 2.16 0 0 0-1.27.429c-.33.22-2.788 2.69-3.069 4.652C-.15 7.508.68 8.932 1.218 9.718c-.44 1.76-.2 4.572.517 6.188-.353 1.041-.713 2.089-.664 3.205.01.584.061 1.188.398 1.684C1.72 21.19 4.528 24 6.545 24c.957 0 1.93-.428 3.07-1.24 2.16.383 4.402.348 6.448-.532 2.573 1.001 4.224.625 4.84.162.587-.457 2.826-2.915 3.07-4.622.1-.672-.023-1.638-1.226-3.397a10.983 10.983 0 0 0-.501-6.455c.396-1.069.673-2.188.59-3.337-.015-.68-.221-1.167-.487-1.507-.209-.335-2.415-2.39-4.028-2.91A3.105 3.105 0 0 0 17.376 0m-.03 2.082c.65.015 2.155 1.093 3.01 1.906l.355.34c-.959-.163-2.125.428-3.26 1.55a10.28 10.28 0 0 0-1.358 1.595c-.28.384-.517.768-.753 1.285l1.18.635-3.895 1.477-1.122-4.18 1.033.547c1.358-3.102 2.524-3.973 3.232-4.416h.015a5.12 5.12 0 0 1 1.49-.724zM12 3.065a8.932 8.932 0 0 1 2.22.279 7.67 7.67 0 0 0-.42.488 8.403 8.403 0 0 0-1.8-.196 8.336 8.336 0 0 0-5.897 2.432 7.86 7.86 0 0 1-.37-.433A8.905 8.905 0 0 1 12 3.065m-7.076.305c.71-.002 1.309.127 2.2.466a9.526 9.526 0 0 0-1.713 1.337c-.327-.542-.624-1.156-.488-1.803m-.606.042c-.162.96.428 2.126 1.55 3.264.457.487 1.003.945 1.594 1.358.383.281.767.517 1.283.754l.62-1.182 1.49 3.914-4.176 1.122.546-1.033c-3.099-1.36-3.969-2.526-4.412-3.235v-.015a5.144 5.144 0 0 1-.723-1.491l-.015-.074c.015-.65 1.092-2.156 1.904-3.013Zm16.035 1.483a1.259 1.259 0 0 1 .26.015l.14.023a5.05 5.05 0 0 1-.13 1.137v.015c-.1.383-.228.765-.377 1.148a9.526 9.526 0 0 0-1.346-1.776c.547-.357 1.051-.546 1.453-.562M18.43 5.8a8.903 8.903 0 0 1 2.506 6.2 8.937 8.937 0 0 1-.27 2.183 7.658 7.658 0 0 0-.488-.425A8.407 8.407 0 0 0 20.364 12 8.334 8.334 0 0 0 18 6.173a7.904 7.904 0 0 1 .429-.373M3.315 9.905c.157.148.319.29.488.425A8.417 8.417 0 0 0 3.636 12c0 2.248.887 4.286 2.327 5.788a8.11 8.11 0 0 1-.426.376A8.902 8.902 0 0 1 3.065 12a8.937 8.937 0 0 1 .25-2.095m13.988 1.541-.546 1.034c3.098 1.359 3.969 2.526 4.412 3.235v.014c.34.488.575.99.723 1.492l.014.074c-.014.65-1.092 2.156-1.903 3.013l-.34.354c.163-.96-.427-2.127-1.549-3.264a10.298 10.298 0 0 0-1.594-1.359 7.008 7.008 0 0 0-1.283-.753l-.605 1.152-1.505-3.87zm-6.006 1.684 1.121 4.18-1.033-.547c-1.357 3.102-2.523 3.973-3.231 4.416h-.015c-.487.34-.989.576-1.49.724l-.074.015c-.65-.015-2.154-1.093-3.01-1.906l-.354-.34c.959.163 2.124-.428 3.26-1.55.488-.458.945-1.004 1.358-1.595.28-.384.517-.768.753-1.285l-1.166-.635ZM3.72 16.663A9.526 9.526 0 0 0 5.086 18.5c-.697.47-1.33.665-1.777.59l-.138-.024c0-.367.038-.748.128-1.137v-.015c.11-.417.254-.835.42-1.252m14.131 1.314c.129.14.253.283.372.43A8.904 8.904 0 0 1 12 20.936a8.932 8.932 0 0 1-2.282-.296 7.757 7.757 0 0 0 .417-.487 8.335 8.335 0 0 0 7.716-2.175m.696.889c.43.666.607 1.267.534 1.698l-.023.138a5.034 5.034 0 0 1-1.136-.128h-.014a10.718 10.718 0 0 1-1.114-.366 9.526 9.526 0 0 0 1.753-1.342"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 16 16"><path d="M4.5 3.5h8v8M12.5 3.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square"/></symbol>
+  <symbol id="i-reel" viewBox="0 0 64 64"><circle cx="32" cy="32" r="22" fill="none" stroke="currentColor" stroke-width="3.5"/><circle cx="32" cy="32" r="4" fill="#e1261c"/><circle cx="32" cy="19" r="5" fill="currentColor"/><circle cx="32" cy="45" r="5" fill="currentColor"/><circle cx="19" cy="32" r="5" fill="currentColor"/><circle cx="45" cy="32" r="5" fill="currentColor"/></symbol>
+</svg>
+<a class="skip" href="#main">Skip to content</a>
+<p class="fan-note" role="note"><strong>Fan-made mod.</strong> Not affiliated with, endorsed by or sponsored by Rockstar Games or Take-Two Interactive.</p>
+
+<header class="bar">
+  <div class="bar-in">
+    <a class="brand" href="#top" aria-label="Redemption Editor, back to top">
+      <svg width="28" height="28" aria-hidden="true"><use href="#i-reel"/></svg>
+      <span class="sep" aria-hidden="true"></span>
+      <span class="wm-bar" aria-hidden="true">Redemption <b>Editor</b></span>
+    </a>
+    <nav aria-label="Sections">
+      <ul>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#export">Export</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </nav>
+    <div class="bar-act">
+      <a class="pill pill-quiet pill-nx" href="https://www.nexusmods.com/reddeadredemption2/mods/11299" aria-label="Redemption Editor on Nexus Mods"><svg class="icon" aria-hidden="true"><use href="#i-nexus"/></svg><span class="lbl">Nexus Mods</span></a>
+      <a class="pill" href="https://github.com/rossignolli/redemption-editor/releases/latest">Download</a>
+    </div>
+  </div>
+</header>
+
+<section class="hero" id="top" aria-labelledby="hero-h">
+  <div class="hero-txt">
+    <p class="hero-pre">A story-mode mod for Red Dead Redemption 2 on PC</p>
+    <h1 id="hero-h" class="rough"><span class="w1">Redemption</span><span class="w2">Editor</span></h1>
+  </div>
+  <div class="hero-bg" id="heroBg" data-yt="_NN1DOta7P0" aria-hidden="true"></div>
+  <div class="hero-shade" aria-hidden="true"></div>
+</section>
+
+<main id="main">
+  <!-- INTRO -->
+  <section class="intro" aria-label="Introduction">
+    <div class="wrap">
+      <p class="lede-big">Your last minute on the frontier is always on tape. Save it with one key, walk a free camera through it, and turn it into a film.</p>
+      <div class="btns">
+        <a class="btn btn-red" href="https://github.com/rossignolli/redemption-editor/releases/latest">Download <small>Version 1.0.0</small><svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+        <a class="btn btn-quiet" href="https://www.nexusmods.com/reddeadredemption2/mods/11299"><span style="display:inline-flex;align-items:center;gap:9px"><svg class="icon" aria-hidden="true"><use href="#i-nexus"/></svg>Nexus Mods</span><small>Get it on Nexus</small></a>
+      </div>
+
+      <div class="tcards">
+        <a class="tcard" href="#f-record">
+          <span class="art"><picture><source srcset="assets/card-record.webp" type="image/webp"><img src="assets/card-record.jpg" width="720" height="720" loading="lazy" alt=""></picture></span>
+          <span class="t">Record</span><span class="s">The last 60 seconds, always</span>
+        </a>
+        <a class="tcard" href="#f-edit">
+          <span class="art"><picture><source srcset="assets/card-edit.webp" type="image/webp"><img src="assets/card-edit.jpg" width="720" height="720" loading="lazy" alt=""></picture></span>
+          <span class="t">Edit</span><span class="s">Free camera on a timeline</span>
+        </a>
+        <a class="tcard" href="#f-export">
+          <span class="art"><picture><source srcset="assets/card-export.webp" type="image/webp"><img src="assets/card-export.jpg" width="588" height="588" loading="lazy" alt=""></picture></span>
+          <span class="t">Export</span><span class="s">Rendered in game, frame by frame</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- OVERVIEW -->
+  <section class="band" aria-labelledby="ov-h">
+    <div class="wrap">
+      <p class="eyebrow">Overview</p>
+      <h2 id="ov-h" class="sec-t rough">Straight from <span class="r">the saddle</span></h2>
+      <figure class="vcard hero-card" style="margin-top:24px">
+        <div class="media">
+          <video id="heroVideo" data-auto muted loop playsinline preload="metadata" poster="assets/hero-letterbox.jpg" aria-describedby="heroCap">
+            <source src="assets/hero-letterbox.mp4" type="video/mp4">
+          </video>
+          <button class="vctl" type="button" data-for="heroVideo" aria-pressed="false">Pause</button>
+        </div>
+        <figcaption id="heroCap"><b>Four wagons, exported at 2.39:1</b>A recorded replay of four horse-drawn wagons, exported by the mod at 2.39:1 with film grain and 8-sample motion blur. Captured in game on a flat test stage.</figcaption>
+      </figure>
+
+      <div class="stats" role="list">
+        <div class="stat" role="listitem"><b>60 s</b><span>always recording around you, like a dashcam</span></div>
+        <div class="stat" role="listitem"><b>30 Hz</b><span>full skeleton pose for every person and horse in the scene</span></div>
+        <div class="stat" role="listitem"><b>~0.3 ms</b><span>of mod time per frame while recording</span></div>
+        <div class="stat" role="listitem"><b>&lt; 2 ms</b><span>GPU cost per exported 4K frame</span></div>
+      </div>
+      <p class="more-wrap"><a class="more" href="#how">See how it works</a></p>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section class="band" id="features" aria-labelledby="ft-h">
+    <div class="wrap">
+      <p class="eyebrow">Record, edit, export</p>
+      <h2 id="ft-h" class="sec-t rough">Everything that happened, <span class="r">played back on cue</span></h2>
+      <p class="lede">The mod records every person, horse, wagon and prop near you as timestamped data, then rebuilds the scene on stand-ins you can pause, rewind and film from any angle.</p>
+
+      <article class="feat" id="f-record">
+        <div class="feat-h"><span class="n">01</span><h3>Record</h3></div>
+        <p>Nothing to remember. The buffer keeps the last minute, and a manual recording runs as long as you need.</p>
+        <ul class="flist">
+          <li><strong>Always-on buffer.</strong> The last 60 seconds stay in memory (set the length and memory in Replay Settings). <kbd>Shift+F4</kbd> saves them as a clip.</li>
+          <li><strong>Manual recording.</strong> <kbd>F4</kbd> marks a start, <kbd>F4</kbd> again saves everything since. No time limit: long takes are saved in parts, with a notice each time a part is saved.</li>
+          <li><strong>Every body in the scene.</strong> People, horses, animals, wagons, trains, weapons, props and reins, with the full skeleton pose of each one, and the muscles and sweat of every horse.</li>
+          <li><strong>How they looked.</strong> Outfits, weapon components, hats knocked off mid-fight, wagon paint and livery.</li>
+          <li><strong>Sound and effects.</strong> Gunshots with muzzle flash and the weapon's own sound, speech in the original voice, your character's grunts and pain sounds, footsteps, punches, impacts, blood, arrows.</li>
+          <li><strong>The world around it.</strong> Doors, crates and barrels that move or break, grass that bends as horses pass, plus the time of day and weather of the clip.</li>
+          <li><strong>Named for the place.</strong> Clips are saved as <code>042-Valentine</code>, with a thumbnail, region, weather and character in the gallery.</li>
+        </ul>
+      </article>
+
+      <article class="feat" id="f-edit">
+        <div class="feat-h"><span class="n">02</span><h3>Edit</h3></div>
+        <p>An editor overlay (<kbd>F2</kbd>) with a painted menu in the style of the game's own, a clip gallery, transport controls and a camera timeline.</p>
+        <ul class="flist">
+          <li><strong>Transport.</strong> Pause, scrub back and forward, step frame by frame, playback speed from 5% to 200%.</li>
+          <li><strong>Free camera.</strong> Fly anywhere in the replay with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>, <kbd>Q</kbd><kbd>E</kbd> and the mouse.</li>
+          <li><strong>Camera markers.</strong> Keyframes on the timeline, each one Free, Game (the camera you actually played with), Target (aim at a rider) or Follow, blended or cut, with fades.</li>
+          <li><strong>Start and end markers</strong> bound every clip; no marker can cross them.</li>
+          <li><strong>Time and weather.</strong> Change the time of day and the weather of any clip, buffer clips included.</li>
+          <li><strong>Clean frame.</strong> Game HUD hidden during playback, your real character moved out of the shot and restored afterwards.</li>
+          <li><strong>Projects.</strong> Compose several clips in order: trim, split at the playhead, move, duplicate, delete, and play or scrub the whole project. Up to 512 clips and 30 minutes.</li>
+          <li><strong>Keys on screen.</strong> A key bar always shows what works in the current screen, and every key can be changed.</li>
+          <li><strong>Your size.</strong> Replay Settings are grouped (Recording, Playback, Storage, Interface), and the interface scales from 80 to 125%.</li>
+        </ul>
+      </article>
+
+      <article class="feat" id="f-export">
+        <div class="feat-h"><span class="n">03</span><h3>Export</h3></div>
+        <p>Render the edit to a video file inside the game, frame by frame, with no screen recorder.</p>
+        <ul class="flist">
+          <li><strong>Locked clock.</strong> The game advances a fixed step per frame, so every frame is rendered and none is dropped, even at 4K.</li>
+          <li><strong>GPU pipeline.</strong> Captured and color-converted on the GPU, encoded on the GPU (NVIDIA NVENC, AMD AMF or Intel Quick Sync) to H.264, H.265 10-bit or AV1 10-bit.</li>
+          <li><strong>Masters.</strong> ProRes 422 HQ, DNxHR HQX 10-bit, FFV1, lossless H.265 or a PNG sequence.</li>
+          <li><strong>Real motion blur.</strong> 8, 16 or 32 sub-frames per frame, with a shutter angle from 90&deg; to 360&deg;.</li>
+          <li><strong>Look.</strong> Letterbox (2.39, 2.00, 1.85), film grain and your own <code>.cube</code> LUT.</li>
+          <li><strong>Finishing.</strong> Camera markers become chapters, a thumbnail is saved next to the file, and an audio pass adds the game sound.</li>
+        </ul>
+        <p class="more-wrap"><a class="more" href="#export">See the export pipeline</a></p>
+      </article>
+    </div>
+  </section>
+
+  <!-- UNDER THE HOOD -->
+  <section class="band" aria-labelledby="uh-h">
+    <div class="wrap">
+      <p class="eyebrow">Under the hood</p>
+      <h2 id="uh-h" class="sec-t rough">Not a video. <span class="r">The scene itself.</span></h2>
+      <div class="split">
+        <div>
+          <p class="lede">A replay here is data, not pixels. Each entity is stored as packets on one timeline and played back on inert stand-ins, so you can move the camera after the fact.</p>
+          <p class="muted" style="font-size:14.5px">Scrubbing backwards re-creates and re-places whatever existed at that moment, and blood and debris come and go with the playhead. Clips are versioned files that refuse to load on a different game build instead of guessing.</p>
+        </div>
+        <figure class="vcard">
+          <div class="media">
+            <picture>
+              <source srcset="assets/still-wagon.webp" type="image/webp">
+              <img src="assets/still-wagon.jpg" width="1280" height="720" loading="lazy" alt="A white draft horse pulls a small wagon across a wooden deck, with pine-covered hills and a mountain behind.">
+            </picture>
+          </div>
+          <figcaption><b>Every rider is a stand-in</b>A frame from an exported replay: every horse, wagon and driver here is a stand-in driven by the recording.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- EXPORT -->
+  <section class="band" id="export" aria-labelledby="ex-h">
+    <div class="wrap">
+      <p class="eyebrow">Export</p>
+      <h2 id="ex-h" class="sec-t rough">Motion blur the way <span class="r">a film camera sees it</span></h2>
+      <p class="lede">The exporter renders several sub-frames for each video frame and blends them in linear light on the GPU, so wheels and hooves smear the way a real shutter would.</p>
+
+      <div class="cards" style="margin-top:24px">
+        <figure class="vcard">
+          <div class="media">
+            <video data-auto muted loop playsinline controls preload="none" poster="assets/blur-side-by-side.jpg" width="1920" height="540">
+              <source src="assets/blur-side-by-side.mp4" type="video/mp4">
+            </video>
+          </div>
+          <figcaption><b>Without and with motion blur</b>The same replay exported twice, shown at half speed: left without motion blur, right with 16 samples at a 180&deg; shutter.</figcaption>
+        </figure>
+      </div>
+      <div class="cards c2" style="margin-top:22px">
+        <figure class="vcard">
+          <div class="media">
+            <video data-auto muted loop playsinline controls preload="none" poster="assets/blur-zoom.jpg" width="1920" height="540">
+              <source src="assets/blur-zoom.mp4" type="video/mp4">
+            </video>
+          </div>
+          <figcaption><b>1:1 crop at 4K</b>A 1:1 crop of the 4K frame, half speed. Look at the spokes and the legs.</figcaption>
+        </figure>
+        <figure class="vcard">
+          <div class="media">
+            <video data-auto muted loop playsinline controls preload="none" poster="assets/shutter-angle.jpg" width="1920" height="540">
+              <source src="assets/shutter-angle.mp4" type="video/mp4">
+            </video>
+          </div>
+          <figcaption><b>Shutter angle 180&deg; and 360&deg;</b>Shutter angle: 16 samples at 180&deg; (left) and 360&deg; (right). A wider shutter means a longer smear.</figcaption>
+        </figure>
+      </div>
+
+      <h3 style="margin-top:52px">Pick a codec, keep the frame</h3>
+      <div class="presets">
+        <figure class="vcard">
+          <div class="media">
+            <video data-auto muted loop playsinline controls preload="none" poster="assets/export-presets.jpg" width="1280" height="720">
+              <source src="assets/export-presets.mp4" type="video/mp4">
+            </video>
+          </div>
+          <figcaption><b>Four exports, one clip</b>Four exports of the same 8-second clip at 4K and 60 fps, side by side, with their real file sizes: H.264 (82.1 MB), H.265 10-bit (28.0 MB), AV1 10-bit (40.9 MB) and H.264 with 16-sample motion blur (45.9 MB).</figcaption>
+        </figure>
+        <div>
+          <p style="color:var(--ink-2);font-size:14.5px">Time to render one 4K video frame, measured in game. Without blur, export runs close to real time. With blur, each sample is a full game frame, so 8 seconds with 16 samples takes about 2 minutes.</p>
+          <table class="perf" aria-label="Export time per 4K video frame, measured in game">
+            <thead><tr><th scope="col">4K export preset</th><th scope="col">Per frame</th></tr></thead>
+            <tbody>
+              <tr><td>H.264 NVENC, no blur</td><td>17.9 ms</td></tr>
+              <tr><td>AV1 10-bit NVENC, no blur</td><td>19.5 ms</td></tr>
+              <tr><td>H.265 10-bit NVENC, no blur</td><td>19.8 ms</td></tr>
+              <tr><td>H.264, blur 8 + letterbox + grain</td><td>133.6 ms</td></tr>
+              <tr><td>H.264, blur 16 at 180&deg;</td><td>267 ms</td></tr>
+            </tbody>
+          </table>
+          <p class="muted" style="font-size:13px;margin-top:12px">RTX 5070 Ti, game at 3840&times;2160 with VSync on.</p>
+        </div>
+      </div>
+
+      <h3 style="margin-top:52px">Pipeline</h3>
+      <dl class="spec-table" style="margin-top:12px">
+        <div class="spec-row"><dt>Locked clock</dt><dd>The game's timer is stepped exactly once per sample, so the world moves at the same speed with or without blur. In testing, every 8-second export came out with exactly 480 frames.</dd></div>
+        <div class="spec-row"><dt>GPU capture</dt><dd>The back buffer is copied and converted to NV12, P010 or 10-bit RGB on the GPU, then handed straight to the encoder. No CPU color conversion.</dd></div>
+        <div class="spec-row"><dt>Encoders</dt><dd>H.264, H.265 10-bit and AV1 10-bit on the GPU (NVENC, AMF or Quick Sync), a half-size preview, ProRes 422 HQ, DNxHR HQX, FFV1, lossless H.265 4:4:4 and PNG.</dd></div>
+        <div class="spec-row"><dt>Frame rates</dt><dd>24, 25, 30, 50, 60, 120, 29.97 and 59.94 fps. Export the whole clip or only the stretch between the start and end markers.</dd></div>
+        <div class="spec-row"><dt>Sound</dt><dd>A second pass plays the clip in real time and records only the game's audio, aligned to the picture within one frame at 60 fps in testing.</dd></div>
+        <div class="spec-row"><dt>Clean picture</dt><dd>No HUD, prompts, notices or editor UI end up in the file. A queue, chapters from your markers and a JPEG thumbnail come with every export.</dd></div>
+      </dl>
+
+      <p class="note"><strong>Good to know:</strong> the export needs the game on the Vulkan renderer. FFmpeg comes in the download, nothing else to install.</p>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="band band-red" id="how" aria-labelledby="hw-h">
+    <div class="wrap">
+      <p class="eyebrow">How it works</p>
+      <h2 id="hw-h" class="sec-t rough">From the saddle <span class="r">to the cutting room</span></h2>
+      <ol class="steps">
+        <li>
+          <h3>Play</h3>
+          <p>Ride, hunt, get into trouble. The buffer quietly keeps the last minute of everything around you.</p>
+          <p class="keys">Always on, or <kbd>F4</kbd> to mark a start</p>
+        </li>
+        <li>
+          <h3>Save</h3>
+          <p>Keep the moment as a clip in <code>ReplayClips</code>, named after the place where it started.</p>
+          <p class="keys"><kbd>Shift+F4</kbd> saves the last 60 s</p>
+        </li>
+        <li>
+          <h3>Direct</h3>
+          <p>Open the editor, play the clip, scrub to the moment and lay down camera markers with the free camera.</p>
+          <p class="keys"><kbd>F2</kbd> editor, <kbd>F11</kbd> free camera</p>
+        </li>
+        <li>
+          <h3>Export</h3>
+          <p>Choose a format, blur and look, and let the game render the film frame by frame.</p>
+          <p class="keys"><kbd>Ctrl+E</kbd> export dialog</p>
+        </li>
+      </ol>
+      <p class="how-foot">The design: state is recorded per entity and replayed on stand-ins. Each engine hook checks that the game code matches what it expects and switches itself off, with a line in the log, when it does not.</p>
+    </div>
+  </section>
+
+  <!-- REQUIREMENTS -->
+  <section class="band" id="install" aria-labelledby="rq-h2">
+    <div class="wrap">
+      <p class="eyebrow">Requirements and install</p>
+      <h2 id="rq-h2" class="sec-t rough">One ZIP into <span class="r">the game folder</span></h2>
+      <div class="split-art">
+        <div>
+          <h3 id="requirements" style="margin:22px 0 8px">Requirements</h3>
+          <dl class="spec-table">
+            <div class="spec-row"><dt>Game</dt><dd><strong>Red Dead Redemption 2 for PC, Story Mode</strong></dd></div>
+            <div class="spec-row"><dt>Platform</dt><dd>PC, game build 1.0.1491.50 (the current update). On another build the mod tells you on screen, and features that don't match switch themselves off.</dd></div>
+            <div class="spec-row"><dt>Prerequisites</dt><dd>
+              <p><strong>ScriptHookRDR2.</strong> By Alexander Blade: <code>ScriptHookRDR2.dll</code> and the ASI loader <code>dinput8.dll</code> in the game folder, for the current game update.</p>
+              <p><strong>ReShade 6.6.2 to 6.8.x, "with full add-on support".</strong> Installed for <code>RDR2.exe</code> with the API the game uses (Vulkan or DirectX 12). Without ReShade the recording still works, but the editor does not open.</p>
+            </dd></div>
+            <div class="spec-row"><dt>Disk space for clips</dt><dd>Clips are saved in the game folder. A minute in a busy town can take a few hundred MB; clips you don't open for a week are compressed in the background.</dd></div>
+            <div class="spec-row"><dt>Renderer for export</dt><dd>The game on Vulkan. GPU presets need NVIDIA NVENC, AMD AMF or Intel Quick Sync; the CPU formats work on any PC.</dd></div>
+            <div class="spec-row"><dt>Version</dt><dd><strong>1.0.0</strong>, free and open source (GPL-3.0).</dd></div>
+          </dl>
+
+          <h3 style="margin:44px 0 18px">Install</h3>
+          <ol class="install">
+            <li><strong>Close the game.</strong> If you had a test build, delete its files first.</li>
+            <li><strong>Copy everything in the ZIP</strong> into the folder with <code>RDR2.exe</code>:
+              <span class="files"><code>RedemptionEditor.asi</code><code>RedemptionEditor.addon64</code><code>RedemptionEditorCore.dll</code><code>RedemptionEditor.ini</code><code>RedemptionEditor\</code></span>
+            </li>
+            <li><strong>Start the game and load Story Mode.</strong> <code>ScriptHookRDR2.log</code> should list <code>RedemptionEditor.asi</code>, and <code>RedemptionEditor.log</code> appears next to it.</li>
+            <li style="padding-bottom:0"><strong>Uninstall</strong> by deleting those files and the <code>RedemptionEditor</code> folder (and <code>ReplayClips</code> and <code>ReplayProjects</code> if you don't want your clips).</li>
+          </ol>
+
+          <details class="keys-more" open>
+            <summary>Default keys</summary>
+            <table class="keys-table">
+              <tbody>
+                <tr><td><kbd>Shift+F4</kbd></td><td>Save the last 60 seconds as a clip</td></tr>
+                <tr><td><kbd>F4</kbd></td><td>Mark a start; again to save from the mark to now</td></tr>
+                <tr><td><kbd>F7</kbd></td><td>Play / stop the last recording</td></tr>
+                <tr><td><kbd>F2</kbd></td><td>Open / close the editor</td></tr>
+                <tr><td><kbd>F1</kbd></td><td>Help inside the editor</td></tr>
+                <tr><td><kbd>K</kbd></td><td>Pause / resume playback</td></tr>
+                <tr><td><kbd>,</kbd> <kbd>.</kbd></td><td>One frame back / forward (hold: rewind, fast forward)</td></tr>
+                <tr><td><kbd>F11</kbd></td><td>Free camera during playback</td></tr>
+                <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Playback speed</td></tr>
+                <tr><td><kbd>Shift+F2</kbd></td><td>Mark a problem while a replay plays</td></tr>
+                <tr><td><kbd>Shift+F1</kbd></td><td>Save a report ZIP</td></tr>
+              </tbody>
+            </table>
+          </details>
+        </div>
+        <div class="tcard" aria-hidden="true">
+          <span class="art"><picture><source srcset="assets/art-buck.webp" type="image/webp"><img src="assets/art-buck.jpg" width="720" height="720" loading="lazy" alt=""></picture></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="band" id="faq" aria-labelledby="fq-h">
+    <div class="wrap">
+      <p class="eyebrow">FAQ</p>
+      <h2 id="fq-h" class="sec-t rough">Questions at <span class="r">the campfire</span></h2>
+      <div class="split-art">
+        <div class="faq">
+          <details>
+            <summary>Does it work in Red Dead Online?</summary>
+            <div class="a"><p>No. Redemption Editor is for Story Mode only and never touches online mode. Do not use it in Red Dead Online.</p></div>
+          </details>
+          <details>
+            <summary>How much performance does recording cost?</summary>
+            <div class="a">
+              <p>Measured in game in a scene with dozens of ranchers and horses: about <strong>0.32 ms per frame</strong> of mod time while recording in the normal configuration, and about 0.72 ms with the developer overlay switched on. Frame time at the 95th percentile rose by roughly 0.09 ms and the frame rate stayed at 60 fps (VSync on).</p>
+              <p>In an 18-minute session parked in Valentine with the town's population around, the 60-second buffer stayed between 65 and 110 MB of memory, under its 128 MB budget.</p>
+            </div>
+          </details>
+          <details>
+            <summary>Do I have to remember to press record?</summary>
+            <div class="a"><p>No. With the buffer on, the mod always keeps the last 60 seconds. Press <kbd>Shift+F4</kbd> after something happens and it becomes a clip. For longer takes, <kbd>F4</kbd> starts a manual recording with no time limit.</p></div>
+          </details>
+          <details>
+            <summary>Where are my clips?</summary>
+            <div class="a"><p>In <code>&lt;game folder&gt;\ReplayClips</code>, named with a counter and the place where the recording started, for example <code>042-Valentine.rpclip</code> (shown as "042 Valentine" in the editor). Exported videos go to <code>Documents\Rockstar Games\Red Dead Redemption 2\Videos\Redemption Editor\</code> by default.</p></div>
+          </details>
+          <details>
+            <summary>Will it break after a game update?</summary>
+            <div class="a"><p>Every engine hook checks that the game code matches what it was built for. On a different build, the affected feature switches itself off and the log says which one, instead of guessing. Clips recorded on another game build are refused rather than loaded wrong.</p></div>
+          </details>
+          <details>
+            <summary>Is anything not recorded yet?</summary>
+            <div class="a"><p>A few things: water is not recorded (the game's own water runs in the replay), and during a mission the world is only hidden, not cleared, so mission characters can show up. Props another mod placed before a replay are cleared when it starts (ones placed during the replay stay). Things added in a later version, like horse muscles, only show on clips recorded with that version.</p></div>
+          </details>
+          <details>
+            <summary>Does export need a specific GPU?</summary>
+            <div class="a"><p>The GPU presets (H.264, H.265, AV1) use NVIDIA NVENC, AMD AMF or Intel Quick Sync; AV1 needs a recent card (RTX 40 or 50, Radeon RX 7000, Arc). ProRes, DNxHR, FFV1 and PNG are encoded on the CPU. Export needs the game on the Vulkan renderer; on DirectX 12 it does not run.</p></div>
+          </details>
+          <details>
+            <summary>Does it send anything anywhere?</summary>
+            <div class="a"><p>No. The mod has no telemetry and never connects to the internet. A report ZIP (<kbd>Shift+F1</kbd>) stays on your disk until you send it yourself.</p></div>
+          </details>
+          <details>
+            <summary>Which version of the game?</summary>
+            <div class="a"><p>Story Mode on PC, game build 1.0.1491.50. Tested on Steam. The Epic Games Store and Rockstar Games Launcher versions should work too: if you play on one of them, tell us how it went in a <a href="https://github.com/rossignolli/redemption-editor/issues/new/choose">GitHub issue</a>.</p></div>
+          </details>
+          <details>
+            <summary>Found a bug?</summary>
+            <div class="a"><p>Press <kbd>Shift+F1</kbd> in game to save a report ZIP and attach it to an issue on <a href="https://github.com/rossignolli/redemption-editor/issues/new/choose">GitHub</a>. Support happens there only, so nothing gets lost. Mark the moment with <kbd>Shift+F2</kbd> first when a replay looks or sounds wrong.</p></div>
+          </details>
+          <details>
+            <summary>Where do I get it?</summary>
+            <div class="a"><p>On <a href="https://www.nexusmods.com/reddeadredemption2/mods/11299">Nexus Mods</a> and on the
+              <a href="https://github.com/rossignolli/redemption-editor/releases/latest">GitHub releases page</a>, with the full source code.</p></div>
+          </details>
+        </div>
+        <div class="tcard" aria-hidden="true">
+          <span class="art"><picture><source srcset="assets/card-dutch.webp" type="image/webp"><img src="assets/card-dutch.jpg" width="720" height="720" loading="lazy" alt=""></picture></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DOWNLOAD -->
+  <section class="dl" id="download" aria-labelledby="dl-h">
+    <div class="dl-strip">
+      <p class="eyebrow" style="justify-content:center;color:#000">Download</p>
+      <h2 id="dl-h" class="rough">Version 1.0.0</h2>
+    </div>
+    <div class="dl-stars">
+      <div class="dl-box">
+        <p class="lede">Free and open source. Unzip it into your game folder, start Story Mode and press <kbd>Shift+F4</kbd>.</p>
+        <div class="btns">
+          <a class="btn btn-red" href="https://github.com/rossignolli/redemption-editor/releases/latest">Download <small>GitHub</small><svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+          <a class="btn btn-quiet" href="https://www.nexusmods.com/reddeadredemption2/mods/11299"><span style="display:inline-flex;align-items:center;gap:9px"><svg class="icon" aria-hidden="true"><use href="#i-nexus"/></svg>Nexus Mods</span><small>Get it on Nexus</small></a>
+        </div>
+        <div><span class="status"><i aria-hidden="true"></i>Current version: 1.0.0</span></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="f-in">
+    <div class="f-top">
+      <a class="brand" href="#top" aria-label="Redemption Editor, back to top">
+        <svg width="26" height="26" aria-hidden="true"><use href="#i-reel"/></svg>
+        <span class="wm-bar" aria-hidden="true">Redemption <b>Editor</b></span>
+      </a>
+      <a class="pill pill-quiet" href="https://www.nexusmods.com/reddeadredemption2/mods/11299"><svg class="icon" aria-hidden="true"><use href="#i-nexus"/></svg>Nexus Mods</a>
+    </div>
+    <p class="fan-line"><strong>Unofficial fan mod.</strong> Not affiliated with Rockstar Games.</p>
+    <p class="disclaimer">Redemption Editor is a fan-made mod for Red Dead Redemption 2 Story Mode on PC. It is not affiliated with, endorsed by or sponsored by Rockstar Games or Take-Two Interactive. It never touches Red Dead Online or any online mode. Red Dead Redemption 2 and related names are trademarks of their respective owners. Video on this page was captured in game with the mod.</p>
+    <p class="disclaimer">Red Dead Redemption 2 artwork and screenshots © Rockstar Games, used for illustration. Background video: <a href="https://youtu.be/_NN1DOta7P0">&ldquo;Arthur.&rdquo; by Charles Liu</a> on YouTube.</p>
+    <p class="disclaimer">Nexus Mods and its logo are trademarks of their owner, used here only to point to where the mod is listed.</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
+  var vids = Array.prototype.slice.call(document.querySelectorAll('video[data-auto]'));
+  var userPaused = new WeakMap();
+
+  function setBtn(v){
+    var b = document.querySelector('.vctl[data-for="'+v.id+'"]');
+    if(!b) return;
+    var playing = !v.paused;
+    b.textContent = playing ? 'Pause' : 'Play';
+    b.setAttribute('aria-pressed', playing ? 'false' : 'true');
+    b.setAttribute('aria-label', (playing ? 'Pause' : 'Play') + ' background video');
+  }
+  function tryPlay(v){
+    if(reduce && reduce.matches) return;
+    if(userPaused.get(v)) return;
+    if(v.getAttribute('preload') === 'none'){ v.setAttribute('preload','auto'); }
+    var p = v.play(); if(p && p.catch) p.catch(function(){});
+  }
+
+  vids.forEach(function(v){
+    v.addEventListener('play', function(){ setBtn(v); });
+    v.addEventListener('pause', function(){ setBtn(v); });
+    if(v.hasAttribute('controls')){
+      v.addEventListener('pause', function(){ if(!v.ended && document.visibilityState==='visible' && v.dataset.inview==='1') userPaused.set(v,true); });
+      v.addEventListener('play', function(){ userPaused.set(v,false); });
+    }
+  });
+
+  document.querySelectorAll('.vctl').forEach(function(b){
+    var v = document.getElementById(b.getAttribute('data-for'));
+    if(!v) return;
+    b.addEventListener('click', function(){
+      if(v.paused){ userPaused.set(v,false); var p=v.play(); if(p&&p.catch)p.catch(function(){}); }
+      else { userPaused.set(v,true); v.pause(); }
+    });
+    setBtn(v);
+  });
+
+  if('IntersectionObserver' in window){
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        var v = e.target;
+        if(e.isIntersecting){ v.dataset.inview='1'; tryPlay(v); }
+        else { v.dataset.inview='0'; if(!v.paused){ v.pause(); } }
+      });
+    }, {threshold:0.35});
+    vids.forEach(function(v){ io.observe(v); });
+  } else {
+    vids.forEach(tryPlay);
+  }
+
+  if(reduce && reduce.addEventListener){
+    reduce.addEventListener('change', function(){
+      if(reduce.matches){ vids.forEach(function(v){ v.pause(); }); }
+    });
+  }
+
+  document.querySelectorAll('a[aria-disabled="true"]').forEach(function(a){
+    a.addEventListener('click', function(e){ e.preventDefault(); });
+  });
+})();
+</script>
+<script>
+(function(){
+  var bg=document.getElementById('heroBg'); if(!bg) return;
+  var rm=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(rm) return;
+  var id=bg.getAttribute('data-yt');
+  var f=document.createElement('iframe');
+  f.src='https://www.youtube-nocookie.com/embed/'+id+'?autoplay=1&mute=1&loop=1&playlist='+id+'&controls=0&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&disablekb=1';
+  f.title='Background video'; f.tabIndex=-1;
+  f.allow='autoplay; encrypted-media; picture-in-picture';
+  f.setAttribute('referrerpolicy','strict-origin-when-cross-origin');
+  f.addEventListener('load',function(){setTimeout(function(){f.classList.add('on')},1800)});
+  bg.appendChild(f);
+})();
+</script>
+</body>
+</html>

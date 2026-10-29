@@ -1,0 +1,405 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\camera_track.cpp" />
+    <ClCompile Include="src\camera_shake.cpp" />
+    <ClCompile Include="src\camera_shake_custom.cpp" />
+    <ClCompile Include="src\camera_spline.cpp" />
+    <ClCompile Include="tests\camera_custom_tests.cpp" />
+    <ClCompile Include="src\camera_effects.cpp" />
+    <ClCompile Include="src\camera_marker_shake.cpp" />
+    <ClCompile Include="src\free_cam.cpp" />
+    <ClCompile Include="src\camera_overlay.cpp" />
+    <ClCompile Include="tests\camera_cine_tests.cpp" />
+    <ClCompile Include="tests\camera_spline_tests.cpp" />
+    <ClCompile Include="tests\camera_attach_tests.cpp" />
+    <ClCompile Include="tests\camera_fx_tests.cpp" />
+    <ClCompile Include="tests\camera_marker_shake_tests.cpp" />
+    <ClCompile Include="src\entity_lifecycle.cpp" />
+    <ClCompile Include="src\profiler.cpp" />
+    <ClCompile Include="tests\profiler_tests.cpp" />
+    <ClCompile Include="src\entity_selection.cpp" />
+    <ClCompile Include="src\entity_events.cpp" />
+    <ClCompile Include="src\entity_transform.cpp" />
+    <ClCompile Include="tests\entity_lifecycle_tests.cpp" />
+    <ClCompile Include="src\pose_math.cpp" />
+    <ClCompile Include="src\pose_skeleton_layout.cpp" />
+    <ClCompile Include="src\pose_stream.cpp" />
+    <ClCompile Include="tests\pose_stream_tests.cpp" />
+    <ClCompile Include="tests\pose_sample_tests.cpp" />
+    <ClCompile Include="tests\pose_capture_tests.cpp" />
+    <ClCompile Include="src\pose_segments.cpp" />
+    <ClCompile Include="src\pose_jerk.cpp" />
+    <ClCompile Include="src\pose_fidelity_core.cpp" />
+    <ClCompile Include="src\mount_placement_core.cpp" />
+    <ClCompile Include="src\replay_transport.cpp" />
+    <ClCompile Include="src\rope_track.cpp" />
+    <ClCompile Include="tests\rope_track_tests.cpp" />
+    <ClCompile Include="src\bench_script.cpp" />
+    <ClCompile Include="tests\bench_script_tests.cpp" />
+    <ClCompile Include="tests\replay_transport_tests.cpp" />
+    <ClCompile Include="tests\pose_segments_tests.cpp" />
+    <ClCompile Include="src\clip_file.cpp" />
+    <ClCompile Include="src\clip_compress.cpp" />
+    <ClCompile Include="external\zstd\zstd.c">
+      <!-- The zstd 1.5.6 amalgamation (clip compression). Third
+           party C: no precompiled header, no warnings, never as errors.
+           ZSTD_MULTITHREAD is defined inside zstd.c; its Win32 worker pool
+           is only created when ZSTD_c_nbWorkers > 0, which is never set. -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="src\clip_pack.cpp" />
+    <ClCompile Include="external\lzma\LzFind.c">
+      <!-- The LZMA SDK 24.09 (public domain, Igor Pavlov): the packed clip
+           container (clip_pack.cpp). Third party C: no precompiled header, no
+           warnings, single threaded (Z7_ST). -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzFindOpt.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaDec.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaEnc.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\CpuArch.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="src\recording_window.cpp" />
+    <ClCompile Include="tests\clip_file_tests.cpp" />
+    <ClCompile Include="tests\recording_window_tests.cpp" />
+    <ClCompile Include="tests\camera_track_tests.cpp" />
+    <ClCompile Include="tests\camera_marker_tests.cpp" />
+    <ClCompile Include="tests\editor_input_tests.cpp" />
+    <ClCompile Include="tests\editor_keys_tests.cpp" />
+    <ClCompile Include="tests\editor_ui_qa_tests.cpp" />
+    <ClCompile Include="tests\editor_cursor_tests.cpp" />
+    <ClCompile Include="tests\ui_scale_tests.cpp" />
+    <ClCompile Include="tests\ui_layout_tests.cpp" />
+    <ClCompile Include="tests\lifecycle_tests.cpp" />
+    <ClCompile Include="tests\replay_fix_tests.cpp" />
+    <ClCompile Include="tests\vehicle_pieces_tests.cpp" />
+    <ClCompile Include="tests\record_gate_tests.cpp" />
+    <ClCompile Include="tests\world_state_tests.cpp" />
+    <ClCompile Include="external\reshade\deps\minhook\src\buffer.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde32.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde64.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hook.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\trampoline.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="tests\retail_core_tests.cpp" />
+    <ClCompile Include="tests\export_schedule_tests.cpp" />
+    <ClCompile Include="tests\sound_census_tests.cpp" />
+    <ClCompile Include="tests\soundfx_probe_tests.cpp" />
+    <ClCompile Include="tests\sound_generic_tests.cpp" />
+    <ClCompile Include="tests\fx_check_tests.cpp" />
+    <ClCompile Include="tests\particle_replay_tests.cpp" />
+    <ClCompile Include="tests\fx_residue_tests.cpp" />
+    <ClCompile Include="tests\weapon_butt_tests.cpp" />
+    <ClCompile Include="tests\missing_sound_tests.cpp" />
+    <ClCompile Include="tests\weapon_bones_tests.cpp" />
+    <ClCompile Include="tests\frozen_pose_tests.cpp" />
+    <ClCompile Include="tests\strap_state_tests.cpp" />
+    <ClCompile Include="tests\weapon_order_tests.cpp" />
+    <ClCompile Include="tests\weapon_look_tests.cpp" />
+    <ClCompile Include="tests\sound_generic_player_tests.cpp" />
+    <ClCompile Include="tests\capture_probe_tests.cpp" />
+    <ClCompile Include="tests\sound_slot_policy_tests.cpp" />
+    <ClCompile Include="tests\sound_check_tests.cpp" />
+    <ClCompile Include="tests\seek_settle_tests.cpp" />
+    <ClCompile Include="tests\world_cleanup_tests.cpp" />
+    <ClCompile Include="tests\pose_jerk_tests.cpp" />
+    <ClCompile Include="tests\puppet_blink_tests.cpp" />
+    <ClCompile Include="tests\puppet_watch_tests.cpp" />
+    <ClCompile Include="tests\player_hold_tests.cpp" />
+    <ClCompile Include="tests\skeleton_map_tests.cpp" />
+    <ClCompile Include="tests\skeleton_signature_tests.cpp" />
+    <ClCompile Include="tests\entity_pools_tests.cpp" />
+    <ClCompile Include="tests\train_consist_tests.cpp" />
+    <ClCompile Include="tests\train_replay_tests.cpp" />
+    <ClCompile Include="tests\entity_cache_tests.cpp" />
+    <ClCompile Include="tests\mod_hygiene_tests.cpp" />
+    <ClCompile Include="tests\ini_public_tests.cpp" />
+    <ClCompile Include="tests\storage_paths_tests.cpp" />
+    <ClCompile Include="tests\rec_indicator_tests.cpp" />
+    <ClCompile Include="tests\i18n_tests.cpp" />
+    <ClCompile Include="tests\gallop_tests.cpp" />
+    <ClCompile Include="tests\sound_particles_tests.cpp" />
+    <ClCompile Include="tests\foot_material_tests.cpp" />
+    <ClCompile Include="tests\puppet_sounds_tests.cpp" />
+    <ClCompile Include="tests\horse_sound_gaps_tests.cpp" />
+    <ClCompile Include="tests\sound_check_036_tests.cpp" />
+    <ClCompile Include="tests\saddle_skid_sound_tests.cpp" />
+    <ClCompile Include="tests\skid_hoof_sound_tests.cpp" />
+    <ClCompile Include="tests\horse_audio_evidence_tests.cpp" />
+    <ClCompile Include="tests\pose_fidelity_tests.cpp" />
+    <ClCompile Include="tests\pose_capture_rules_tests.cpp" />
+    <ClCompile Include="tests\mount_placement_tests.cpp" />
+    <ClCompile Include="tests\jitter_tests.cpp" />
+    <ClCompile Include="tests\muscle_watch_tests.cpp" />
+    <ClCompile Include="tests\shader_vars_tests.cpp" />
+    <ClCompile Include="tests\pause_spans_tests.cpp" />
+    <ClCompile Include="tests\session_reset_tests.cpp" />
+    <ClCompile Include="tests\stop_path_tests.cpp" />
+    <ClCompile Include="tests\playback_perf_tests.cpp" />
+    <ClCompile Include="src\replay_project.cpp" />
+    <ClCompile Include="tests\project_tests.cpp" />
+    <ClCompile Include="tests\project_export_tests.cpp" />
+    <ClCompile Include="tests\sky_track_tests.cpp" />
+    <ClCompile Include="tests\env_override_tests.cpp" />
+    <ClCompile Include="tests\crash_evidence_tests.cpp" />
+    <ClCompile Include="tests\event_ring_tests.cpp" />
+    <ClCompile Include="tests\qa_kit_tests.cpp" />
+    <ClCompile Include="tests\speech_tests.cpp" />
+    <ClCompile Include="tests\speech_prompt_ghost_tests.cpp" />
+    <ClCompile Include="tests\music_stop_tests.cpp" />
+    <ClCompile Include="tests\world_recording_tests.cpp" />
+    <ClCompile Include="tests\mix_probe_tests.cpp" />
+    <ClCompile Include="tests\still_pose_tests.cpp" />
+    <ClCompile Include="tests\loot_objects_tests.cpp" />
+    <ClCompile Include="tests\dynamite_fuse_tests.cpp" />
+    <ClCompile Include="tests\spawned_props_tests.cpp" />
+    <ClCompile Include="tests\map_data_tests.cpp" />
+    <ClCompile Include="tests\loot_tests.cpp" />
+    <ClCompile Include="tests\render_target_tests.cpp" />
+    <ClCompile Include="tests\drawstore_probe_tests.cpp" />
+    <ClCompile Include="tests\object_look_tests.cpp" />
+    <ClCompile Include="tests\voices_tests.cpp" />
+    <ClCompile Include="tests\player_weapon_bank_tests.cpp" />
+    <ClCompile Include="tests\world_focus_tests.cpp" />
+    <ClCompile Include="tests\game_listener_tests.cpp" />
+    <ClCompile Include="tests\volume_probe_tests.cpp" />
+    <ClCompile Include="tests\wind_replay_tests.cpp" />
+    <ClCompile Include="tests\sound_world_tests.cpp" />
+    <ClCompile Include="tests\ped_speed_tests.cpp" />
+    <ClCompile Include="tests\foot_event_tests.cpp" />
+    <ClCompile Include="tests\foot_movement_tests.cpp" />
+    <ClCompile Include="tests\category_state_tests.cpp" />
+    <ClCompile Include="tests\speech_conversation_tests.cpp" />
+    <ClCompile Include="tests\world_model_tests.cpp" />
+    <ClCompile Include="tests\theatre_tests.cpp" />
+    <ClCompile Include="tests\theatre_exit_tests.cpp" />
+    <ClCompile Include="tests\object_check_tests.cpp" />
+    <ClCompile Include="tests\speech_seek_tests.cpp" />
+    <ClCompile Include="tests\speech_slots_tests.cpp" />
+    <ClCompile Include="tests\scenery_speech_tests.cpp" />
+    <ClCompile Include="tests\lod_doors_camera_tests.cpp" />
+    <ClCompile Include="tests\camera2_tests.cpp" />
+    <ClCompile Include="tests\appearance_tests.cpp" />
+    <ClCompile Include="tests\decal_gate_tests.cpp" />
+    <ClCompile Include="tests\decal_add_guard_tests.cpp" />
+    <ClCompile Include="tests\time_scale_tests.cpp" />
+    <ClCompile Include="tests\vehicle_sound_tests.cpp" />
+    <ClCompile Include="src\qa_bundle.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\camera_track.h" />
+    <ClInclude Include="src\project_export_plan.h" />
+    <ClInclude Include="editor\render_export\project_parts.h" />
+    <ClInclude Include="src\editor_input.h" />
+    <ClInclude Include="src\editor_keys.h" />
+    <ClInclude Include="src\editor_ui_qa.h" />
+    <ClInclude Include="src\editor_cursor.h" />
+    <ClInclude Include="src\ui_layout_check.h" />
+    <ClInclude Include="src\camera_shake.h" />
+    <ClInclude Include="src\camera_shake_custom.h" />
+    <ClInclude Include="src\camera_spline.h" />
+    <ClInclude Include="src\camera_effects.h" />
+    <ClInclude Include="src\camera_marker_shake.h" />
+    <ClInclude Include="src\free_cam.h" />
+    <ClInclude Include="src\camera_overlay.h" />
+    <ClInclude Include="src\camera_overlay_channel.h" />
+    <ClInclude Include="src\entity_lifecycle.h" />
+    <ClInclude Include="src\profiler.h" />
+    <ClInclude Include="src\entity_selection.h" />
+    <ClInclude Include="src\entity_events.h" />
+    <ClInclude Include="src\speech_identity.h" />
+    <ClInclude Include="src\entity_transform.h" />
+    <ClInclude Include="src\pose_math.h" />
+    <ClInclude Include="src\pose_skeleton_layout.h" />
+    <ClInclude Include="src\skeleton_signature.h" />
+    <ClInclude Include="src\pose_stream.h" />
+    <ClInclude Include="src\pose_segments.h" />
+    <ClInclude Include="src\pose_jerk.h" />
+    <ClInclude Include="src\pose_fidelity.h" />
+    <ClInclude Include="src\mount_placement.h" />
+    <ClInclude Include="src\puppet_collision.h" />
+    <ClInclude Include="src\pose_capture_rules.h" />
+    <ClInclude Include="src\pause_spans.h" />
+    <ClInclude Include="src\session_reset.h" />
+    <ClInclude Include="src\replay_transport.h" />
+    <ClInclude Include="src\rope_track.h" />
+    <ClInclude Include="src\script_fx_loop.h" />
+    <ClInclude Include="src\replay_recording.h" />
+    <ClInclude Include="src\record_gate.h" />
+    <ClInclude Include="src\rec_indicator.h" />
+    <ClInclude Include="src\ui_scale.h" />
+    <ClInclude Include="src\world_state.h" />
+    <ClInclude Include="src\music_stop.h" />
+    <ClInclude Include="src\buffer_coverage.h" />
+    <ClInclude Include="src\clip_start_gate.h" />
+    <ClInclude Include="src\world_model.h" />
+    <ClInclude Include="src\world_theatre.h" />
+    <ClInclude Include="src\theatre_exit.h" />
+    <ClInclude Include="src\camera_cut.h" />
+    <ClInclude Include="src\door_rebind.h" />
+    <ClInclude Include="src\puppet_lod.h" />
+    <ClInclude Include="src\metaped_state.h" />
+    <ClInclude Include="src\prefix_hold.h" />
+    <ClInclude Include="src\segment_switch.h" />
+    <ClInclude Include="src\no_record_fallback.h" />
+    <ClInclude Include="src\world_notice.h" />
+    <ClInclude Include="src\i18n.h" />
+    <ClInclude Include="src\ipl_candidates.h" />
+    <ClInclude Include="src\replay_puppets.h" />
+    <ClInclude Include="src\replay_recorder.h" />
+    <ClInclude Include="src\replay_context.h" />
+    <ClInclude Include="src\editor_protocol.h" />
+    <ClInclude Include="src\module_lifetime.h" />
+    <ClInclude Include="src\decal_producer_gate.h" />
+    <ClInclude Include="src\decal_add_guard.h" />
+    <ClInclude Include="src\playback_time.h" />
+    <ClInclude Include="src\clip_file.h" />
+    <ClInclude Include="src\clip_compress.h" />
+    <ClInclude Include="src\clip_pack.h" />
+    <ClInclude Include="src\recording_window.h" />
+    <ClInclude Include="src\sound_census_core.h" />
+    <ClInclude Include="src\sound_generic_core.h" />
+    <ClInclude Include="src\sound_generic_player_core.h" />
+    <ClInclude Include="src\sound_owner_table.h" />
+    <ClInclude Include="src\mix_probe_core.h" />
+    <ClInclude Include="src\still_pose_core.h" />
+    <ClInclude Include="src\render_target_core.h" />
+    <ClInclude Include="src\drawstore_probe_core.h" />
+    <ClInclude Include="src\world_focus_core.h" />
+    <ClInclude Include="src\game_listener_core.h" />
+    <ClInclude Include="src\wind_replay_core.h" />
+    <ClInclude Include="src\sound_world_core.h" />
+    <ClInclude Include="src\ped_speed_core.h" />
+    <ClInclude Include="src\object_look_core.h" />
+    <ClInclude Include="src\mix_scene_core.h" />
+    <ClInclude Include="src\category_state_core.h" />
+    <ClInclude Include="src\speech_duck_core.h" />
+    <ClInclude Include="src\mix_scene_pool_core.h" />
+    <ClInclude Include="src\speech_level_core.h" />
+    <ClInclude Include="src\speech_script_path.h" />
+    <ClInclude Include="src\speech_conversation.h" />
+    <ClInclude Include="src\soundfx_probe_core.h" />
+    <ClInclude Include="src\capture_probe_core.h" />
+    <ClInclude Include="src\sound_slot_policy.h" />
+    <ClInclude Include="src\vehicle_sound_rule.h" />
+    <ClInclude Include="src\foot_material.h" />
+    <ClInclude Include="src\horse_sound_report.h" />
+    <ClInclude Include="src\entity_sound_tally.h" />
+    <ClInclude Include="src\sound_check_core.h" />
+    <ClInclude Include="src\speech_replay_rules.h" />
+    <ClInclude Include="src\seek_settle.h" />
+    <ClInclude Include="src\puppet_blink.h" />
+    <ClInclude Include="src\puppet_watch.h" />
+    <ClInclude Include="src\player_hold.h" />
+    <ClInclude Include="src\entity_pools.h" />
+    <ClInclude Include="src\train_consist.h" />
+    <ClInclude Include="src\vehicle_doors.h" />
+    <ClInclude Include="src\entity_cache.h" />
+    <ClInclude Include="src\entity_discovery.h" />
+    <ClInclude Include="src\log_policy.h" />
+    <ClInclude Include="src\mod_clock.h" />
+    <ClInclude Include="src\guarded_memory.h" />
+    <ClInclude Include="src\region_cache.h" />
+    <ClInclude Include="src\mount_audio.h" />
+    <ClInclude Include="src\horse_audio_evidence.h" />
+    <ClInclude Include="src\clip_area.h" />
+    <ClInclude Include="src\puppet_audio_rule.h" />
+    <ClInclude Include="src\registered_fx_rule.h" />
+    <ClInclude Include="src\trusted_regions.h" />
+    <ClInclude Include="src\clip_pointer_audit.h" />
+    <ClInclude Include="src\deferred_log.h" />
+    <ClInclude Include="src\log_format.h" />
+    <ClInclude Include="src\playback_cache.h" />
+    <ClInclude Include="src\readable_page.h" />
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{C2D9257E-4E12-419B-81C4-1D817693089F}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>ReplayCoreTests</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(MSBuildThisFileDirectory)RedemptionEditor.props" />
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <TargetName>ReplayCoreTests</TargetName>
+    <RedemptionUsesScriptHookSdk>true</RedemptionUsesScriptHookSdk>
+    <OutDir>bin\$(Configuration)\</OutDir>
+    <IntDir>tmp\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>NOMINMAX;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>src;$(ProjectDir)external\reshade\deps\minhook\include;$(ProjectDir)external\reshade\deps\minhook\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- /p:RedemptionDev=true builds the tests against the developer build's headers
+       (REDEMPTION_DEV). -->
+  <ItemDefinitionGroup Condition="'$(RedemptionDev)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>REDEMPTION_DEV;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

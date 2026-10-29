@@ -1,0 +1,27 @@
+Artwork taken from the official Red Dead Redemption 2 page, https://www.rockstargames.com/reddeadredemption2
+(c) Rockstar Games, used for illustration. Fetched 2026-10-04, resized/recompressed to WebP + JPG.
+
+rdr2-hero.webp/.jpg, rdr2-hero-m.webp/.jpg
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/949e0a50124a889b098f73cedc29fb3b.jpg
+  (game logo and "presents" line painted out with the art's own red texture; our wordmark is set in HTML on top)
+card-record.webp/.jpg
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/7abc917d6fa69155c1ddafde695ce93f.jpg
+card-edit.webp/.jpg
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/81836e80c4fdea3564eddf825befd543.jpg
+card-export.webp/.jpg
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/f3d06aae2b25d9b78aa0e3558fdcf12c.jpg
+card-dutch.webp/.jpg
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/7dcb00ec092b03cd4abcb42523d1e839.jpg
+art-buck.webp/.jpg
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/388f6f5092c75e987d3a928cd31c4e4d.jpg
+tex-red.webp/.jpg
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/6d6a3fd6982f03567080c68330307882.jpg
+stars.webp/.jpg (stars band composited over tex-red)
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/06f351497e9f108950621c33b197e304.png
+torn-frame.png (card frame overlay)
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/17d0e4a9833b67fffd09e8b6e2f920e8.png
+torn-edge.png (band edge)
+  https://media-rockstargames-com.akamaized.net/mfe-r19/prod/__common/img/6b7f68638dccae82265475555782d725.png
+
+Our own files (not from Rockstar): the grunge mask inlined in the CSS (generated noise), nexusmods.svg, and all
+*.mp4 videos with their .jpg posters plus still-wagon.* (exported in game by the mod).

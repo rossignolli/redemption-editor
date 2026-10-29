@@ -1,0 +1,36 @@
+{
+  "name": "redemption-editor-ffmpeg",
+  "version-string": "1.0.0",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avfilter",
+        "avformat",
+        "swresample",
+        "swscale",
+        "gpl",
+        "x264",
+        "x265",
+        "nvcodec",
+        "amf",
+        "qsv",
+        "aom",
+        "vpx",
+        "opus",
+        "mp3lame",
+        "vorbis",
+        "zlib"
+      ]
+    }
+  ],
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
+  "overrides": [
+    {
+      "name": "ffnvcodec",
+      "version": "12.1.14.0"
+    }
+  ]
+}

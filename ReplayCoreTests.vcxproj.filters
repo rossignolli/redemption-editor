@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="src\camera_track.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\camera_shake.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\clip_compress.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\clip_pack.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="external\zstd\zstd.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzFind.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzFindOpt.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaDec.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaEnc.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\CpuArch.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\retail_core_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\particle_replay_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\vehicle_sound_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\fx_residue_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\weapon_butt_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\missing_sound_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\weapon_bones_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\frozen_pose_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\strap_state_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\weapon_order_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\weapon_look_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\record_gate_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\world_state_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\music_stop_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\world_model_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\camera_marker_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\editor_input_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\editor_ui_qa_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\editor_cursor_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\ui_scale_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\ui_layout_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\lifecycle_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\replay_fix_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="tests\vehicle_pieces_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\camera_track.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\record_gate.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\world_state.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\world_notice.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ipl_candidates.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\camera_shake.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\clip_compress.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\clip_pack.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\editor_protocol.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\playback_time.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Core">
+      <UniqueIdentifier>{0A0E34DD-BFA8-4DBA-B001-E0804C20E67B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Tests">
+      <UniqueIdentifier>{82A1777F-A883-433A-9BE2-F32F6E3C4123}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third Party">
+      <UniqueIdentifier>{5D6F2B8E-3C41-4E7A-9B0D-7A1C2E4F6B93}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

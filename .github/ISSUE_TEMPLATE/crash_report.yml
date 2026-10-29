@@ -1,0 +1,84 @@
+name: Crash report
+description: The game closed with an error, or froze, while Redemption Editor was running.
+title: "[Crash] "
+labels: ["crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a crash. The fastest way for us to find it is the report ZIP:
+        start the game again, wait for the notice "Redemption Editor crashed last time" and press
+        **Shift+F1** (or your own Report key). The ZIP is saved in the `ReplayReports` folder of your
+        game folder. It holds the editor's log, the crash files and your PC's details; clips go in only
+        when you marked them with Shift+F2. See `docs/reporting.md` for the details.
+  - type: input
+    id: version
+    attributes:
+      label: Redemption Editor version
+      description: The version in the release name, or the first lines of RedemptionEditor.log (buildVersion=).
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: reshade
+    attributes:
+      label: ReShade version
+      description: The ReShade version with full add-on support (the first line of ReShade.log).
+      placeholder: "6.x.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      description: The game's Graphics API setting (Settings, Graphics, Advanced).
+      options:
+        - Vulkan
+        - DirectX 12
+        - I don't know
+    validations:
+      required: true
+  - type: dropdown
+    id: store
+    attributes:
+      label: Where you bought the game
+      description: The launcher you start Red Dead Redemption 2 from.
+      options:
+        - Steam
+        - Rockstar Games Launcher
+        - Epic Games Store
+        - Other or I don't know
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you were doing when the game crashed (recording, playing a clip, in the editor, exporting a video, loading a save...).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: If it happens again, the steps that lead to it. "It happened once" is fine too.
+      placeholder: |
+        1. Load the save in Valentine
+        2. Ride for a minute, press Shift+F4
+        3. Open the clip in the editor and press Space
+    validations:
+      required: false
+  - type: textarea
+    id: zip
+    attributes:
+      label: Report ZIP
+      description: Drag the report ZIP from ReplayReports here (GitHub accepts files up to 25 MB). If it is larger, upload it somewhere and paste the link.
+    validations:
+      required: true
+  - type: textarea
+    id: other
+    attributes:
+      label: Other mods
+      description: Other ScriptHook mods, trainers or ReShade presets you use (the ZIP lists the mods it finds, so this is optional).
+    validations:
+      required: false

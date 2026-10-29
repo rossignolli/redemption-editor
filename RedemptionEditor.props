@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shared settings of every Redemption Editor project (docs/building.md). Each value can be
+     set on the MSBuild command line (/p:Name=value) or, once per machine, in
+     RedemptionEditor.user.props next to this file (not committed; see
+     RedemptionEditor.user.props.example). -->
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(MSBuildThisFileDirectory)RedemptionEditor.user.props" Condition="Exists('$(MSBuildThisFileDirectory)RedemptionEditor.user.props')" />
+  </ImportGroup>
+  <PropertyGroup>
+    <!-- The Script Hook RDR2 SDK folder (its inc\ and lib\ subfolders). Default:
+         external\ScriptHookRDR2_SDK\ inside the repository when it is there, else the folder two
+         levels up (the layout of the SDK's own samples folder). -->
+    <ScriptHookRdr2SdkDir Condition="'$(ScriptHookRdr2SdkDir)'=='' and Exists('$(MSBuildThisFileDirectory)external\ScriptHookRDR2_SDK\inc\main.h')">$(MSBuildThisFileDirectory)external\ScriptHookRDR2_SDK\</ScriptHookRdr2SdkDir>
+    <ScriptHookRdr2SdkDir Condition="'$(ScriptHookRdr2SdkDir)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))</ScriptHookRdr2SdkDir>
+    <ScriptHookRdr2SdkDir Condition="!HasTrailingSlash('$(ScriptHookRdr2SdkDir)')">$(ScriptHookRdr2SdkDir)\</ScriptHookRdr2SdkDir>
+    <!-- The game folder (where RDR2.exe is). No default: the build copies its output there only
+         when it is set and DeployAfterBuild is not false. -->
+    <RDR2GameDir Condition="'$(RDR2GameDir)'!='' and !HasTrailingSlash('$(RDR2GameDir)')">$(RDR2GameDir)\</RDR2GameDir>
+    <DeployAfterBuild Condition="'$(DeployAfterBuild)'==''">true</DeployAfterBuild>
+    <RedemptionDeploy>false</RedemptionDeploy>
+    <RedemptionDeploy Condition="'$(DeployAfterBuild)'!='false' and '$(RDR2GameDir)'!=''">true</RedemptionDeploy>
+    <!-- Optional: a folder where every build also keeps its binary, PDB and map, under
+         <VERSION>\<name>-<time>\. Empty (the default) keeps nothing. -->
+    <ReplaySymbolsDir Condition="'$(ReplaySymbolsDir)'!='' and !HasTrailingSlash('$(ReplaySymbolsDir)')">$(ReplaySymbolsDir)\</ReplaySymbolsDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ScriptHookRdr2SdkDir)inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Target Name="RedemptionCheckScriptHookSdk" BeforeTargets="PrepareForBuild" Condition="'$(RedemptionUsesScriptHookSdk)'=='true'">
+    <Error Condition="!Exists('$(ScriptHookRdr2SdkDir)inc\main.h') or !Exists('$(ScriptHookRdr2SdkDir)inc\natives.h')" Text="Script Hook RDR2 SDK not found in $(ScriptHookRdr2SdkDir). Put it in external\ScriptHookRDR2_SDK\ (inc\ and lib\) or pass /p:ScriptHookRdr2SdkDir=&lt;folder&gt;. See docs/building.md." />
+  </Target>
+  <Target Name="RedemptionKeepSymbols" AfterTargets="Build" Condition="'$(ReplaySymbolsDir)'!='' and '$(KeepSymbols)'!='false' and '$(RedemptionKeepsSymbols)'=='true'">
+    <PropertyGroup>
+      <ReplayVersionText>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</ReplayVersionText>
+      <ReplaySymbolsOut>$(ReplaySymbolsDir)$(ReplayVersionText)\$(TargetName)-$([System.DateTime]::Now.ToString('yyyyMMdd-HHmmss'))\</ReplaySymbolsOut>
+    </PropertyGroup>
+    <ItemGroup>
+      <ReplaySymbolFile Include="$(TargetPath);$(OutDir)$(TargetName).pdb;$(OutDir)$(TargetName).map" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ReplaySymbolFile)" DestinationFolder="$(ReplaySymbolsOut)" Condition="Exists('%(ReplaySymbolFile.FullPath)')" ContinueOnError="true" />
+    <Message Importance="high" Text="Symbols kept: $(ReplaySymbolsOut)" />
+  </Target>
+</Project>

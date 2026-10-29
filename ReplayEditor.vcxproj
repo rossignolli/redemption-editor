@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="editor\replay_editor_addon.cpp" />
+    <ClCompile Include="editor\render_export\render_export.cpp" />
+    <ClCompile Include="editor\render_export\gpu_export.cpp" />
+    <ClCompile Include="editor\render_export\encoder_sink.cpp" />
+    <ClCompile Include="editor\render_export\libav_encoder.cpp" />
+    <ClCompile Include="editor\render_export\audio_loopback.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="editor\display_font.h" />
+    <ClInclude Include="editor\ui_art.h" />
+    <ClInclude Include="editor\ui_probe.h" />
+    <ClInclude Include="editor\bundled_files.h" />
+    <ClInclude Include="editor\clip_thumbnails.h" />
+    <ClInclude Include="editor\readback_release.h" />
+    <ClInclude Include="editor\seek_freeze.h" />
+    <ClInclude Include="editor\gpu_events.h" />
+    <ClInclude Include="editor\rec_indicator_window.h" />
+    <ClInclude Include="src\rec_indicator.h" />
+    <ClInclude Include="src\ui_scale.h" />
+    <ClInclude Include="src\editor_protocol.h" />
+    <ClInclude Include="editor\render_export\export_types.h" />
+    <ClInclude Include="editor\render_export\readback_ring.h" />
+    <ClInclude Include="editor\render_export\ffmpeg_args.h" />
+    <ClInclude Include="editor\render_export\gpu_export.h" />
+    <ClInclude Include="editor\render_export\convert_ref.h" />
+    <ClInclude Include="editor\render_export\shaders\export_convert_spirv.h" />
+    <ClInclude Include="editor\render_export\encoder_sink.h" />
+    <ClInclude Include="editor\render_export\encoder_select.h" />
+    <ClInclude Include="editor\render_export\libav_encoder.h" />
+    <ClInclude Include="editor\render_export\audio_sink.h" />
+    <ClInclude Include="editor\render_export\export_controller.h" />
+    <ClInclude Include="editor\render_export\export_finish.h" />
+    <ClInclude Include="src\export_channel.h" />
+    <ClInclude Include="src\export_schedule.h" />
+    <ClInclude Include="src\project_export_plan.h" />
+    <ClInclude Include="editor\render_export\project_parts.h" />
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{4B2C11BB-BBCB-49E8-8393-AFA1C8539F4A}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>ReplayEditor</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(MSBuildThisFileDirectory)RedemptionEditor.props" />
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <TargetName>RedemptionEditorCore</TargetName>
+    <RedemptionKeepsSymbols>true</RedemptionKeepsSymbols>
+    <TargetExt>.dll</TargetExt>
+    <OutDir>bin\$(Configuration)\</OutDir>
+    <IntDir>tmp\$(ProjectName)\$(Configuration)\</IntDir>
+    <!-- FFmpeg (render export), built once by tools\ffmpeg\install_ffmpeg.bat with the
+         vcpkg feature set of EVER Enhanced (external\ffmpeg\vcpkg.json). -->
+    <FfmpegRoot Condition="'$(FfmpegRoot)'==''">$(MSBuildThisFileDirectory)external\ffmpeg\installed\x64-windows-release\</FfmpegRoot>
+    <!-- The FFmpeg 8.1 DLL names: libav_encoder.cpp loads the same names (from the headers). -->
+    <FfmpegDelayLoad>avutil-60.dll;swresample-6.dll;swscale-9.dll;avcodec-62.dll;avformat-62.dll;avfilter-11.dll</FfmpegDelayLoad>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;ImTextureID=ImU64;_CRT_SECURE_NO_WARNINGS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>external\reshade\include;external\reshade\deps\imgui;src;$(FfmpegRoot)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
+      <ProgramDatabaseFile>$(OutDir)$(TargetName).pdb</ProgramDatabaseFile>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(OutDir)$(TargetName).map</MapFileName>
+      <AdditionalOptions>/PDBALTPATH:%25_PDB%25 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalLibraryDirectories>$(FfmpegRoot)lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>avcodec.lib;avformat.lib;avfilter.lib;avutil.lib;swscale.lib;swresample.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- EVER's way: delay-loaded, and loaded first by full path from RedemptionEditor\dlls
+           (libav_encoder.cpp LoadFfmpegRuntime). A name that matches no import (LNK4199)
+           would make the import static: tools\ffmpeg\check_imports.py fails on it. -->
+      <DelayLoadDLLs>$(FfmpegDelayLoad);%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
+    <PreBuildEvent>
+      <Command>if not exist "$(FfmpegRoot)include\libavcodec\avcodec.h" (echo error: FFmpeg not built. Run tools\ffmpeg\install_ffmpeg.bat ^&lt;vcpkg root^&gt; first. &amp; exit /b 1)</Command>
+      <Message>Checking the FFmpeg libraries</Message>
+    </PreBuildEvent>
+    <PostBuildEvent>
+      <!-- The runtime DLLs next to the core, in the release layout (EVER: EVER\dlls). -->
+      <Command>if not exist "$(OutDir)RedemptionEditor\dlls" mkdir "$(OutDir)RedemptionEditor\dlls"
+xcopy /Y /D /Q "$(FfmpegRoot)bin\*.dll" "$(OutDir)RedemptionEditor\dlls\" &gt;nul
+if exist "$(OutDir)RedemptionEditor\dlls\pkgconf-8.dll" del /Q "$(OutDir)RedemptionEditor\dlls\pkgconf-8.dll"
+if not exist "$(OutDir)RedemptionEditor\fonts" mkdir "$(OutDir)RedemptionEditor\fonts"
+xcopy /Y /D /Q "$(ProjectDir)editor\fonts\Redemption.otf" "$(OutDir)RedemptionEditor\fonts\" &gt;nul
+if not exist "$(OutDir)RedemptionEditor\ui" mkdir "$(OutDir)RedemptionEditor\ui"
+xcopy /Y /D /Q "$(ProjectDir)editor\ui\*.png" "$(OutDir)RedemptionEditor\ui\" &gt;nul
+if not exist "$(OutDir)RedemptionEditor\lang" mkdir "$(OutDir)RedemptionEditor\lang"
+xcopy /Y /D /Q "$(ProjectDir)editor\lang\*.lang" "$(OutDir)RedemptionEditor\lang\" &gt;nul
+if /I "$(RedemptionDeploy)"=="true" (copy /Y "$(TargetPath)" "$(RDR2GameDir)$(TargetFileName)" &amp; xcopy /Y /D /Q /I "$(OutDir)RedemptionEditor\dlls" "$(RDR2GameDir)RedemptionEditor\dlls" &gt;nul &amp; xcopy /Y /D /Q /I "$(OutDir)RedemptionEditor\fonts" "$(RDR2GameDir)RedemptionEditor\fonts" &gt;nul &amp; xcopy /Y /D /Q /I "$(OutDir)RedemptionEditor\ui" "$(RDR2GameDir)RedemptionEditor\ui" &gt;nul &amp; xcopy /Y /D /Q /I "$(OutDir)RedemptionEditor\lang" "$(RDR2GameDir)RedemptionEditor\lang" &gt;nul)</Command>
+      <Message>FFmpeg DLLs, the title font, the painted art and the languages to $(OutDir)RedemptionEditor\dlls, \fonts, \ui and \lang (and the deploy, when RDR2GameDir is set)</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <!-- /p:RedemptionDev=true is the developer build (REDEMPTION_DEV: every ini key read). -->
+  <ItemDefinitionGroup Condition="'$(RedemptionDev)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>REDEMPTION_DEV;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

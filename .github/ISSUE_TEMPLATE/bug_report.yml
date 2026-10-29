@@ -1,0 +1,80 @@
+name: Bug report
+description: Something in a replay or in the editor looks, sounds or behaves wrong (no crash).
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Best: while the replay plays, press **Shift+F2** at the moment the
+        problem shows, type a few words and press Enter (a mark). Then press **Shift+F1** to save the
+        report ZIP in the `ReplayReports` folder of your game folder. The ZIP carries your marks, the
+        clips you marked, the editor's log and your PC's details. See `docs/reporting.md`.
+  - type: input
+    id: version
+    attributes:
+      label: Redemption Editor version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: reshade
+    attributes:
+      label: ReShade version
+      placeholder: "6.x.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      description: The game's Graphics API setting (Settings, Graphics, Advanced).
+      options:
+        - Vulkan
+        - DirectX 12
+        - I don't know
+    validations:
+      required: true
+  - type: dropdown
+    id: store
+    attributes:
+      label: Where you bought the game
+      description: The launcher you start Red Dead Redemption 2 from.
+      options:
+        - Steam
+        - Rockstar Games Launcher
+        - Epic Games Store
+        - Other or I don't know
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw or heard, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Record a clip on horseback in Saint Denis (Shift+F4)
+        2. Play it in the editor
+        3. At 0:12 the horse slides sideways
+    validations:
+      required: true
+  - type: textarea
+    id: zip
+    attributes:
+      label: Report ZIP
+      description: Drag the report ZIP from ReplayReports here (up to 25 MB), or paste a link to it. Clips are in it only if you marked them.
+    validations:
+      required: false
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshot or video
+      description: Optional. A picture or a short video of the problem helps.
+    validations:
+      required: false

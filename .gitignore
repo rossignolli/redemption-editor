@@ -1,0 +1,14 @@
+/.vs/
+/bin/
+/build/
+/tmp/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+__pycache__/
+*.pyc
+/src/version.generated.h
+/external/ffmpeg/installed/
+/external/ScriptHookRDR2_SDK/
+/RedemptionEditor.user.props

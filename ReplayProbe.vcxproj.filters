@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="script.cpp" />
+    <ClCompile Include="src\camera_track.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\camera_shake.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\editor_bridge.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\clip_compress.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\clip_pack.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\replay_world.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\clip_compress_worker.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="external\zstd\zstd.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzFind.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzFindOpt.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaDec.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaEnc.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\lzma\CpuArch.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\buffer.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde32.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde64.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hook.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\trampoline.c">
+      <Filter>Third Party</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="script.h" />
+    <ClInclude Include="src\camera_track.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\camera_bones.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\record_gate.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\world_state.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\world_notice.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ipl_candidates.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\replay_world.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\camera_shake.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\editor_bridge.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\clip_compress.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\clip_pack.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\clip_compress_worker.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\editor_protocol.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\playback_time.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\version.generated.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\main.h">
+      <Filter>SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\enums.h">
+      <Filter>SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\natives.h">
+      <Filter>SDK</Filter>
+    </ClInclude>
+    <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\types.h">
+      <Filter>SDK</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="SDK">
+      <UniqueIdentifier>{AE0B5ED1-C1D5-43C8-A9D3-23A512D88DF0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Core">
+      <UniqueIdentifier>{CE33EB30-48B7-4811-846D-37F7DB7037AF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third Party">
+      <UniqueIdentifier>{5213354B-8164-4140-BF70-B414295357F6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

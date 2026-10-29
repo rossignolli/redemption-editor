@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="tools\clip_tool\clip_tool.cpp" />
+    <ClCompile Include="src\camera_track.cpp" />
+    <ClCompile Include="src\camera_shake.cpp" />
+    <ClCompile Include="src\camera_shake_custom.cpp" />
+    <ClCompile Include="src\camera_spline.cpp" />
+    <ClCompile Include="src\camera_effects.cpp" />
+    <ClCompile Include="src\camera_marker_shake.cpp" />
+    <ClCompile Include="src\entity_lifecycle.cpp" />
+    <ClCompile Include="src\profiler.cpp" />
+    <ClCompile Include="src\entity_selection.cpp" />
+    <ClCompile Include="src\entity_events.cpp" />
+    <ClCompile Include="src\entity_transform.cpp" />
+    <ClCompile Include="src\pose_math.cpp" />
+    <ClCompile Include="src\pose_skeleton_layout.cpp" />
+    <ClCompile Include="src\pose_stream.cpp" />
+    <ClCompile Include="src\pose_segments.cpp" />
+    <ClCompile Include="src\pose_jerk.cpp" />
+    <ClCompile Include="src\replay_transport.cpp" />
+    <ClCompile Include="src\rope_track.cpp" />
+    <ClCompile Include="src\bench_script.cpp" />
+    <ClCompile Include="src\clip_file.cpp" />
+    <ClCompile Include="src\clip_compress.cpp" />
+    <ClCompile Include="external\zstd\zstd.c">
+      <!-- The zstd 1.5.6 amalgamation (clip compression). Third
+           party C: no precompiled header, no warnings, never as errors.
+           ZSTD_MULTITHREAD is defined inside zstd.c; its Win32 worker pool
+           is only created when ZSTD_c_nbWorkers > 0, which is never set. -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="src\clip_pack.cpp" />
+    <ClCompile Include="external\lzma\LzFind.c">
+      <!-- The LZMA SDK 24.09 (public domain, Igor Pavlov): the packed clip
+           container (clip_pack.cpp). Third party C: no precompiled header, no
+           warnings, single threaded (Z7_ST). -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzFindOpt.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaDec.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaEnc.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\CpuArch.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="src\recording_window.cpp" />
+    <ClCompile Include="src\replay_project.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\camera_track.h" />
+    <ClInclude Include="src\camera_shake.h" />
+    <ClInclude Include="src\camera_shake_custom.h" />
+    <ClInclude Include="src\camera_spline.h" />
+    <ClInclude Include="src\camera_effects.h" />
+    <ClInclude Include="src\camera_marker_shake.h" />
+    <ClInclude Include="src\entity_lifecycle.h" />
+    <ClInclude Include="src\profiler.h" />
+    <ClInclude Include="src\entity_selection.h" />
+    <ClInclude Include="src\entity_events.h" />
+    <ClInclude Include="src\speech_identity.h" />
+    <ClInclude Include="src\entity_transform.h" />
+    <ClInclude Include="src\pose_math.h" />
+    <ClInclude Include="src\pose_skeleton_layout.h" />
+    <ClInclude Include="src\pose_stream.h" />
+    <ClInclude Include="src\pose_segments.h" />
+    <ClInclude Include="src\replay_transport.h" />
+    <ClInclude Include="src\rope_track.h" />
+    <ClInclude Include="src\replay_recording.h" />
+    <ClInclude Include="src\replay_puppets.h" />
+    <ClInclude Include="src\replay_recorder.h" />
+    <ClInclude Include="src\replay_context.h" />
+    <ClInclude Include="src\editor_protocol.h" />
+    <ClInclude Include="src\playback_time.h" />
+    <ClInclude Include="src\clip_file.h" />
+    <ClInclude Include="src\clip_compress.h" />
+    <ClInclude Include="src\clip_pack.h" />
+    <ClInclude Include="src\recording_window.h" />
+    <ClInclude Include="src\replay_project.h" />
+    <ClInclude Include="src\project_name.h" />
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{5A7E3C21-9B84-4D1F-A6C2-3E9F0B7D4C58}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>ReplayClipTool</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(MSBuildThisFileDirectory)RedemptionEditor.props" />
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <TargetName>ReplayClipTool</TargetName>
+    <RedemptionUsesScriptHookSdk>true</RedemptionUsesScriptHookSdk>
+    <OutDir>bin\$(Configuration)\</OutDir>
+    <IntDir>tmp\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>NOMINMAX;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

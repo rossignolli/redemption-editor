@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copy to RedemptionEditor.user.props (ignored by git) and set the values for this machine.
+     Every value is optional; see docs/building.md. -->
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <!-- Where the Script Hook RDR2 SDK is, when not in external\ScriptHookRDR2_SDK\. -->
+    <!-- <ScriptHookRdr2SdkDir>D:\sdk\ScriptHookRDR2\</ScriptHookRdr2SdkDir> -->
+    <!-- The game folder: when set, every build copies its output there. -->
+    <!-- <RDR2GameDir>D:\Games\Red Dead Redemption 2\</RDR2GameDir> -->
+    <!-- Where FFmpeg was installed, when not in external\ffmpeg\installed\x64-windows-release\. -->
+    <!-- <FfmpegRoot>D:\sdk\ffmpeg\x64-windows-release\</FfmpegRoot> -->
+    <!-- Keep each build's binary, PDB and map here. -->
+    <!-- <ReplaySymbolsDir>D:\symbols\RedemptionEditor\</ReplaySymbolsDir> -->
+  </PropertyGroup>
+</Project>

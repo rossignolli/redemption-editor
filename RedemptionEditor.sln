@@ -1,0 +1,46 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ReplayProbe", "ReplayProbe.vcxproj", "{A26E64C2-0F92-4D3B-AB0D-1A1C6A43B6F2}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ReplayEditor", "ReplayEditor.vcxproj", "{4B2C11BB-BBCB-49E8-8393-AFA1C8539F4A}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ReplayEditorLoader", "ReplayEditorLoader.vcxproj", "{7E0D6C41-2F55-4B8A-9C1E-5A3F2B8D9E10}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ReplayCoreTests", "ReplayCoreTests.vcxproj", "{C2D9257E-4E12-419B-81C4-1D817693089F}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ReplayClipTool", "ReplayClipTool.vcxproj", "{5A7E3C21-9B84-4D1F-A6C2-3E9F0B7D4C58}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ReplayEditorUiRuntime", "ReplayEditorUiRuntime.vcxproj", "{606E0CEF-600B-4815-BCFF-B577A4FB330A}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ReplayEditorUiTests", "ReplayEditorUiTests.vcxproj", "{0D78999B-4AC0-4F21-A7D9-D03F86E884DE}"
+	ProjectSection(ProjectDependencies) = postProject
+		{606E0CEF-600B-4815-BCFF-B577A4FB330A} = {606E0CEF-600B-4815-BCFF-B577A4FB330A}
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A26E64C2-0F92-4D3B-AB0D-1A1C6A43B6F2}.Release|x64.ActiveCfg = Release|x64
+		{A26E64C2-0F92-4D3B-AB0D-1A1C6A43B6F2}.Release|x64.Build.0 = Release|x64
+		{4B2C11BB-BBCB-49E8-8393-AFA1C8539F4A}.Release|x64.ActiveCfg = Release|x64
+		{4B2C11BB-BBCB-49E8-8393-AFA1C8539F4A}.Release|x64.Build.0 = Release|x64
+		{7E0D6C41-2F55-4B8A-9C1E-5A3F2B8D9E10}.Release|x64.ActiveCfg = Release|x64
+		{7E0D6C41-2F55-4B8A-9C1E-5A3F2B8D9E10}.Release|x64.Build.0 = Release|x64
+		{C2D9257E-4E12-419B-81C4-1D817693089F}.Release|x64.ActiveCfg = Release|x64
+		{C2D9257E-4E12-419B-81C4-1D817693089F}.Release|x64.Build.0 = Release|x64
+		{5A7E3C21-9B84-4D1F-A6C2-3E9F0B7D4C58}.Release|x64.ActiveCfg = Release|x64
+		{5A7E3C21-9B84-4D1F-A6C2-3E9F0B7D4C58}.Release|x64.Build.0 = Release|x64
+		{606E0CEF-600B-4815-BCFF-B577A4FB330A}.Release|x64.ActiveCfg = Release|x64
+		{606E0CEF-600B-4815-BCFF-B577A4FB330A}.Release|x64.Build.0 = Release|x64
+		{0D78999B-4AC0-4F21-A7D9-D03F86E884DE}.Release|x64.ActiveCfg = Release|x64
+		{0D78999B-4AC0-4F21-A7D9-D03F86E884DE}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

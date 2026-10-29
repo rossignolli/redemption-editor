@@ -1,0 +1,448 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="script.cpp" />
+    <ClCompile Include="src\camera_track.cpp" />
+    <ClCompile Include="src\camera_shake.cpp" />
+    <ClCompile Include="src\camera_shake_custom.cpp" />
+    <ClCompile Include="src\camera_spline.cpp" />
+    <ClCompile Include="src\camera_effects.cpp" />
+    <ClCompile Include="src\camera_marker_shake.cpp" />
+    <ClCompile Include="src\free_cam.cpp" />
+    <ClCompile Include="src\camera_overlay.cpp" />
+    <ClCompile Include="src\replay_doors.cpp" />
+    <ClCompile Include="src\replay_world.cpp" />
+    <ClCompile Include="src\pose_capture.cpp" />
+    <ClCompile Include="src\fx_observer.cpp" />
+    <ClCompile Include="src\decal_observer.cpp" />
+    <ClCompile Include="src\ped_gore.cpp" />
+    <ClCompile Include="src\ped_blood.cpp" />
+    <ClCompile Include="src\vegetation_speed.cpp" />
+    <ClCompile Include="src\sky_state.cpp" />
+    <ClCompile Include="src\weather_state.cpp" />
+    <ClCompile Include="src\timecycle_state.cpp" />
+    <ClCompile Include="src\sun_control.cpp" />
+    <ClCompile Include="src\frag_observer.cpp" />
+    <ClCompile Include="src\world_theatre_engine.cpp" />
+    <ClCompile Include="src\water_observer.cpp" />
+    <ClCompile Include="src\water_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\export_probe.cpp" />
+    <ClCompile Include="src\export_timer.cpp" />
+    <ClCompile Include="src\export_audio_mute.cpp" />
+    <ClCompile Include="src\fire_observer.cpp" />
+    <ClCompile Include="src\burn_level.cpp" />
+    <ClCompile Include="src\object_look.cpp" />
+    <ClCompile Include="src\audio_observer.cpp" />
+    <ClCompile Include="src\horse_audio_evidence.cpp" />
+    <ClCompile Include="src\sound_census.cpp" />
+    <ClCompile Include="src\mix_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\render_target.cpp" />
+    <ClCompile Include="src\drawstore_probe.cpp" />
+    <ClCompile Include="src\game_listener.cpp" />
+    <ClCompile Include="src\mix_scene.cpp" />
+    <ClCompile Include="src\speech_level_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\volume_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\wind_replay.cpp" />
+    <ClCompile Include="src\world_sound_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\category_state.cpp" />
+    <ClCompile Include="src\speech_duck.cpp" />
+    <ClCompile Include="src\sound_generic.cpp" />
+    <ClCompile Include="src\sound_generic_player.cpp" />
+    <ClCompile Include="src\soundfx_probe.cpp" />
+    <ClCompile Include="src\capture_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\sound_capture.cpp" />
+    <ClCompile Include="src\rope_observer.cpp" />
+    <ClCompile Include="src\weapon_observer.cpp" />
+    <ClCompile Include="src\reins_guard.cpp" />
+    <ClCompile Include="src\anim_lod_hook.cpp" />
+    <ClCompile Include="src\shader_vars_hook.cpp" />
+    <ClCompile Include="src\shader_vars_replay.cpp" />
+    <ClCompile Include="src\entity_query_hook.cpp" />
+    <ClCompile Include="src\ped_audio_state.cpp" />
+    <ClCompile Include="src\entity_appearance.cpp" />
+    <ClCompile Include="src\metaped_reader.cpp" />
+    <ClCompile Include="src\entity_lifecycle.cpp" />
+    <ClCompile Include="src\profiler.cpp" />
+    <ClCompile Include="src\entity_selection.cpp" />
+    <ClCompile Include="src\entity_pools.cpp" />
+    <ClCompile Include="src\entity_cache.cpp" />
+    <ClCompile Include="src\entity_events.cpp" />
+    <ClCompile Include="src\entity_transform.cpp" />
+    <ClCompile Include="src\replay_markers.cpp" />
+    <ClCompile Include="src\replay_project.cpp" />
+    <ClCompile Include="src\pose_math.cpp" />
+    <ClCompile Include="src\pose_playback.cpp" />
+    <ClCompile Include="src\pose_skeleton_layout.cpp" />
+    <ClCompile Include="src\pose_stream.cpp" />
+    <ClCompile Include="src\pose_segments.cpp" />
+    <ClCompile Include="src\pose_jerk.cpp" />
+    <ClCompile Include="src\pose_fidelity_core.cpp" />
+    <ClCompile Include="src\pose_fidelity.cpp" />
+    <ClCompile Include="src\mount_placement_core.cpp" />
+    <ClCompile Include="src\mount_placement.cpp" />
+    <ClCompile Include="src\puppet_collision.cpp" />
+    <ClCompile Include="src\replay_transport.cpp" />
+    <ClCompile Include="src\rope_track.cpp" />
+    <ClCompile Include="src\replay_ropes.cpp" />
+    <ClCompile Include="src\replay_objects.cpp" />
+    <ClCompile Include="src\replay_trains.cpp" />
+    <ClCompile Include="src\vehicle_doors_engine.cpp" />
+    <ClCompile Include="src\replay_events.cpp" />
+    <ClCompile Include="src\skeleton_resolve.cpp" />
+    <ClCompile Include="src\replay_capture.cpp" />
+    <ClCompile Include="src\replay_playback.cpp" />
+    <ClCompile Include="src\engine_hud.cpp" />
+    <ClCompile Include="src\editor_bridge.cpp" />
+    <ClCompile Include="src\bench_script.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\replay_bench.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\clip_file.cpp" />
+    <ClCompile Include="src\clip_compress.cpp" />
+    <ClCompile Include="src\clip_compress_worker.cpp" />
+    <ClCompile Include="external\zstd\zstd.c">
+      <!-- The zstd 1.5.6 amalgamation (clip compression). Third
+           party C: no precompiled header, no warnings, never as errors.
+           ZSTD_MULTITHREAD is defined inside zstd.c; its Win32 worker pool
+           is only created when ZSTD_c_nbWorkers > 0, which is never set. -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="src\clip_pack.cpp" />
+    <ClCompile Include="external\lzma\LzFind.c">
+      <!-- The LZMA SDK 24.09 (public domain, Igor Pavlov): the packed clip
+           container (clip_pack.cpp). Third party C: no precompiled header, no
+           warnings, single threaded (Z7_ST). -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzFindOpt.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaDec.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\LzmaEnc.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\lzma\CpuArch.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="src\recording_window.cpp" />
+    <ClCompile Include="src\qa_kit.cpp" />
+    <ClCompile Include="src\qa_bundle.cpp" />
+    <ClCompile Include="external\reshade\deps\minhook\src\buffer.c" />
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde32.c" />
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde64.c" />
+    <ClCompile Include="external\reshade\deps\minhook\src\hook.c" />
+    <ClCompile Include="external\reshade\deps\minhook\src\trampoline.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\main.h" />
+    <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\enums.h" />
+    <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\natives.h" />
+    <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\types.h" />
+    <ClInclude Include="script.h" />
+    <ClInclude Include="src\camera_track.h" />
+    <ClInclude Include="src\camera_bones.h" />
+    <ClInclude Include="src\camera_shake.h" />
+    <ClInclude Include="src\camera_shake_custom.h" />
+    <ClInclude Include="src\camera_spline.h" />
+    <ClInclude Include="src\camera_effects.h" />
+    <ClInclude Include="src\camera_marker_shake.h" />
+    <ClInclude Include="src\free_cam.h" />
+    <ClInclude Include="src\camera_overlay.h" />
+    <ClInclude Include="src\camera_overlay_channel.h" />
+    <ClInclude Include="src\music_stop.h" />
+    <ClInclude Include="src\world_model.h" />
+    <ClInclude Include="src\world_theatre.h" />
+    <ClInclude Include="src\theatre_exit.h" />
+    <ClInclude Include="src\camera_cut.h" />
+    <ClInclude Include="src\door_rebind.h" />
+    <ClInclude Include="src\puppet_lod.h" />
+    <ClInclude Include="src\metaped_state.h" />
+    <ClInclude Include="src\metaped_reader.h" />
+    <ClInclude Include="src\prefix_hold.h" />
+    <ClInclude Include="src\segment_switch.h" />
+    <ClInclude Include="src\no_record_fallback.h" />
+    <ClInclude Include="src\world_theatre_engine.h" />
+    <ClInclude Include="src\clip_file.h" />
+    <ClInclude Include="src\clip_compress.h" />
+    <ClInclude Include="src\clip_pack.h" />
+    <ClInclude Include="src\clip_compress_worker.h" />
+    <ClInclude Include="src\recording_window.h" />
+    <ClInclude Include="src\editor_bridge.h" />
+    <ClInclude Include="src\bench_script.h" />
+    <ClInclude Include="src\replay_bench.h" />
+    <ClInclude Include="src\bench_paths.h" />
+    <ClInclude Include="src\editor_protocol.h" />
+    <ClInclude Include="src\playback_time.h" />
+    <ClInclude Include="src\version.generated.h" />
+    <ClInclude Include="src\qa_report.h" />
+    <ClInclude Include="src\pose_capture.h" />
+    <ClInclude Include="src\pose_capture_rules.h" />
+    <ClInclude Include="src\pause_spans.h" />
+    <ClInclude Include="src\session_reset.h" />
+    <ClInclude Include="src\fx_observer.h" />
+    <ClInclude Include="src\fx_check_core.h" />
+    <ClInclude Include="src\decal_observer.h" />
+    <ClInclude Include="src\decal_producer_gate.h" />
+    <ClInclude Include="src\decal_add_guard.h" />
+    <ClInclude Include="src\ped_gore.h" />
+    <ClInclude Include="src\ped_blood.h" />
+    <ClInclude Include="src\vegetation_speed.h" />
+    <ClInclude Include="src\sky_state.h" />
+    <ClInclude Include="src\weather_state.h" />
+    <ClInclude Include="src\sky_track.h" />
+    <ClInclude Include="src\timecycle_state.h" />
+    <ClInclude Include="src\timecycle_track.h" />
+    <ClInclude Include="src\moon_track.h" />
+    <ClInclude Include="src\env_override.h" />
+    <ClInclude Include="src\sun_control.h" />
+    <ClInclude Include="src\frag_observer.h" />
+    <ClInclude Include="src\water_observer.h" />
+    <ClInclude Include="src\water_probe.h" />
+    <ClInclude Include="src\fire_observer.h" />
+    <ClInclude Include="src\fire_initial.h" />
+    <ClInclude Include="src\burn_level.h" />
+    <ClInclude Include="src\object_look.h" />
+    <ClInclude Include="src\object_look_core.h" />
+    <ClInclude Include="src\audio_observer.h" />
+    <ClInclude Include="src\sound_census.h" />
+    <ClInclude Include="src\sound_census_core.h" />
+    <ClInclude Include="src\sound_generic.h" />
+    <ClInclude Include="src\sound_generic_core.h" />
+    <ClInclude Include="src\sound_generic_player_core.h" />
+    <ClInclude Include="src\sound_owner_table.h" />
+    <ClInclude Include="src\mix_probe.h" />
+    <ClInclude Include="src\mix_probe_core.h" />
+    <ClInclude Include="src\still_pose_core.h" />
+    <ClInclude Include="src\render_target.h" />
+    <ClInclude Include="src\render_target_core.h" />
+    <ClInclude Include="src\drawstore_probe.h" />
+    <ClInclude Include="src\drawstore_probe_core.h" />
+    <ClInclude Include="src\world_focus_core.h" />
+    <ClInclude Include="src\game_listener.h" />
+    <ClInclude Include="src\game_listener_core.h" />
+    <ClInclude Include="src\mix_scene.h" />
+    <ClInclude Include="src\mix_scene_core.h" />
+    <ClInclude Include="src\speech_level_probe.h" />
+    <ClInclude Include="src\speech_level_core.h" />
+    <ClInclude Include="src\volume_probe.h" />
+    <ClInclude Include="src\volume_probe_core.h" />
+    <ClInclude Include="src\wind_replay.h" />
+    <ClInclude Include="src\wind_replay_core.h" />
+    <ClInclude Include="src\world_sound_probe.h" />
+    <ClInclude Include="src\sound_world_core.h" />
+    <ClInclude Include="src\category_state.h" />
+    <ClInclude Include="src\category_state_core.h" />
+    <ClInclude Include="src\speech_duck.h" />
+    <ClInclude Include="src\speech_duck_core.h" />
+    <ClInclude Include="src\mix_scene_pool_core.h" />
+    <ClInclude Include="src\ped_speed_core.h" />
+    <ClInclude Include="src\foot_event_core.h" />
+    <ClInclude Include="src\foot_movement_core.h" />
+    <ClInclude Include="src\weapon_fx_intent_core.h" />
+    <ClInclude Include="src\melee_sound_check.h" />
+    <ClInclude Include="src\speech_replay_rules.h" />
+    <ClInclude Include="src\weapon_bones_core.h" />
+    <ClInclude Include="src\strap_state_core.h" />
+    <ClInclude Include="src\weapon_order_core.h" />
+    <ClInclude Include="src\weapon_look_core.h" />
+    <ClInclude Include="src\speech_script_path.h" />
+    <ClInclude Include="src\speech_conversation.h" />
+    <ClInclude Include="src\player_weapon_bank_core.h" />
+    <ClInclude Include="src\soundfx_probe.h" />
+    <ClInclude Include="src\soundfx_probe_core.h" />
+    <ClInclude Include="src\capture_probe.h" />
+    <ClInclude Include="src\capture_probe_core.h" />
+    <ClInclude Include="src\sound_slot_policy.h" />
+    <ClInclude Include="src\vehicle_sound_rule.h" />
+    <ClInclude Include="src\foot_material.h" />
+    <ClInclude Include="src\horse_sound_report.h" />
+    <ClInclude Include="src\entity_sound_tally.h" />
+    <ClInclude Include="src\sound_check_core.h" />
+    <ClInclude Include="src\sound_capture.h" />
+    <ClInclude Include="src\seek_settle.h" />
+    <ClInclude Include="src\puppet_blink.h" />
+    <ClInclude Include="src\puppet_watch.h" />
+    <ClInclude Include="src\player_hold.h" />
+    <ClInclude Include="src\entity_pools.h" />
+    <ClInclude Include="src\entity_cache.h" />
+    <ClInclude Include="src\entity_discovery.h" />
+    <ClInclude Include="src\speech_identity.h" />
+    <ClInclude Include="src\rope_observer.h" />
+    <ClInclude Include="src\weapon_components.h" />
+    <ClInclude Include="src\weapon_observer.h" />
+    <ClInclude Include="src\reins_guard.h" />
+    <ClInclude Include="src\anim_lod_hook.h" />
+    <ClInclude Include="src\entity_query.h" />
+    <ClInclude Include="src\ped_audio_state.h" />
+    <ClInclude Include="src\anim_visible.h" />
+    <ClInclude Include="src\muscle_watch.h" />
+    <ClInclude Include="src\shader_vars_core.h" />
+    <ClInclude Include="src\shader_vars_hook.h" />
+    <ClInclude Include="src\shader_vars_replay.h" />
+    <ClInclude Include="src\tpose_check.h" />
+    <ClInclude Include="src\animal_bank.h" />
+    <ClInclude Include="src\entity_appearance.h" />
+    <ClInclude Include="src\entity_lifecycle.h" />
+    <ClInclude Include="src\profiler.h" />
+    <ClInclude Include="src\entity_selection.h" />
+    <ClInclude Include="src\entity_events.h" />
+    <ClInclude Include="src\entity_transform.h" />
+    <ClInclude Include="src\replay_markers.h" />
+    <ClInclude Include="src\replay_project.h" />
+    <ClInclude Include="src\project_name.h" />
+    <ClInclude Include="src\pose_math.h" />
+    <ClInclude Include="src\pose_playback.h" />
+    <ClInclude Include="src\pose_skeleton_layout.h" />
+    <ClInclude Include="src\pose_stream.h" />
+    <ClInclude Include="src\pose_segments.h" />
+    <ClInclude Include="src\pose_jerk.h" />
+    <ClInclude Include="src\pose_fidelity.h" />
+    <ClInclude Include="src\mount_placement.h" />
+    <ClInclude Include="src\puppet_collision.h" />
+    <ClInclude Include="src\pose_skeleton_fields.h" />
+    <ClInclude Include="src\replay_transport.h" />
+    <ClInclude Include="src\rope_track.h" />
+    <ClInclude Include="src\rope_world.h" />
+    <ClInclude Include="src\world_landing.h" />
+    <ClInclude Include="src\replay_recording.h" />
+    <ClInclude Include="src\record_gate.h" />
+    <ClInclude Include="src\rec_indicator.h" />
+    <ClInclude Include="src\world_state.h" />
+    <ClInclude Include="src\world_notice.h" />
+    <ClInclude Include="src\i18n.h" />
+    <ClInclude Include="src\ipl_candidates.h" />
+    <ClInclude Include="src\replay_world.h" />
+    <ClInclude Include="src\replay_puppets.h" />
+    <ClInclude Include="src\replay_recorder.h" />
+    <ClInclude Include="src\replay_context.h" />
+    <ClInclude Include="src\replay_objects.h" />
+    <ClInclude Include="src\replay_trains.h" />
+    <ClInclude Include="src\train_consist.h" />
+    <ClInclude Include="src\vehicle_doors.h" />
+    <ClInclude Include="src\vehicle_doors_engine.h" />
+    <ClInclude Include="src\replay_events.h" />
+    <ClInclude Include="src\skeleton_resolve.h" />
+    <ClInclude Include="src\replay_capture.h" />
+    <ClInclude Include="src\replay_playback.h" />
+    <ClInclude Include="src\engine_hud.h" />
+    <ClInclude Include="src\replay_ropes.h" />
+    <ClInclude Include="src\log_policy.h" />
+    <ClInclude Include="src\mod_clock.h" />
+    <ClInclude Include="src\guarded_memory.h" />
+    <ClInclude Include="src\region_cache.h" />
+    <ClInclude Include="src\mount_audio.h" />
+    <ClInclude Include="src\horse_audio_evidence.h" />
+    <ClInclude Include="src\horse_audio_session.h" />
+    <ClInclude Include="src\clip_area.h" />
+    <ClInclude Include="src\puppet_audio_rule.h" />
+    <ClInclude Include="src\registered_fx_rule.h" />
+    <ClInclude Include="src\script_fx_loop.h" />
+    <ClInclude Include="src\trusted_regions.h" />
+    <ClInclude Include="src\clip_pointer_audit.h" />
+    <ClInclude Include="src\deferred_log.h" />
+    <ClInclude Include="src\log_format.h" />
+    <ClInclude Include="src\playback_cache.h" />
+    <ClInclude Include="src\readable_page.h" />
+    <ClInclude Include="src\mod_identity.h" />
+  </ItemGroup>
+  <!-- /p:RedemptionDev=true is the developer build: REDEMPTION_DEV defined, the research
+       probes compiled in and every ini key read. The default (false) is the public build. -->
+  <PropertyGroup>
+    <RedemptionDev Condition="'$(RedemptionDev)'==''">false</RedemptionDev>
+  </PropertyGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A26E64C2-0F92-4D3B-AB0D-1A1C6A43B6F2}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>ReplayProbe</RootNamespace>
+    <ProjectName>ReplayProbe</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(MSBuildThisFileDirectory)RedemptionEditor.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LinkIncremental>false</LinkIncremental>
+    <!-- The product name; the project keeps its historical file name. -->
+    <TargetName>RedemptionEditor</TargetName>
+    <RedemptionUsesScriptHookSdk>true</RedemptionUsesScriptHookSdk>
+    <RedemptionKeepsSymbols>true</RedemptionKeepsSymbols>
+    <TargetExt>.asi</TargetExt>
+    <OutDir>bin\$(Configuration)\</OutDir>
+    <IntDir>tmp\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <PrecompiledHeader />
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;NOMINMAX;NDEBUG;_WINDOWS;_USRDLL;REPLAY_PROBE_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(ProjectDir)external\reshade\deps\minhook\include;$(ProjectDir)external\reshade\deps\minhook\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
+      <ProgramDatabaseFile>$(OutDir)$(TargetName).pdb</ProgramDatabaseFile>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(OutDir)$(TargetName).map</MapFileName>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalOptions>"$(ScriptHookRdr2SdkDir)lib\ScriptHookRDR2.lib" /PDBALTPATH:%25_PDB%25 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+    <PostBuildEvent Condition="'$(RedemptionDeploy)'=='true'">
+      <Command>copy /Y "$(TargetPath)" "$(RDR2GameDir)$(TargetFileName)"</Command>
+      <Message>Deploying $(TargetFileName) to $(RDR2GameDir)</Message>
+    </PostBuildEvent>
+    <PreBuildEvent>
+      <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)tools\generate_version_header.ps1" -VersionFile "$(ProjectDir)VERSION" -OutputFile "$(ProjectDir)src\version.generated.h"</Command>
+      <Message>Generating version header from VERSION</Message>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(RedemptionDev)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>REDEMPTION_DEV;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

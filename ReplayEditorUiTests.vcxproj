@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The UI harness (CONTRIBUTING.md). The editor's
+     replay_editor_addon.cpp with REDEMPTION_UI_HARNESS (its fixtures, tools\ui_harness\ui_harness_fixtures.inl,
+     are included at its end), drawn through ReplayEditorUiRuntime.dll (build that one first, same OutDir).
+     The export dialog's controller is a stub (ui_harness_export_stub.cpp): no FFmpeg here. -->
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="editor\replay_editor_addon.cpp" />
+    <ClCompile Include="tools\ui_harness\ui_harness_main.cpp" />
+    <ClCompile Include="tools\ui_harness\ui_harness_export_stub.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="editor\ui_probe.h" />
+    <ClInclude Include="editor\display_font.h" />
+    <ClInclude Include="editor\ui_art.h" />
+    <ClInclude Include="src\ui_layout_check.h" />
+    <ClInclude Include="editor\rec_indicator_window.h" />
+    <ClInclude Include="tools\ui_harness\ui_harness.h" />
+    <ClInclude Include="tools\ui_harness\ui_harness_runtime.h" />
+    <ClInclude Include="tools\ui_harness\fake_runtime.h" />
+    <None Include="tools\ui_harness\ui_harness_fixtures.inl" />
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{0D78999B-4AC0-4F21-A7D9-D03F86E884DE}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>ReplayEditorUiTests</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(MSBuildThisFileDirectory)RedemptionEditor.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>bin\$(Configuration)\</OutDir>
+    <IntDir>tmp\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>REDEMPTION_UI_HARNESS;WIN32_LEAN_AND_MEAN;NOMINMAX;ImTextureID=ImU64;_CRT_SECURE_NO_WARNINGS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>external\reshade\include;external\reshade\deps\imgui;src;editor;tools\ui_harness;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <AdditionalLibraryDirectories>$(OutDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ReplayEditorUiRuntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>if not exist "$(OutDir)RedemptionEditor\fonts" mkdir "$(OutDir)RedemptionEditor\fonts"
+xcopy /Y /D /Q "$(ProjectDir)editor\fonts\Redemption.otf" "$(OutDir)RedemptionEditor\fonts\" &gt;nul
+if not exist "$(OutDir)RedemptionEditor\ui" mkdir "$(OutDir)RedemptionEditor\ui"
+xcopy /Y /D /Q "$(ProjectDir)editor\ui\*.png" "$(OutDir)RedemptionEditor\ui\" &gt;nul
+if not exist "$(OutDir)RedemptionEditor\lang" mkdir "$(OutDir)RedemptionEditor\lang"
+xcopy /Y /D /Q "$(ProjectDir)editor\lang\*.lang" "$(OutDir)RedemptionEditor\lang\" &gt;nul</Command>
+      <Message>The title font, the painted art and the languages next to the harness (RedemptionEditor\fonts, \ui and \lang, as next to RDR2.exe)</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
