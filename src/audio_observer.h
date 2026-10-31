@@ -16,6 +16,7 @@
 #include "foot_event_core.h"
 #include "foot_movement_core.h"
 #include "foot_material.h"
+#include "puppet_audio_rule.h"
 #include "speech_identity.h"
 #include "speech_request.h"
 
@@ -23,16 +24,32 @@
 #include <string>
 #include <vector>
 
+namespace replay::census
+{
+    struct CallSites;
+}
+
+namespace replay::soundgeneric
+{
+    struct WrapperCode;
+}
+
+namespace replay::shotdelay
+{
+    struct FirePlay;
+}
+
 namespace replay::soundowner
 {
     class PacketLives; // sound_owner_table.h
+    struct CallerRanges;
 }
 
 namespace replay::audio
 {
     // A ped's audio holder and every audio entity inside it lie within this
     // many bytes. The engine allocates holders in blocks of 0x4CB0 (human)
-    // and 0x4A70 (horse) (factories 0x89E4F8, 0x89DAC8), so a wider window
+    // and 0x4A70 (horse) (the two holder factories), so a wider window
     // would take a sound of the next block, another ped, as this ped's at
     // offset +0x4CB0 or +0x4A70; played back it would go to the wrong ped or
     // be refused as unregistered.
@@ -79,7 +96,7 @@ namespace replay::audio
         bool scopeHoldsLine = false;
         // The line itself (matches its start and stop), the voice
         // object it uses (line +0x1E8 = params +0x1C0, offline evidence
-        // 0x2FABD23) with its type byte [obj+0] (0x22 voice, 0x21 voice
+        // in the line init) with its type byte [obj+0] (0x22 voice, 0x21 voice
         // group, ...) and partial name hash [obj+8], and the line data type
         // (data +0xE0 = params +0xF4: 1, 2 or 3).
         std::uint64_t line = 0;
@@ -87,13 +104,13 @@ namespace replay::audio
         std::uint8_t voiceObjectType = 0;
         std::uint32_t voiceObjectPartial = 0;
         std::uint32_t dataType = 0;
-        // The request fields the line init 0x2FABBAC copied from the resolved
+        // The request fields the line init copied from the resolved
         // params (speech_request.h).
         replay::speech::request::Fields request;
     };
     void CollectSpeechCoreSince(std::uint64_t& cursor, std::vector<SpeechCoreCall>& out);
 
-    // Audible start of a line (0x2FB99E8, state 5): read-only detour that
+    // Audible start of a line (kSpeechLineAudible, state 5): read-only detour that
     // forwards first and records the line with the time it was entered.
     struct SpeechLineStart
     {
@@ -103,7 +120,7 @@ namespace replay::audio
         // The line's identity at its start, read after
         // the original returns from the line data (+0x1D8 -> voice +0x110,
         // partial context +0x114, variation +0x118: written only by the data
-        // init 0x2FA92C0 at creation; offline 1491.50, see
+        // init kLineDataInit at creation; offline evidence, see
         // speech_record_match.h). The recorder checks it against the pending
         // line of the same address.
         bool identityRead = false;
@@ -126,20 +143,21 @@ namespace replay::audio
         std::uint32_t reason = 0;
         std::int32_t state = -1;
         std::uint32_t callers[4] = {};
-        // What the state 2 update (0x2FB6298) tests before it kills a line with
+        // What the line's state 2 update tests before it kills a line with
         // reason 4, read at the stop (offline evidence): the wave slot the
-        // reservation 0x2FB7B58 takes (+0xD0, 0 = none), the voice check's pass
-        // bit (+0x2BE bit 0, set by 0x2FB7CA0) and the voice object it checks
+        // slot reservation takes (+0xD0, 0 = none), the voice check's pass
+        // bit (+0x2BE bit 0, set by the voice check) and the voice object it checks
         // (+0x1E8), the data type (data +0xE0; type 3 needs no slot).
         bool fieldsRead = false;
         std::uint64_t slot = 0;
         std::uint8_t flags2BE = 0;
         std::uint64_t voiceObject = 0;
         std::int32_t dataType = -1;
-        // The prepare (0x2FB5BAC -> data vtable +0xC8 = 0x2FB6000) returns 2
-        // when the line's sound parent (0x2C3A7CC on line +0xC0) is 0, when
-        // the data's sound (data +0xC0) was not created by 0x2FA0100, or when
-        // that sound's prepare 0x257CB78 fails (sound +0xEE bit 2: failed).
+        // The line's prepare (through the data vtable's +0xC8 slot) returns 2
+        // when the line's sound parent (the parent getter on line +0xC0) is 0, when
+        // the data's sound (data +0xC0) was not created by the speech sound's
+        // creation, or when
+        // that sound's prepare (kGenericPortS10) fails (sound +0xEE bit 2: failed).
         bool parentRead = false;
         std::uint64_t parent = 0;
         std::uint64_t dataSound = 0;
@@ -153,12 +171,12 @@ namespace replay::audio
     void CollectSpeechStopsSince(std::uint64_t& cursor, std::vector<SpeechLineStop>& out);
 
     // Explosion audio:
-    // every explosion sound request goes through one enqueuer 0x2EF0010
-    // (manager 0x5B9FC30, queue of 16 requests of 0x40 B) with no ped owner,
+    // every explosion sound request goes through one enqueuer (kExplosionEnqueue)
+    // (kExplosionManager, queue of 16 requests of 0x40 B) with no ped owner,
     // which the per-ped sound track never sees (the dynamite would be silent
     // in playback). A read-only detour copies the accepted request and, for a
     // physical explosion, the instance's tag and audio override. Playback
-    // goes through 0x2EF01EC, what the native AUDIO_TRIGGER_EXPLOSION does:
+    // goes through kExplosionPlay, what the native AUDIO_TRIGGER_EXPLOSION does:
     // audio only, no physical explosion.
     struct ExplosionAudioCall
     {
@@ -175,8 +193,8 @@ namespace replay::audio
     };
     void CollectExplosionsSince(std::uint64_t& cursor, std::vector<ExplosionAudioCall>& out);
     // Animation audio events (diagnostic): a clip's Audio tag queues
-    // {extra, hash} on the ped's audio entity (AddAnimEvent 0x2C2D934, queue of
-    // 4 at +0x78, count +0xD8) and the ped handler 0x3193CAC plays them. A
+    // {extra, hash} on the ped's audio entity (AddAnimEvent, queue of
+    // 4 at +0x78, count +0xD8) and the ped handler (kPedAnimHandler) plays them. A
     // puppet posed by bones never runs the clip, so these never happen on it.
     // One batch per handler call: the events and how many sounds, footsteps and
     // speech lines the engine created inside it (a batch with none is a
@@ -193,18 +211,18 @@ namespace replay::audio
         std::uint32_t footsteps = 0;
         std::uint32_t speech = 0;
         // Events of the batch whose bytes +8..+0x17 were not zero
-        // (the only producer found, the MoVE callback 0x2BC0A7C, writes
-        // zeros there and the ped handler 0x3193CAC reads only +4): evidence
+        // (the only producer found, the MoVE audio tag callback, writes
+        // zeros there and the ped handler reads only +4): evidence
         // that the recorded {hash, extra} is the whole payload.
         std::uint32_t tailNonZero = 0;
     };
     void CollectAnimBatchesSince(std::uint64_t& cursor, std::vector<AnimAudioBatch>& out);
     // Queues a recorded animation audio event on a ped's audio
-    // entity (its PedAudioHolder, vtables 0x3839538/0x3839630/0x3839728)
-    // through the engine's own AddAnimEvent 0x2C2D934 (vtable slot +0xB8),
-    // exactly what the MoVE callback 0x2BC0A7C does for a clip's Audio tag;
-    // the audio update (0x25338C0 loop, slot +0x30 ProcessAnimEvents
-    // 0x30FD6D4) then runs the ped handler 0x3193CAC on it. Checked before
+    // entity (its PedAudioHolder, entity_query.h kHolderVtables)
+    // through the engine's own AddAnimEvent (vtable slot +0xB8),
+    // exactly what the MoVE audio tag callback does for a clip's Audio tag;
+    // the audio update (its entity loop, slot +0x30 ProcessAnimEvents) then
+    // runs the ped handler on it. Checked before
     // the call: the prologue at the RVA, the vtable, its +0xB8 slot, the
     // owner [audio+0x4600] == the ped, [audio+0x14] != 0 (AddAnimEvent's own
     // guard), room in the queue of 4 and no identical event queued. On the
@@ -215,14 +233,14 @@ namespace replay::audio
     bool QueueAnimEvent(void* pedEntity, std::uint32_t hash, std::int32_t extra, std::uint64_t& audioOut,
         std::string& status);
     // The queued event count [audio+0xD8] of an audio entity, -1 when it
-    // cannot be read. ProcessAnimEvents sets it back to 0 (0x2C4D5E8) once
+    // cannot be read. ProcessAnimEvents sets it back to 0 once
     // the handler ran.
     std::int32_t AnimEventCount(std::uint64_t audio);
     // Plays a recorded explosion sound (tag or override ref); false with the
     // reason when the ref cannot be resolved or the signatures differ.
     bool PlayExplosionAudio(const ExplosionAudioCall& call, std::string& error);
 
-    // Footstep entry (0x317A340): the ped footstep audio (holder +0x1560)
+    // Footstep entry (kFootstep): the ped footstep audio (holder +0x1560)
     // queues a foot-down event (id, foot < 4, arguments) that its update
     // plays. Observed in every phase; replayed through the original.
     struct FootstepCall
@@ -248,8 +266,8 @@ namespace replay::audio
         float wetness = -1.0f;
         // foot_material.h FootMix: the foot's slot mix (volume,
         // high-pass, low-pass). Record: read at the footstep entry, where the
-        // quadruped's hit pattern 0x317AAD0 has just written it. Playback:
-        // PlayFootstep sets it on the puppet's foot (ini FootMixReplay).
+        // quadruped's hit pattern has just written it. Playback:
+        // PlayFootstep sets it on the puppet's foot.
         footmaterial::FootMix mix;
         // foot_material.h FootDrive: the base volume and the
         // foot's locomotion value the step played with.
@@ -264,32 +282,26 @@ namespace replay::audio
     };
     void CollectFootstepsSince(std::uint64_t& cursor, std::vector<FootstepCall>& out);
     // foot_material.h: the queued steps the movement update
-    // (0x3193D14) is about to play on a foot audio that is not a puppet's,
+    // (footevent::kMovementUpdate) is about to play on a foot audio that is not a puppet's,
     // with the slot of their foot at that moment (observer enabled only).
     void CollectFootMaterialSamplesSince(std::uint64_t& cursor, std::vector<footmaterial::Sample>& out);
     // The recorded materials set on the puppets' feet. Cleared at
-    // playback start and end; `enabled` false = PlayFootstep does not set
-    // them (ini FootMaterialReplay=0). Counters for the playback summary.
+    // playback start and end. Counters for the playback summary.
     void ClearFootMaterials();
-    void SetFootMaterialReplay(bool enabled);
     // foot_material.h kWetnessBase: the recorded foot wetness on
     // the puppets' feet (ini FootWetnessReplay, default 1).
     void SetFootWetnessReplay(bool enabled);
     bool FootWetnessReplay();
-    // The recorded per-foot mix on the puppets' feet (foot_material.h FootMix;
-    // ini FootMixReplay, default 1; 0 = slots left at the reset values).
-    void SetFootMixReplay(bool enabled);
-    // foot_material.h FootDrive: ini FootBaseVolumeReplay and
-    // FootImpactReplay (defaults 1 and 0: the impact had no measured effect).
-    void SetFootDriveReplay(bool base, bool impact);
-    bool FootMixReplay();
-    bool FootMaterialReplay();
+    // The recorded per-foot mix (foot_material.h FootMix) and base volume
+    // (FootDrive) on the puppets' feet; ini FootImpactReplay (default 1) the
+    // recorded impact too.
+    void SetFootImpactReplay(bool enabled);
     struct FootMaterialStats
     {
         std::uint64_t requested = 0;     // replayed steps with a recorded material
         std::uint64_t written = 0;       // slot written on the script thread
         std::uint64_t same = 0;          // the slot already held it
-        std::uint64_t noContainer = 0;   // 0x252B194 found no container for the ref
+        std::uint64_t noContainer = 0;   // the container lookup found none for the ref
         std::uint64_t badFoot = 0;       // foot index >= 4, foot vtable mismatch or a fault
         std::uint64_t detourWrites = 0;  // slot set again at the movement update entry
         std::uint64_t samples = 0;       // record: movement update samples taken
@@ -359,13 +371,10 @@ namespace replay::audio
     bool RefusePuppetOwnPersistent();
     void SetOwnPersistentCallers(const std::vector<std::uint32_t>& callers);
     // puppet_audio_rule.h OwnPersistentCarried: with the switch
-    // on (ini PuppetPersistentByEntry, default 1) a puppet's own persistent
-    // sound is refused only when `keys` (OwnPersistentKey of each ESND
-    // pedAudio sound of the clip: entity, call site, entry) has its own key;
-    // the hidden player and his mount keep the call site rule. Off: the
-    // call site rule (call site alone) for every holder.
-    void SetPuppetPersistentByEntry(bool enabled);
-    bool PuppetPersistentByEntry();
+    // a puppet's own persistent sound is refused only when `keys`
+    // (OwnPersistentKey of each ESND pedAudio sound of the clip: entity, call
+    // site, entry) has its own key; the hidden player and his mount keep the
+    // call site rule.
     // Returns the count published (at most the table's 4096 keys; the rest
     // are dropped).
     std::size_t SetOwnPersistentKeys(const std::vector<std::uint64_t>& keys);
@@ -407,21 +416,18 @@ namespace replay::audio
     // The packet lives the ports judge against (owned by the caller, alive
     // until the next call; null: refuse everything), the SoundGenericBlock
     // key, and the playhead the lives are compared with (the script thread
-    // sets it every tick). stepSetGate = SoundStepSetGate (puppet_audio_rule.h
-    // RefuseUnmadeReplayedSet): inside a replayed step or melee call, S03
-    // refuses a set the owner never made in the clip (verdict Unmade).
-    void SetBlockPacketLives(const replay::soundowner::PacketLives* lives, bool blockAll, bool stepSetGate = true);
+    // sets it every tick). Inside a replayed step or melee call, S03 refuses a
+    // set the owner never made in the clip (puppet_audio_rule.h
+    // RefuseUnmadeReplayedSet, verdict Unmade).
+    void SetBlockPacketLives(const replay::soundowner::PacketLives* lives, bool blockAll);
     std::uint64_t RefusedUnmadeSets();
     void SetBlockPlayheadMs(std::uint32_t playheadMs);
     bool BlockPuppetSounds();
     // In packets mode, a puppet's own persistent create by ref whose set the
     // owner never made in the clip and that the ESND track does not carry is
-    // refused (puppet_audio_rule.h RefuseUnrecordedOwnPersistent; ini
-    // PuppetUnrecordedPersistent, default 1).
+    // refused (puppet_audio_rule.h RefuseUnrecordedOwnPersistent).
     // Begin resets the counters at a playback start; the line is the
     // evidence (PUPPET_UNRECORDED_PERSISTENT) at its end.
-    void SetPuppetUnrecordedPersistent(bool enabled);
-    bool PuppetUnrecordedPersistent();
     void BeginUnrecordedPersistent();
     std::string UnrecordedPersistentLine();
     std::uint64_t BlockedPuppetCreates();
@@ -487,7 +493,7 @@ namespace replay::audio
     bool PlayFootstep(void* pedEntity, const FootstepCall& step, std::string& error);
 
     // The second queue of the foot audio (foot_event_core.h; the hoof that
-    // lifts or lands), the entry 0x317A1D0 (foot audio, type, foot, spread,
+    // lifts or lands), the entry footevent::kEnqueue (foot audio, type, foot, spread,
     // direct) detoured (rung 5, prologue and the generator, drain and store
     // sites checked). Every call is forwarded, except a puppet's own one (a
     // foot audio of SetSilencedFootAudios) while SetFootEventRefuseOwn is on (a
@@ -542,7 +548,7 @@ namespace replay::audio
     // movement component, guarded reads (rung 2, evidence only).
     bool ReadMotionState(void* pedEntity, footevent::MotionState& out);
     // foot_event_core.h MovementWindow: each call of the
-    // movement volume 0x31815C4 with its input, the engine's result (before
+    // movement volume (kMovementVolume) with its input, the engine's result (before
     // the replay's own correction), the limb component's gate byte (holder
     // +0x774) and the foot audio's +0x504, while SetMovementDetail is on
     // (evidence only; guarded reads in the detour, a ring).
@@ -575,13 +581,13 @@ namespace replay::audio
     void CollectMovementDetailSince(std::uint64_t& cursor, std::vector<MovementDetailCall>& out);
 
     // Pins a recorded voice on a ped the way SET_AMBIENT_VOICE_NAME does
-    // (handler 0xF73D80): the voice object looked up in the audio metadata
-    // store by (hash, recorded type) through 0x252B584, then the engine's
-    // own apply 0x2F96CC4 on the speech entity's voice holder (vtable
-    // +0x128), which writes holder +0x30. The voice resolver 0x2FA66D0
+    // (its handler, kVoiceSetter): the voice object looked up in the audio metadata
+    // store by (hash, recorded type) through kVoiceLookup, then the engine's
+    // own apply (kVoiceApply) on the speech entity's voice holder (vtable
+    // +0x128), which writes holder +0x30. The voice resolver
     // returns holder +0x30 directly, so a request with no voice then uses
     // exactly this voice instead of drawing one from the model's voice
-    // group (0x2FA2C54, RNG). `voiceType` 0 means 0x22 (the setter's type).
+    // group (a random pick). `voiceType` 0 means 0x22 (the setter's type).
     // When the typed lookup finds nothing, the recorded object is used if it
     // still has that type and name hash (same session). `status` is one of
     // pinned_lookup, pinned_recorded_object, voice_not_found,
@@ -590,7 +596,7 @@ namespace replay::audio
     bool PinSpeechVoice(void* pedEntity, std::uint32_t voiceHash, std::uint8_t voiceType,
         std::uint64_t recordedObject, std::string& status);
     // Evidence: a sound ref with 0x800000 in its high dword is
-    // indirect, its container looked up by 0x252B194(low dword) in the audio
+    // indirect, its container looked up by kRefContainer(low dword) in the audio
     // metadata store (type 0x29). "direct", "indirect_found",
     // "indirect_missing" or an error.
     const char* IndirectRefState(std::uint64_t soundRef);
@@ -622,7 +628,7 @@ namespace replay::audio
         std::uint32_t setWrittenRef = 0;
         // Compare mask against the expected identity (speech_identity.h).
         std::uint32_t mismatch = 0;
-        // The line was stopped (0x2FBCCD4, reason 2) before its start.
+        // The line was stopped (kSpeechLineStop, reason 2) before its start.
         bool stoppedOnMismatch = false;
         bool identityRead = false;
     };
@@ -634,24 +640,13 @@ namespace replay::audio
     // created line is compared with it before the start; on any difference
     // the line is stopped instead of started (silence rather than another
     // phrase). Only params +0x18C is set (skips the recently-played check,
-    // which otherwise stops every replayed line in state 3); +0x18D is left 0
-    // (it only enables the variation re-draw).
-    // `startOffsetMs` > 0 asks the line from that point (speech_resume.h;
-    // speech params +0x15C; offline 1491.50: params ctor 0x2FAECDC writes 0
-    // there, both copies 0x888218 keep it, the line data init 0x2FA92C0 moves
-    // it to data +0x11C, the speech sound's init params +0xE8 at 0x2FA0181,
-    // 0x2FB4355 and 0x2FB4B4D, which the sound creator 0x2516CAC reads as the
-    // start offset, beside the predelay +0xEC).
-    // `source` > 0 is written into params +0xF8 (speech_slots.h; 4: an ambient
-    // slot by priority, the line's own wave).
-    // `ask` (may be null, speech_request.h) writes the recorded line type into
-    // params +0xF4 (the ctor leaves 0 and the validator 0x2F9A7BB writes 2 for
-    // 0) and the recorded request fields (volume type +0xDC, audibility +0xE0,
-    // +0xD8, +0xE8), after the ctor. An Ask with a sound set
-    // (speech_conversation.h) writes params +0xC8 (hash), +0xCC (ref) and
-    // +0xC0 (the set object) as the SpeechParams applier 0x2F967E8 does, the
-    // object found with its own calls (0x252AD8C, 0x252B408 by hash, 0x252B194
-    // by ref); the outcome goes to played.setStatus / setWrittenRef.
+    // which otherwise stops every replayed line in state 3).
+    // `startOffsetMs` > 0 asks the line from that point (speech_resume.h,
+    // params +0x15C). `source` > 0 goes to params +0xF8 (speech_slots.h).
+    // `ask` (may be null, speech_request.h) writes the recorded line type and
+    // request fields, and its sound set when it has one, after the ctor; the
+    // set outcome goes to played.setStatus / setWrittenRef.
+    // Research: docs/research/audio-speech-params.md
     bool PlaySpeechDirect(void* pedEntity, std::uint32_t voiceHash, std::uint32_t contextPartialHash,
         std::int32_t variation, const replay::speech::Identity* expected, std::uint32_t& result, PlayedLine& played,
         std::string& error, std::uint32_t startOffsetMs = 0, std::int32_t source = 0,
@@ -663,7 +658,7 @@ namespace replay::audio
 
     // speech_resume.h ClassifyOldCopy: a line pointer the replay stopped, read
     // directly (it may have left the ped's list): whether it still has the line
-    // vtable (0x37FD5D0, read once from the line ctor 0x2F91F90's verified
+    // vtable (kSpeechLineVtable, read once from the line ctor kSpeechLineCtor's verified
     // bytes; the pool free writes over it), its state (+0x234) and identity
     // (data +0x110/+0x114/+0x118).
     struct StoppedLineView
@@ -682,22 +677,22 @@ namespace replay::audio
     // animal vtable checked). `result` is the Say code (74 = line queued);
     // false with the reason (signature_mismatch, no_speech_entity,
     // not_animal_speech, slot_other, exception_XXXXXXXX).
-    // The hash entry is the animal vtable 0x37FE430's slot +0x288 (0x2FB2B4C);
+    // The hash entry is the animal vtable's slot +0x288 (speech_identity.h
+    // kAnimalSpeechVtable, kAnimalVocal);
     // the native's +0x290 hashes a name and jumps there. A refusal carries the
     // vtable RVA found (not_animal_speech:vt_<rva>). With the recorded voice
     // and variation (0 = the animal pipeline picks), params +0x5C = 1 as the
-    // native sets it: the gate 0x2FC0088 then skips the AI checks (context
-    // probability roll 0x2FC0398, concurrent lines per animal type 0x2FC04B8,
-    // lines of priority 2/3 playing 0x2FB12D8, distance to the listener
-    // 0x2FA7A70, the rider check) that made the direct path return 64
-    // (0x2F9A238: 0x40 on refusal, 0x4A on success).
+    // native sets it: the animal gate then skips the AI checks (context
+    // probability roll, concurrent lines per animal type, lines of priority
+    // 2/3 playing, distance to the listener, the rider check) that made the
+    // direct path return 64 (its result: 0x40 on refusal, 0x4A on success).
     bool PlayAnimalVocal(void* pedEntity, std::uint32_t contextPartialHash, std::uint32_t voiceHash,
         std::int32_t variation, std::uint32_t& result, std::string& error);
     // The identity of a line still in the ped's line list
     // (guarded reads of the line and its data, as PlaySpeechDirect reads).
     bool ReadSpeechLineIdentity(void* pedEntity, std::uint64_t line, PlayedLine& out);
 
-    // Stops a line of this ped (0x2FBCCD4) after checking it is still in the
+    // Stops a line of this ped (kSpeechLineStop) after checking it is still in the
     // ped's line list and not stopped (state 6). False otherwise.
     bool StopSpeechLine(void* pedEntity, std::uint64_t line, std::uint32_t reason, std::string& error);
 
@@ -737,12 +732,13 @@ namespace replay::audio
 
     // Player weapon sound on the main character's puppet.
     // Offline, build 1491.50: the weapon audio asks one predicate whether
-    // the shooter is the player (0x2F02F8C: a ped whose component row slot
+    // the shooter is the player (kPlayerAudioPredicate: a ped whose component row slot
     // +0xB8 has byte +0x40 bit 1 set and bit 0 clear). It is the only input
-    // of the player variant: the weapon settings (0x2EF1D78 via 0x2F030C0,
-    // and 0x3110424 -> settings 0x6F0783F5), the fire sound choice
-    // (0x2EF9F7C r9b), the player volume and tail (0x2EFA7E0 r12b) and the
-    // NPC gunfire bookkeeping the fire queue consumer (0x2F0DB9C) skips for
+    // of the player variant: the weapon settings (through kPlayerOrVehicle,
+    // and kSettingsVariant -> settings 0x6F0783F5), the fire sound choice
+    // (the shot ref picker's r9b), the player volume and tail (kFirePlay's
+    // r12b) and the NPC gunfire bookkeeping the fire queue consumer
+    // (kFireQueue) skips for
     // the player. Twelve callers, all weapon audio. A puppet is never the
     // player, so its shots would take the NPC variant. A detour on the
     // predicate answers yes for the puppets set below and forwards every
@@ -752,13 +748,14 @@ namespace replay::audio
     // thread; empty = none).
     void SetPlayerAudioPeds(const std::vector<std::uint64_t>& peds);
     // The weapon settings a fire event plays are the ones the
-    // weapon's audio (CWeapon +0x100) cached when it was set up (0x311971C
-    // returns +0x1F8; written by 0x3120F54, which picks the player variant
+    // weapon's audio (CWeapon +0x100) cached when it was set up
+    // (kWeaponSettingsGetter returns +0x1F8; written by the weapon audio's
+    // setup, which picks the player variant
     // 0x6F0783F5 through the predicate on the weapon's owner). The puppet's
     // weapon is set up before its puppet answers "player", so it keeps the
     // NPC settings (the replay would then take the player's sound slot of the
     // NPC settings: a third sound, louder and brighter than both). This puts the
-    // player variant of the same weapon's settings (0x2EF1D04 with
+    // player variant of the same weapon's settings (kWeaponSettingsLookup with
     // 0x6F0783F5) in the cache when it holds the NPC ones; signature
     // checked, SEH guarded. Script thread.
     bool RefreshWeaponAudioSettings(std::uint64_t cweapon, std::uint64_t& before, std::uint64_t& after,
@@ -770,13 +767,32 @@ namespace replay::audio
     // metric (+0x4640), the fields PedAudioState logs.
     // False when the ped has no holder or a read faulted.
     bool PedAudioLod(void* pedEntity, std::uint8_t& lod, float& metric);
-    // Read only. The offsets 0x2EF8120 adds to every shot of this ped (the
+    // Read only. The offsets the shot's volume step adds to every shot of this ped (the
     // holder above): volume holder+0x1CF0 (float), high-pass holder+0x1CF4
     // holder above): volume holder+0x1CF0 (float), high-pass holder+0x1CF4
-    // (int); and the audio flags dword [0x5B9CFC0] (bits 2 to 5 read by the
+    // (int); and the audio flags dword (kAudioFlags; bits 2 to 5 read by the
     // shot and the steps, written through pointers: value unknown offline).
     bool PedGunfightOffsets(void* pedEntity, float& volume, std::int32_t& highPass);
     bool AudioGlobalFlags(std::uint32_t& flags);
+    // The return addresses (call + 5) of the engine calls a recorded caller
+    // is compared with, as RVAs in this game, resolved once from their
+    // signatures (0 for a call the game does not have): the speech core's
+    // paths (speech_identity.h), the speech controller's sound calls
+    // (puppet_audio_rule.h) and the step sounds' paths (foot_event_core.h).
+    const speech::CorePaths& SpeechCorePaths();
+    const puppetaudio::SpeechControllerCallers& SpeechControllerCallers();
+    const footevent::StepCallers& FootStepCallers();
+    // The same for the census's call paths (sound_check_core.h CallSites),
+    // and the code ranges as RVAs, each from its first function's signature
+    // to where its last function's unwind entry (.pdata) ends: the audio
+    // entity's own code (sound_generic_core.h WrapperCode) and the gunshot's
+    // play function (shot_audio_delay.h FirePlay). Empty when not found.
+    const census::CallSites& CensusCallSites();
+    const soundgeneric::WrapperCode& GenericWrapperCode();
+    const shotdelay::FirePlay& FirePlayExtent();
+    // The known systems' functions the owner table names a packet's caller
+    // by (sound_owner_table.h kCallerFunctions), the same way.
+    const soundowner::CallerRanges& OwnerCallerRanges();
     // Whether the replay's player weapon audio detour answers "player" for
     // this ped address (SetPlayerAudioPeds), and the mount detour for this
     // slot +0xA8 component (SetPlayerMountAudioComponents).
@@ -794,11 +810,11 @@ namespace replay::audio
         std::uint64_t siteTrue[kSites] = {};
     };
     PlayerAudioStats PlayerAudioSnapshot();
-    // "0x2EFA8F5:n|..." for the sites with a yes since `since`.
+    // "<site rva>:n|..." for the sites with a yes since `since`.
     std::string PlayerAudioSites(const PlayerAudioStats& now, const PlayerAudioStats& since);
 
     // The player's horse variant of the ped audio (mount_audio.h):
-    // a detour on the leaf predicate 0x8B69B0 ("is the entity linked to this
+    // a detour on the leaf predicate kMountAudioPredicate ("is the entity linked to this
     // slot +0xA8 component the local player", the rider of a horse) answers
     // yes for the published components at the thirteen ped audio sites only;
     // everything else goes to the original untouched. Signature checked with
@@ -810,9 +826,9 @@ namespace replay::audio
     // player (script thread; empty = none; up to 4).
     void SetPlayerMountAudioComponents(const std::vector<std::uint64_t>& components);
     // The detour of the (foot_material.h MovementTermCorrection)
-    // movement volume 0x31815C4 (installed with the observer). The script
-    // thread sets whether it acts (ini MovementVolumeReplay while a clip
-    // plays) and whether the hidden live player rides.
+    // movement volume kMovementVolume (installed with the observer). The script
+    // thread sets whether it acts (while a clip plays) and whether the hidden
+    // live player rides.
     bool InstallMovementVolume(std::string& error);
     void SetMovementTermState(bool enabled, bool livePlayerMounted);
     struct MovementTermStats
@@ -855,20 +871,21 @@ namespace replay::audio
     // Guarded 8-byte read of engine memory (false on fault).
     bool ReadU64(std::uint64_t address, std::uint64_t& value);
     // A static audio entity of the image a clip names (SNDS globalAudio, ESND
-    // audioRva) as an absolute address: true only for one of
-    // census::kImageAudio whose live vtable is still the recorded one. False
+    // audioRva) as an absolute address: true only for one of the
+    // census::kImageAudioSignatures objects (found in this game) whose live
+    // vtable is still the one found. False
     // with status unknown_image_audio(0x<rva>) or image_audio_vtable_mismatch(0x<rva>).
     bool TrustedImageAudio(std::uint64_t address, std::string& status);
     // Guarded copy of engine memory (false on fault).
     bool ReadBytes(std::uint64_t address, void* out, std::size_t size);
 
 
-    // Research: calls into the melee impact audio entry 0x318A28C(entity,
+    // Research: calls into the melee impact audio entry kMeleeImpact(entity,
     // info), with its arguments and the first 0x100 bytes of the info.
     struct MeleeCall
     {
         std::uint64_t timeUs = 0;
-        std::uint32_t entry = 0; // 1: 0x318A28C
+        std::uint32_t entry = 0; // 1: kMeleeImpact
         std::uint64_t args[4] = {};
         std::uint8_t info[0x100] = {};
         std::uint32_t callers[3] = {};
@@ -876,7 +893,7 @@ namespace replay::audio
     void CollectMelee(std::uint64_t fromUs, std::uint64_t toUs, std::vector<MeleeCall>& out);
     void CollectMeleeSince(std::uint64_t& cursor, std::vector<MeleeCall>& out);
 
-    // Research: the melee body impact sound 0x318EC48 (called by damage
+    // Research: the melee body impact sound kMeleeBodyImpact (called by damage
     // code at the hit; ten arguments: melee audio holder +0x1B60, impact
     // position, two objects, then six stack arguments of which the 7th is
     // a float). The detour forwards all ten untouched.
@@ -912,7 +929,7 @@ namespace replay::audio
         std::uint64_t arg10 = 0;
     };
 
-    // Generic ped sound requests: the deferred create-and-play entry 0x310E680
+    // Generic ped sound requests: the deferred create-and-play entry kSoundRequest
     // (audio entity, 64-bit sound ref, owner entity, init params or null, four
     // byte flags) queues a one-shot sound the audio update creates later.
     // Recorded when the owner is a recorded ped; replayed on the puppet through
@@ -937,7 +954,7 @@ namespace replay::audio
         std::uint64_t sound = 0;
     };
     void CollectSoundRequestsSince(std::uint64_t& cursor, std::vector<SoundRequest>& out);
-    // Direct create-and-play requests (0x2589A40: audio entity, ref,
+    // Direct create-and-play requests (kCreateAndPlay: audio entity, ref,
     // params); owner is 0 (attributed by audio entity or tracker).
     void CollectPlayRequestsSince(std::uint64_t& cursor, std::vector<SoundRequest>& out);
     // The ped's sound tracker (what the engine stores at params +0xC8).
@@ -966,8 +983,8 @@ namespace replay::audio
     // (+offset) when `global` is 0, else on that static audio entity with
     // the puppet as tracker; params rebuilt as for PlaySoundRequest.
     // Persistent collision sounds (scrape/roll: created on the static
-    // collision audio by 0x2588FE8, driven every frame, stopped with
-    // StopAndForget 0x2585C2C). Recording tracks each created sound and its
+    // collision audio by kPersistentCreate, driven every frame, stopped with
+    // StopAndForget, kStopAndForget). Recording tracks each created sound and its
     // stop; playback creates its own into a slot it owns, plays it, drives
     // its variables and position, and stops it.
     struct SoundStop
@@ -995,12 +1012,14 @@ namespace replay::audio
 
     // Sounds the engine ties to an entity through its tracker
     // (init params +0xC8 = entity + offset): the persistent create cores by
-    // ref (0x2589124) and by hash (0x2589058), read-only detours. The lit
-    // molotov's loop on the flying bottle comes this way (0x2F2A2C8: the
-    // per-object loop list 0x2F10A68/0x2F20D8C, the bottle as tracker at
-    // +0x450, the static audio 0x5B9F960). They are recorded with the entity
+    // ref (kPersistentByRef) and by hash (kPersistentByHash), read-only
+    // detours. The lit molotov's loop on the flying bottle comes this way (the
+    // projectile's loop: the per-object loop list, the bottle as tracker at
+    // +0x450, the static audio census::kImageAudio01). They are recorded with
+    // the entity
     // and replayed on its puppet. Creates made inside the collision entry
-    // 0x2588FE8 are left to the collision track (return address 0x2589030).
+    // kPersistentCreate are left to the collision track (its by-ref core call's
+    // return address).
     struct EntitySoundCreate
     {
         std::uint64_t timeUs = 0;
@@ -1022,8 +1041,8 @@ namespace replay::audio
         std::uint64_t* slot, std::string& error);
 
     // A weapon object's weapon (object +0x448, offline evidence: the body
-    // impact code 0x3190348 plays the carried weapons' rattle on its +0x100
-    // audio through 0x2588794); 0 when the object has none.
+    // impact code plays the carried weapons' rattle on its +0x100 audio
+    // through the create-and-play wrappers); 0 when the object has none.
     std::uint64_t WeaponAudio(void* weaponObject);
     // `envGroup` goes in the params' environment group (+0xE0), which the
     // recorded params copy leaves clear (CopyRecordedSoundParams skips [0xC8,
@@ -1031,7 +1050,7 @@ namespace replay::audio
     bool PlayDirectSound(void* pedEntity, std::uint64_t audioOffset, std::uint64_t global,
         std::uint64_t soundRef, const std::uint8_t* params, bool trackPed, std::string& error,
         std::uint64_t envGroup = 0);
-    // An entity's environment group through 0xE383E8 (the call the ped request
+    // An entity's environment group through kEntityEnvGroup (the call the ped request
     // queue makes for a request's owner), script thread, signature checked,
     // SEH; status env_given / env_none / env_*.
     std::uint64_t EnvironmentGroupOf(void* entity, const char*& status);
@@ -1052,13 +1071,14 @@ namespace replay::audio
         std::uint32_t infoHash, std::string& error);
 
     // Research (molotov, read-only): the engine's positional
-    // emitter sounds (manager 0x5C9A660, 128 slots of 0x1A0 at +0x1D0, the
+    // emitter sounds (kEmitterManager, 128 slots of 0x1A0 at +0x1D0, the
     // double-buffer index at +0xD1F8). The particle audio of an effect
-    // instance (the ptfx callback 0x1418490 -> 0x3212028: the lit rag and
-    // the flight trail of the molotov) and keyed users (0x320F8FC) start and
-    // move their sound through a slot; its tick 0x320E568 creates the sound
+    // instance (the ptfx callback kEmitterHost -> kEmitterStart: the lit rag
+    // and the flight trail of the molotov) and keyed users start and move
+    // their sound through a slot; its tick (soundworld::kPtfxSlotUpdate)
+    // creates the sound
     // (+0x180). Offline evidence in the build 1491.50 dump; the manager
-    // address is taken from the checked site 0x14184B4.
+    // address is taken from the checked site kEmitterSite.
     struct EmitterSlot
     {
         std::uint8_t index = 0;
@@ -1133,7 +1153,7 @@ namespace replay::audio
         // index = offset / 4), written over the constructor's before the
         // index = offset / 4), written over the constructor's before the
         // fields above; and the entity whose environment group the sound
-        // gets (0: none), as the ped request queue gives it (0x312D9B6).
+        // gets (0: none), as the ped request queue gives it (its drain).
         std::uint8_t valueCount = 0;
         std::uint8_t valueIndex[35] = {};
         std::uint32_t valueRaw[35] = {};
@@ -1141,24 +1161,13 @@ namespace replay::audio
         // out: the environment group given (0 none), and why not.
         std::uint64_t envGroupGiven = 0;
         const char* envGroupStatus = "not_asked";
-        // SoundGenericDirectParams=1: the direct create (modes a and b) takes the
-        // params whole from the track row that kept them (SNDS, ESND, capture),
-        // as mode c's queue does (CopyRecordedSoundParams: the known category
-        // at +0xD8 included), then the flags above and the environment group.
-        const std::uint8_t* recordedParams = nullptr;
-        // SoundGenericDirectParams=2: only the category pointer (+0xD8) of
-        // that row over the packet's fields (written when this process knows it).
-        std::uint64_t category = 0;
-        // SoundGenericDirectParams=3: the row's dword list +0x10C..+0x127
-        // (with its count at +0x124) over the packet's fields.
-        const std::uint8_t* listParams = nullptr;
     };
     // The requested settings of a live sound the replay
     // reads back after creating it (proven fields, dump 1491.50): +0x22C the
-    // client variable (written by 0x25363F8 from params +0xF8, read by the
-    // horse's UpdateSound 0x31A56F8), +0x248 the environment group (S30
-    // 0x2536948), +0x260 bit 0x10 the sound updates with its entity
-    // (0x258AA40 from params flags 0x04; 0x2585E4C calls the entity).
+    // client variable (written by the client variable setter from params
+    // +0xF8, read by the horse's UpdateSound), +0x248 the environment group
+    // (S30), +0x260 bit 0x10 the sound updates with its entity (set from
+    // params flags 0x04; the sound's update calls the entity).
     struct GenericSettingsView
     {
         std::uint32_t clientVariable = 0;
@@ -1172,17 +1181,16 @@ namespace replay::audio
     bool CreateGenericSound(std::uint64_t audio, std::uint64_t soundRef, bool byHash, GenericSoundInit& init,
         bool play, std::uint64_t* slot, std::string& error);
     // SoundGenericEntityMode=c: the request through the game's own queue (S03,
-    // the public 0x2588950 into 0x2589A40): the recorded params whole when
+    // the public kCreateAndPlayPublic into kCreateAndPlay): the recorded params whole when
     // `recorded` (kSoundParamsBytes), else the constructor's with `init`'s
     // fields; no tracker. The sound the queue makes later for (audio, ref)
     // passes the packets mode's port block once (within 2 s). True when the
     // queue took it ("queued"). `*ticket` (when given) names the request; the
-    // creator's sound for it comes back by CollectQueueBirthsSince. With
-    // SetQueueEnvGroup(true) the group of init.envGroupEntity goes in +0xE0
-    // (status and group written back to init), as CreateGenericSound does.
+    // creator's sound for it comes back by CollectQueueBirthsSince. The group
+    // of init.envGroupEntity goes in +0xE0 (status and group written back to
+    // init), as CreateGenericSound does.
     bool QueueGenericSound(std::uint64_t audio, std::uint64_t soundRef, const std::uint8_t* recorded,
         GenericSoundInit& init, std::string& error, std::uint64_t* ticket = nullptr);
-    void SetQueueEnvGroup(bool on);
     // The creator (census S01/S02, any thread) hands the sound it made for
     // (audio, ref) to the oldest waiting ticket of that pair (2 s window); the
     // player drains the births by ticket on the script thread. A cancelled
@@ -1206,14 +1214,14 @@ namespace replay::audio
     bool PrepareSound(std::uint64_t sound, std::string& error);
 
     // The dynamic wave bank a sound ref needs and whether a wave slot holds it
-    // now, read through the game's own functions (read only). 0x2EF341C(u32*
+    // now, read through the game's own functions (read only). kRequiredDynamicBank(u32*
     // bank, ref, u32* count): the banks of the sound's hierarchy that no static
-    // slot holds (the first in *bank, how many in *count); 0x2545B1C(bank): the
+    // slot holds (the first in *bank, how many in *count); kFindBankSlot(bank): the
     // wave slot holding the bank (the bank map, under its lock), else null;
-    // 0x2549530(slot, bank): that slot's load status (0 loaded, 1 loading, 2
+    // kBankLoadStatus(slot, bank): that slot's load status (0 loaded, 1 loading, 2
     // failed, 3 not requested). A sound created with AllowLoad off and no slot
-    // (the anim-event foley, 0x318B970) only plays when a slot already holds
-    // its bank: the simple-sound prepare 0x2566510 fails otherwise and the
+    // (the anim-event foley) only plays when a slot already holds its bank:
+    // the simple sound's prepare fails otherwise and the
     // audio update frees it.
     struct BankProbe
     {
@@ -1240,9 +1248,8 @@ namespace replay::audio
     std::uint64_t SoundIdentity(std::uint64_t sound);
     bool SoundIdentityHolds(std::uint64_t sound, std::uint64_t identity);
     // shot_audio_delay.h: the play state of a live top-level sound, the two top
-    // bits of +0xF2 (offline 1491.50: the requested-settings processor
-    // 0x2533EF0 reads them at 0x2533F72; the prepare writes 1, the play
-    // 0x258791C writes 2, 0x25878E4 writes 3). False (state -1) when the sound
+    // bits of +0xF2 (offline: the requested-settings processor reads them;
+    // the prepare writes 1, the play writes 2, the stop writes 3). False (state -1) when the sound
     // no longer holds `identity` (freed or reused); guarded read, script
     // thread.
     bool SoundPlayState(std::uint64_t sound, std::uint64_t identity, int& state);

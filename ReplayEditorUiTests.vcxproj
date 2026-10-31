@@ -12,6 +12,13 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="editor\replay_editor_addon.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_menus.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_export.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_projects.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_markers.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_timeline.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_help.cpp" />
+    <ClInclude Include="editor\replay_editor_addon_internal.h" />
     <ClCompile Include="tools\ui_harness\ui_harness_main.cpp" />
     <ClCompile Include="tools\ui_harness\ui_harness_export_stub.cpp" />
   </ItemGroup>

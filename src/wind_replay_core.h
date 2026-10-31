@@ -2,53 +2,29 @@
 
 // The audio wind in the replay, pure part.
 //
-// Engine facts (build 1491.50):
-// - The weather audio entity W (0x5C90070, vtable 0x383D3B0) pre-updates
-//   through its vtable slot +0x28, 0x31B8638. It reads the local player
-//   (the obfuscated cells 0x4A08D58/60/68), his position (+0x70), and asks
-//   the map data box streamer 0x5A8A000 whether the world is loaded about
-//   that position: 0x2B98AF8(streamer, &pos, 0x78), call at 0x31B8710. On
-//   false (0x31B8717 je 0x31B8A0A), or with the fade 0x173E80 >= 0.9, or
-//   [0x5C0FBE0] != 0, it takes the SIMPLE path: W+0x50A4 = time (0x31B8A0C)
-//   and the wind update 0x31CF078 with the fifth argument 1 (0x31B8A35),
-//   which sets the speaker levels of the wind slots to {1,1,1,1} and never
-//   calls 0x31CF2C0, the function that swaps the wind slots to the wind
-//   sounds of the current weather when it changes (it compares the weather
-//   index each row was started with, W+0x5094 / W+0x5098, absolute
-//   0x5C95104 / 0x5C95108, with [0x4576204] / [0x4576208] at 0x31CF393 and
-//   stores the new one at 0x31CF3F9).
-// - In a mission replay the live player stays hidden where he was (the
-//   follow is skipped) while the streaming focus goes to the replay camera,
-//   possibly hundreds of metres away: the streamer unloads his area, the
-//   gate answers false and the replay's wind freezes on the slots started
-//   in its first frames, at full level on the four speakers, whatever the
-//   recorded weather does next.
-// - wind_str is not an input: it is the curve (block+0x3560, hash
-//   0x87AA362D) of the peak meter of the "Wind" submix (0x31CCBC6 reads the
-//   submix 0x252C054(0x5342260); index +0x11C7 written at 0x25303FE for the
-//   string "Wind"), smoothed by 0.05 and stored at 0x31CCC36: the measured
-//   loudness of the wind bus itself.
+// Why: the weather audio entity asks the map streamer whether the world is
+// loaded about the live player. In a replay the live player stays hidden far
+// from the replay camera, the answer is false, and the wind freezes at full
+// level on the slots started in the first frames.
 //
-// The fix: while the replay owns the world, the weather gate's question is
-// asked about the recorded scene instead of the hidden live player. A detour
-// of 0x2B98AF8 (prologue checked) forwards every call, and only for the call
-// from the weather pre-update (return address 0x31B8715) during playback it
-// passes the replay's streaming focus (live, the player is the engine's focus
-// entity), else the rendered camera, else the trail focus puppet. Same
-// streamer, same mask: the engine answers whether the world is loaded there
-// and computes the wind as it did live. No wind value is written.
+// The fix: a detour of that gate (prologue checked) forwards every call; only
+// the call from the weather pre-update (return address kGateCall + 5) during
+// playback is asked about the replay's streaming focus instead (else the
+// rendered camera, else the trail focus puppet). The engine then computes the
+// wind itself; no wind value is written.
 //
-// Evidence (clip section WNDA, optional): the recording keeps, 4 times a
-// second, the audio wind strength (W+0x4F44), the weather each wind row plays
-// (W+0x5094/W+0x5098 through the weather table) and whether the simple path
-// ran (W+0x50A4 moved). The playback reads the same and logs the recorded
-// value against the one the engine computed (WIND_REPLAY, every 5 s of clip
-// time, and WIND_REPLAY_TOTAL). A clip without the section still gets the
-// fix; its lines say rec=none.
+// Evidence: clip section WNDA (optional, 4 Hz) keeps the wind strength, the
+// weather of each wind row and whether the simple path ran; playback logs the
+// recorded value against the engine's (WIND_REPLAY, WIND_REPLAY_TOTAL). A
+// clip without the section still gets the fix (rec=none).
+// Offline dump, build 1491.50; sites found by signature (kSites).
+// Research: docs/research/weather-wind-sky-timecycle.md
 //
 // Pure: unit tested in wind_replay_tests.cpp.
 
+#include "engine_sigs.h"
 #include "env_override.h"
+#include "game_sig_core.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,143 +35,131 @@
 
 namespace replay::windreplay
 {
+    using enginesig::kWeatherEntityInit;
+    using enginesig::kWeatherEntityVtable;
+
     // ------------------------------------------------------------ layout
 
-    // The gate: "is the world loaded about this position" of a box streamer
-    // (builds the box pos +- [streamer+0x5C] and asks every class of the mask,
-    // 0x2B98B3C; 45 callers in the build, two with this streamer and mask
-    // from the audio: 0x31B8710 the weather pre-update, 0x31E7174 another
-    // audio update 0x31E70D0, left alone).
-    constexpr std::uint32_t kGateRva = 0x2B98AF8;
-    constexpr std::uint8_t kGateSignature[] = {
-        0x48, 0x83, 0xEC, 0x48,                   // sub rsp,0x48
-        0xF3, 0x0F, 0x6F, 0x12,                   // movdqu xmm2,[rdx]   (only x, y, z used: w becomes the radius)
-        0x48, 0x8D, 0x54, 0x24, 0x20,             // lea rdx,[rsp+0x20]
-        0xF3, 0x0F, 0x10, 0x41, 0x5C};            // movss xmm0,[rcx+0x5C]
-    constexpr std::uint32_t kWeatherGateCallRva = 0x31B8710;
-    constexpr std::uint32_t kWeatherGateReturnRva = 0x31B8715;
-    constexpr std::uint32_t kWeatherSimpleRva = 0x31B8A0A;
-    constexpr std::uint32_t kOtherGateReturnRva = 0x31E7179; // 0x31E70D0 (not changed)
-    constexpr std::uint32_t kMapStreamerRva = 0x5A8A000;
     constexpr std::uint32_t kGateMask = 0x78;
-    constexpr std::uint32_t kPreUpdateRva = 0x31B8638; // vtable 0x383D3B0 slot +0x28
-
-    constexpr std::uint32_t kWeatherRva = 0x5C90070;
-    constexpr std::uint32_t kWeatherVtableRva = 0x383D3B0;
-    constexpr std::uint32_t kWindStrength = 0x4F44;    // W+0x1980+0x35C4 (0x31B874B, 0x31CCC36)
-    constexpr std::uint32_t kSimpleStamp = 0x50A4;     // u32 time, written only by the simple path (0x31B8A0C)
+    constexpr std::uint32_t kGateCallLength = 5; // the return address: kGateCall + 5
+    constexpr std::uint32_t kPreUpdateSlot = 0x28; // in the weather entity's vtable
+    constexpr std::uint32_t kWindStrength = 0x4F44;    // W+0x1980+0x35C4 (kWeatherRows' wind block, kStrength)
+    constexpr std::uint32_t kSimpleStamp = 0x50A4;     // u32 time, written only by the simple path (kSimple)
     constexpr std::uint32_t kWindLinePrev = 0x5094;    // u32 weather index the row 0 slots were started with
     constexpr std::uint32_t kWindLineNext = 0x5098;    // row 1
-    constexpr std::uint32_t kWeatherPrevRva = 0x4576204;
-    constexpr std::uint32_t kWeatherNextRva = 0x4576208;
-    constexpr std::uint32_t kWeatherTableRva = 0x45722E0;
     constexpr std::uint32_t kWeatherTypeStride = 0x1E0;
     constexpr std::uint32_t kWeatherTypeHash = 0x10;
     constexpr std::uint32_t kMaxWeatherTypes = 256;
 
     // ------------------------------------------------------------ sites
 
-    // Code bytes of build 1491.50 checked once before the first read and
-    // before the detour (a mismatch turns the feature off and logs
-    // WIND_REPLAY,phase=unproven,site=...). The gate's own prologue is
-    // checked by the install (kGateSignature): once hooked its first bytes
-    // are the detour's jump, so it is not in this table.
+    // The code checked once before the first read and before the detour (a
+    // mismatch turns the feature off and logs WIND_REPLAY,phase=unproven,
+    // site=...). The gate's own prologue is checked by its signature, found
+    // before the detour is in (once hooked its first bytes are the detour's
+    // jump).
+    //
+    // The weather pre-update (the weather entity's vtable slot +0x28).
+    inline const sig::Signature kPreUpdate{"wind_preupdate",
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 41 54 41 55 41 56 41 57 48 81 EC 90 00 00 00 0F 29 70 C8 45 "
+        "33 E4",
+        0x31B8638};
+    // The gate's arguments: mov r8d, 0x78 (the mask); &pos in rdx; lea rcx,
+    // [the map data box streamer].
+    inline const sig::Signature kGateArgs{"wind_gate_args", kPreUpdate, sig::Offset{0xBD},
+        "41 B8 78 00 00 00 66 0F 7F 74 24 40 48 8D 54 24 40 0F 28 F8 48 8D 0D ?? ?? ?? ??", 0x31B86F5};
+    inline const sig::Signature kMapStreamer{"wind_map_streamer", kGateArgs, sig::Rel32{0x17, 0x1B}, "", 0x5A8A000};
+    // call the gate; test al, al; je to the simple path.
+    inline const sig::Signature kGateCall{"wind_gate_call", kPreUpdate, sig::Offset{0xD8},
+        "E8 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ??", 0x31B8710};
+    // The gate: "is the world loaded about this position" of a box streamer
+    // (builds the box pos +- [streamer+0x5C] and asks every class of the mask;
+    // 45 callers in the build, two with this streamer and mask from the
+    // audio: the weather pre-update, and another audio update, left alone).
+    //   sub rsp,0x48; movdqu xmm2,[rdx] (only x, y, z used: w becomes the
+    //   radius); lea rdx,[rsp+0x20]; movss xmm0,[rcx+0x5C]
+    inline const sig::Signature kGate{"wind_gate", kGateCall, sig::Rel32{0x01, 0x05},
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 0F 10 41 5C 0F C6 C0 00",
+        0x2B98AF8};
+    // The simple path: the stamp (mov [rsi+0x50A4], ebp) and the update's
+    // fifth argument 1.
+    inline const sig::Signature kSimple{"wind_simple", kGateCall, sig::Rel32{0x09, 0x0D},
+        "8B D5 89 AE A4 50 00 00", 0x31B8A0A};
+    inline const sig::Signature kSimpleUpdate{"wind_simple_update", kSimple, sig::Offset{0x2B},
+        "C6 44 24 20 01", 0x31B8A35};
+    // The weather of the wind rows: the next index, the weather table, the
+    // previous index, the wind block (W+0x1980), the stride and the hash.
+    inline const sig::Signature kWeatherRows{"wind_weather_rows", kPreUpdate, sig::Offset{0xFF},
+        "8B 05 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 44 8B 35 ?? ?? ?? ?? 4C 8D AE 80 19 00 00 49 69 CE E0 01 00 00 8B 5C "
+        "11 10",
+        0x31B8737};
+    inline const sig::Signature kWeatherNext{"wind_weather_next", kWeatherRows, sig::Rel32{0x02, 0x06}, "", 0x4576208};
+    inline const sig::Signature kWeatherTable{"wind_weather_table", kWeatherRows, sig::Rel32{0x09, 0x0D}, "",
+        0x45722E0};
+    inline const sig::Signature kWeatherPrev{"wind_weather_prev", kWeatherRows, sig::Rel32{0x10, 0x14}, "", 0x4576204};
+    // The smoothed strength: movss [rdi+0x35C4], xmm2 (in the wind block).
+    inline const sig::Signature kStrengthUpdate{"wind_strength_update",
+        "48 8B C4 48 89 58 08 57 48 81 EC 80 00 00 00 0F 10 01", 0x31CCB68};
+    inline const sig::Signature kStrength{"wind_strength", kStrengthUpdate, sig::Offset{0xCE},
+        "F3 0F 11 97 C4 35 00 00", 0x31CCC36};
+    // The wind rows' weather index: lea rax, [W+0x5098]; mov ebx, [next];
+    // lea rcx, [W+0x5094]; cmove ebx, [previous]; cmp [rcx], ebx; and the
+    // store mov [rax], ebx.
+    inline const sig::Signature kLines{"wind_lines",
+        "48 8B C4 48 89 58 18 4C 89 48 20 89 50 10 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 68 FC FF FF", 0x31CF2C0};
+    inline const sig::Signature kLineIndices{"wind_line_indices", kLines, sig::Offset{0x7C},
+        "48 8D 05 ?? ?? ?? ?? 8B 1D ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ??", 0x31CF33C};
+    inline const sig::Signature kLineNext{"wind_line_next", kLineIndices, sig::Rel32{0x03, 0x07}, "", 0x5C95108};
+    inline const sig::Signature kLineNextIndex{"wind_line_next_index", kLineIndices, sig::Rel32{0x09, 0x0D}, "",
+        0x4576208};
+    inline const sig::Signature kLinePrev{"wind_line_prev", kLineIndices, sig::Rel32{0x10, 0x14}, "", 0x5C95104};
+    inline const sig::Signature kLinePrevRead{"wind_line_prev_read", kLines, sig::Offset{0xA4},
+        "0F 44 1D ?? ?? ?? ??", 0x31CF364};
+    inline const sig::Signature kLinePrevIndex{"wind_line_prev_index", kLinePrevRead, sig::Rel32{0x03, 0x07}, "",
+        0x4576204};
+    inline const sig::Signature kLineCompare{"wind_line_compare", kLines, sig::Offset{0xD3}, "39 19", 0x31CF393};
+    inline const sig::Signature kLineStore{"wind_line_store", kLines, sig::Offset{0x139}, "89 18", 0x31CF3F9};
+    // The weather entity's initializer: lea rcx, [W] (the static object),
+    // lea rax, [its vtable].
+    inline const sig::Signature kWeather{"wind_weather", kWeatherEntityInit, sig::Rel32{0x07, 0x0B}, "", 0x5C90070}; // W
+
+    // The checked code by the names the log prints (site=...): each name is
+    // a site of the table this module had, now inside the signature that
+    // holds its bytes (the streamer's lea and the gate's prologue are not
+    // sites: the log prints the one, the install checks the other).
     struct Site
     {
         const char* name;
-        std::uint32_t rva;
-        std::uint8_t size;
-        std::uint8_t bytes[20];
+        const sig::Signature* signature;
     };
-    constexpr Site kSites[] = {
+    inline const Site kSites[] = {
         // the weather pre-update's gate: mask, &pos, streamer, call, test, je simple
-        {"gate_mask", 0x31B86F5, 6, {0x41, 0xB8, 0x78, 0x00, 0x00, 0x00}},
-        {"gate_pos", 0x31B86FB, 11, {0x66, 0x0F, 0x7F, 0x74, 0x24, 0x40, 0x48, 0x8D, 0x54, 0x24, 0x40}},
-        {"gate_call", 0x31B8709, 20,
-            {0x48, 0x8D, 0x0D, 0xF0, 0x18, 0x8D, 0x02, 0xE8, 0xE3, 0x03, 0x9E, 0xFF, 0x84, 0xC0, 0x0F, 0x84, 0xED, 0x02, 0x00, 0x00}},
+        {"gate_mask", &kGateArgs},
+        {"gate_pos", &kGateArgs},
+        {"gate_call", &kGateCall},
         // the simple path: the stamp and the update's fifth argument 1
-        {"simple_stamp", 0x31B8A0A, 8, {0x8B, 0xD5, 0x89, 0xAE, 0xA4, 0x50, 0x00, 0x00}},
-        {"simple_update", 0x31B8A35, 5, {0xC6, 0x44, 0x24, 0x20, 0x01}},
+        {"simple_stamp", &kSimple},
+        {"simple_update", &kSimpleUpdate},
         // the wind block and the smoothed strength
-        {"wind_block", 0x31B874B, 7, {0x4C, 0x8D, 0xAE, 0x80, 0x19, 0x00, 0x00}},
-        {"wind_strength", 0x31CCC36, 8, {0xF3, 0x0F, 0x11, 0x97, 0xC4, 0x35, 0x00, 0x00}},
-        // the wind rows' weather index (0x31CF2C0)
-        {"line_next", 0x31CF33C, 7, {0x48, 0x8D, 0x05, 0xC5, 0x5D, 0xAC, 0x02}},
-        {"line_next_index", 0x31CF343, 6, {0x8B, 0x1D, 0xBF, 0x6E, 0x3A, 0x01}},
-        {"line_prev", 0x31CF349, 7, {0x48, 0x8D, 0x0D, 0xB4, 0x5D, 0xAC, 0x02}},
-        {"line_prev_index", 0x31CF364, 7, {0x0F, 0x44, 0x1D, 0x99, 0x6E, 0x3A, 0x01}},
-        {"line_compare", 0x31CF393, 2, {0x39, 0x19}},
-        {"line_store", 0x31CF3F9, 2, {0x89, 0x18}},
-        // the weather entity (static object, its constructor's vtable) and the weather table
-        {"weather_init", 0x112D90, 7, {0x48, 0x8D, 0x0D, 0xD9, 0xD2, 0xB7, 0x05}},
-        {"weather_vtable", 0x112D9C, 7, {0x48, 0x8D, 0x05, 0x0D, 0xA6, 0x72, 0x03}},
-        {"weather_next", 0x31B8737, 6, {0x8B, 0x05, 0xCB, 0xDA, 0x3B, 0x01}},
-        {"weather_table", 0x31B873D, 7, {0x48, 0x8D, 0x15, 0x9C, 0x9B, 0x3B, 0x01}},
-        {"weather_prev", 0x31B8744, 7, {0x44, 0x8B, 0x35, 0xB9, 0xDA, 0x3B, 0x01}},
-        {"weather_stride", 0x31B8752, 7, {0x49, 0x69, 0xCE, 0xE0, 0x01, 0x00, 0x00}},
-        {"weather_hash", 0x31B8759, 4, {0x8B, 0x5C, 0x11, 0x10}},
+        {"wind_block", &kWeatherRows},
+        {"wind_strength", &kStrength},
+        // the wind rows' weather index
+        {"line_next", &kLineNext},
+        {"line_next_index", &kLineNextIndex},
+        {"line_prev", &kLinePrev},
+        {"line_prev_index", &kLinePrevIndex},
+        {"line_compare", &kLineCompare},
+        {"line_store", &kLineStore},
+        // the weather entity (static object, its initializer's vtable) and the weather table
+        {"weather_init", &kWeather},
+        {"weather_vtable", &kWeatherEntityVtable},
+        {"weather_next", &kWeatherNext},
+        {"weather_table", &kWeatherTable},
+        {"weather_prev", &kWeatherPrev},
+        {"weather_stride", &kWeatherRows},
+        {"weather_hash", &kWeatherRows},
     };
     constexpr std::size_t kSiteCount = sizeof(kSites) / sizeof(kSites[0]);
-
-    constexpr std::size_t SiteIndex(const char* name)
-    {
-        for (std::size_t n = 0; n < kSiteCount; ++n)
-        {
-            const char* a = kSites[n].name;
-            const char* b = name;
-            while (*a && *a == *b)
-            {
-                ++a;
-                ++b;
-            }
-            if (*a == *b)
-                return n;
-        }
-        return kSiteCount;
-    }
-    constexpr std::int32_t Rel32(const Site& s, std::uint32_t at)
-    {
-        return static_cast<std::int32_t>(static_cast<std::uint32_t>(s.bytes[at]) | (static_cast<std::uint32_t>(s.bytes[at + 1]) << 8) |
-            (static_cast<std::uint32_t>(s.bytes[at + 2]) << 16) | (static_cast<std::uint32_t>(s.bytes[at + 3]) << 24));
-    }
-    // The rip-relative target of the instruction that starts at `at` in the
-    // site, `len` bytes long, its displacement at `disp`.
-    constexpr std::uint32_t RipOf(const char* name, std::uint32_t at, std::uint32_t len, std::uint32_t disp)
-    {
-        return static_cast<std::uint32_t>(static_cast<std::int64_t>(kSites[SiteIndex(name)].rva) + at + len +
-            Rel32(kSites[SiteIndex(name)], at + disp));
-    }
-    static_assert(SiteIndex("no_such_site") == kSiteCount, "site lookup");
-    static_assert(RipOf("gate_call", 0, 7, 3) == kMapStreamerRva, "lea rcx, streamer");
-    static_assert(RipOf("gate_call", 7, 5, 1) == kGateRva, "call the gate");
-    static_assert(kSites[SiteIndex("gate_call")].rva + 12 == kWeatherGateReturnRva, "the call's return address");
-    static_assert(kSites[SiteIndex("gate_call")].rva + 7 == kWeatherGateCallRva, "the call");
-    static_assert(RipOf("gate_call", 14, 6, 2) == kWeatherSimpleRva, "je to the simple path");
-    static_assert(kSites[SiteIndex("simple_stamp")].rva == kWeatherSimpleRva, "the simple path starts with the stamp");
-    static_assert(kSites[SiteIndex("simple_stamp")].bytes[4] == (kSimpleStamp & 0xFF) &&
-            kSites[SiteIndex("simple_stamp")].bytes[5] == (kSimpleStamp >> 8),
-        "mov [rsi+0x50A4],ebp");
-    static_assert(kSites[SiteIndex("gate_mask")].bytes[2] == kGateMask, "mov r8d,0x78");
-    static_assert(0x1980 + 0x35C4 == kWindStrength, "block + strength");
-    static_assert(RipOf("line_next", 0, 7, 3) == kWeatherRva + kWindLineNext, "row 1 index (0x5C95108)");
-    static_assert(RipOf("line_prev", 0, 7, 3) == kWeatherRva + kWindLinePrev, "row 0 index (0x5C95104)");
-    static_assert(RipOf("line_next_index", 0, 6, 2) == kWeatherNextRva, "next weather index");
-    static_assert(RipOf("line_prev_index", 0, 7, 3) == kWeatherPrevRva, "previous weather index");
-    static_assert(RipOf("weather_init", 0, 7, 3) == kWeatherRva, "weather entity");
-    static_assert(RipOf("weather_vtable", 0, 7, 3) == kWeatherVtableRva, "weather vtable");
-    static_assert(RipOf("weather_next", 0, 6, 2) == kWeatherNextRva, "weather next");
-    static_assert(RipOf("weather_prev", 0, 7, 3) == kWeatherPrevRva, "weather prev");
-    static_assert(RipOf("weather_table", 0, 7, 3) == kWeatherTableRva, "weather table");
-
-    inline bool SiteMatches(const Site& site, const std::uint8_t* code)
-    {
-        if (!code)
-            return false;
-        for (std::uint8_t n = 0; n < site.size; ++n)
-            if (code[n] != site.bytes[n])
-                return false;
-        return true;
-    }
 
     // ------------------------------------------------------------ the gate
 
@@ -206,9 +170,12 @@ namespace replay::windreplay
     {
         return publishedAtMs != 0 && nowMs >= publishedAtMs && nowMs - publishedAtMs <= kSceneStaleMs;
     }
-    inline bool AskScene(std::uint32_t returnRva, std::uint64_t publishedAtMs, std::uint64_t nowMs)
+    // `weatherReturn`: the weather pre-update's return address from the gate
+    // (kGateCall + kGateCallLength in the game), 0 when not found.
+    inline bool AskScene(std::uintptr_t returnAddress, std::uintptr_t weatherReturn, std::uint64_t publishedAtMs,
+        std::uint64_t nowMs)
     {
-        return returnRva == kWeatherGateReturnRva && SceneFresh(publishedAtMs, nowMs);
+        return weatherReturn && returnAddress == weatherReturn && SceneFresh(publishedAtMs, nowMs);
     }
 
     // Focus first (the streaming focus the replay set, where the map data is

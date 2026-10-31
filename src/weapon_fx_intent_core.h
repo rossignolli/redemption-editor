@@ -3,28 +3,19 @@
 // the engine's own range and camera tests (per shot, not the effect
 // instances), and the per-shot audit of what the clip has for each shot.
 //
-// Why [binary]: the muzzle flash 0x14523E0 tests the distance to the camera
-// position (0x141B954 against the info's range +8, squared) and the frustum
-// of the viewport [0x3EC2610]+0x530..0x5A0 (cmpleps/movmskps, cmp eax,0xF)
-// and leaves at 0x1452C24 before it creates the effect at 0x2C3A624; the
-// shell 0x145111C does the same (0x14512C8, 0x14512DA). Both are called,
-// twice each (a byte 0 then 1 as the last argument), by the wrappers
-// 0x14309A8 (muzzle: rcx manager 0x4F3EF90, rdx shooter, r8 CWeapon, r9
-// weapon object, then the bone, the info, a vector by pointer and a dword)
-// and 0x14308F0 (shell: rcx manager, rdx shooter, r8 CWeapon, r9 weapon
-// object, two dwords: the bone is the second). Copying the instances already
-// made misses the flash of an NPC's shot outside the gameplay camera's view.
-//
-// The wrappers are detoured to record (they always forward). The replay calls
-// the same wrapper per recorded request (PlanCall below builds the arguments
-// from the puppets) and lets the in-game test decide about the sound: no
-// direct call path from either wrapper reaches the audio creates within 12
-// levels [binary], but 629 indirect calls stay unresolved, so every call is
-// measured (sounds of the shooter and its weapon right after it). The
-// viewport [0x3EC2610] being the replay's free camera stays [hypothesis]; the
-// playback logs the engine's own plane test against the rendered camera.
+// Why: the muzzle flash and shell cores leave before they create the effect
+// when the shot is out of range or outside the viewport's frustum, so copying
+// the instances already made misses the flash of an NPC's shot outside the
+// gameplay camera's view [binary]. The request wrappers are detoured to record
+// (they always forward); the replay calls the same wrapper per recorded
+// request (PlanCall builds the arguments from the puppets). Whether a wrapper
+// call reaches the audio is not proven, so every call is measured; the
+// viewport being the replay's free camera stays [hypothesis].
+// Research: docs/research/fx-fires-decals-effects.md
 //
 // Pure (no game); unit tested in tests/fx_residue_tests.cpp.
+#include "game_sig_core.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -38,8 +29,8 @@ namespace replay::weaponfx
 {
     enum class Kind : std::uint8_t
     {
-        Muzzle = 1, // 0x14309A8 -> 0x14523E0 (flash, then the smoke pass)
-        Shell = 2,  // 0x14308F0 -> 0x145111C (the cartridge)
+        Muzzle = 1, // the muzzle request -> kWeaponMuzzleCore (flash, then the smoke pass)
+        Shell = 2,  // the shell request -> kWeaponShellCore (the cartridge)
     };
 
     constexpr std::size_t kMaxIntents = 65536;
@@ -116,7 +107,16 @@ namespace replay::weaponfx
     // weapon system's requests (this section).
     constexpr std::uint32_t kShotWindowMs = 60; // a request or an effect this close to the shot is the shot's
     constexpr std::uint32_t kShellWindowMs = 1000; // a shell up to this long after the shot (a lever or a pump cycles later)
-    constexpr std::uint32_t kShellRegisteredSite = 0x14513CE; // the shell's registered get (0x2C3A2C0 at 0x14513C9) [binary+log]
+
+    // The shell core and its registered get (the call through the registered
+    // wrapper): the site a clip records for the shell track [binary+log]
+    // (fx_observer.h ShellRegisteredSite).
+    inline const sig::Signature kWeaponShellCore{"weapon_fx_shell_core",
+        "4D 85 C9 0F 84 ?? ?? ?? ?? 48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 55 41 57 48 8D 68 C8 48 81 EC "
+        "20 01 00 00",
+        0x145111C};
+    inline const sig::Signature kWeaponShellCall{"weapon_fx_shell_registered_call", kWeaponShellCore,
+        sig::Offset{0x2AD}, "E8 ?? ?? ?? ?? 48 8B D8 48 85 C0", 0x14513C9};
 
     struct ShotRow
     {
@@ -225,18 +225,30 @@ namespace replay::weaponfx
 
     // ---- the requests played back ----------------------------------------
 
-    // The recorded sites the request makes (fx_observer.h kMuzzleFlashSite;
-    // the shell's registered get above). In a clip with requests the replay
-    // calls the wrapper and drops the recorded effect of the same shot.
-    constexpr std::uint32_t kMuzzleEffectSite = 0x1452671;
-    // [binary] the managers both callers pass in rcx (0x11479D8, 0x1101421).
-    constexpr std::uintptr_t kManagerRva = 0x4F3EF90;
-    // [binary] the muzzle info map the caller 0x1147648 asks (0x1280278 on
-    // the object at 0x4E37550: a binary map at +0x78, entries at +8, u16 count
-    // at +0x10, 16-byte entries {u32 key, pad, info*}; 0x450210 is a lower
-    // bound search on the key), the key [[CWeapon+0x60]+0x240] or, when not
-    // zero, the component's [[[CWeapon+0x70]+0x80]+0x94].
-    constexpr std::uintptr_t kMuzzleInfoTableRva = 0x4E37550;
+    // The muzzle flash core and its call of the triggered instance wrapper:
+    // the site a clip records for the muzzle effect (fx_observer.h
+    // MuzzleFlashSite). In a clip with requests the replay calls the wrapper
+    // and drops the recorded effect of the same shot.
+    inline const sig::Signature kWeaponMuzzleCore{"weapon_fx_muzzle_core",
+        "4D 85 C9 0F 84 ?? ?? ?? ?? 48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D A8 "
+        "88 FD FF FF",
+        0x14523E0};
+    inline const sig::Signature kWeaponMuzzleCall{"weapon_fx_muzzle_effect_call", kWeaponMuzzleCore,
+        sig::Offset{0x28C}, "E8 ?? ?? ?? ?? 48 8B D8 48 85 C0", 0x145266C};
+    // [binary] The muzzle request's caller (after the chance roll): the
+    // manager both request callers pass in rcx, and the muzzle info map it
+    // asks (a lookup on the object: a binary map at +0x78, entries at +8, u16
+    // count at +0x10, 16-byte entries {u32 key, pad, info*}, a lower bound
+    // search on the key), the key [[CWeapon+0x60]+0x240] or, when not zero,
+    // the component's [[[CWeapon+0x70]+0x80]+0x94].
+    inline const sig::Signature kWeaponMuzzleCaller{"weapon_fx_muzzle_caller",
+        "48 89 54 24 10 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 78 33 DB 0F 29 74 24 60 83 CD FF 89 9C 24 C0 00 "
+        "00 00",
+        0x1147648};
+    inline const sig::Signature kWeaponFxManager{"weapon_fx_manager", kWeaponMuzzleCaller, sig::Rel32{0x393, 0x397}, "",
+        0x4F3EF90};
+    inline const sig::Signature kWeaponMuzzleInfoTable{"weapon_fx_muzzle_info_table", kWeaponMuzzleCaller,
+        sig::Rel32{0x266, 0x26A}, "", 0x4E37550};
     constexpr std::uint32_t kInfoMapOffset = 0x78;
     constexpr std::uint32_t kInfoMapEntries = 0x8;
     constexpr std::uint32_t kInfoMapCount = 0x10;
@@ -249,11 +261,12 @@ namespace replay::weaponfx
     constexpr std::uint32_t kComponentInfoOffset = 0x80;
     constexpr std::uint32_t kComponentMuzzleKey = 0x94;
     constexpr std::uint32_t kObjectWeaponOffset = 0x448;   // CObject -> CWeapon (object_check.h)
-    // [binary] the viewport both cores test (0x14525A1, 0x14512DA): [rva]
-    // holds it; 8 float4 at +0x530..+0x5A0 are two sets of four planes (x, y,
-    // z coefficients and d per lane); a point is in when every plane gives at
-    // least -0.5 (the constant at 0x330F190, lane 3).
-    constexpr std::uintptr_t kViewportRva = 0x3EC2610;
+    // [binary] The viewport both cores test (the muzzle core's load of it):
+    // the global holds it; 8 float4 at +0x530..+0x5A0 are two sets of four
+    // planes (x, y, z coefficients and d per lane); a point is in when every
+    // plane gives at least -0.5 (a constant of the core, lane 3).
+    inline const sig::Signature kWeaponViewport{"weapon_fx_viewport", kWeaponMuzzleCore, sig::Rel32{0x1C4, 0x1C8}, "",
+        0x3EC2610};
     constexpr std::uint32_t kViewportPlanes = 0x530;
     constexpr float kViewRadius = 0.5f;
     // At most this many calls per playback tick (a gunfight's rest waits for
@@ -267,10 +280,9 @@ namespace replay::weaponfx
     inline bool Plausible(std::uint64_t pointer) { return pointer >= 0x10000 && pointer < 0x00007FFFFFFFFFFFull; }
 
     // Whether a request can be played: a weapon object recorded (the CWeapon
-    // and the object come from its puppet), a bone (the cores leave at once
-    // on -1: 0x145244E, 0x1451144) and, for the muzzle, the last dword 0 or 1
-    // (the core indexes CWeapon+0x528 + 32 * it, the caller sets it with
-    // setne, 0x11477F6).
+    // and the object come from its puppet), a bone (both cores leave at once
+    // on -1) and, for the muzzle, the last dword 0 or 1 (the core indexes
+    // CWeapon+0x528 + 32 * it, the caller sets it with setne).
     inline bool Playable(const Intent& i)
     {
         if (!ValidIntent(i) || i.weapon == kNoId || i.bone < 0)
@@ -300,11 +312,12 @@ namespace replay::weaponfx
         return entity != kNoId && (entity == i.weapon || (i.shooter != kNoId && entity == i.shooter));
     }
 
-    // A muzzle effect of the muzzle site within kShotWindowMs of a playable
-    // muzzle request on its weapon or shooter.
-    inline bool CoversMuzzleEvent(const Track& track, const EventRef& event)
+    // A muzzle effect of the muzzle site (`muzzleSite`, fx_observer.h
+    // MuzzleFlashSite) within kShotWindowMs of a playable muzzle request on
+    // its weapon or shooter.
+    inline bool CoversMuzzleEvent(const Track& track, const EventRef& event, std::uint32_t muzzleSite)
     {
-        if (event.site != kMuzzleEffectSite)
+        if (event.site != muzzleSite)
             return false;
         for (const Intent& i : track.intents)
             if (i.kind == static_cast<std::uint8_t>(Kind::Muzzle) && Playable(i) && SameOwner(i, event.entity) &&
@@ -313,12 +326,13 @@ namespace replay::weaponfx
         return false;
     }
 
-    // A shell track (the registered get of the shell site: one entry per
-    // CWeapon and slot, alive over several shots) with a playable shell
-    // request on its weapon or shooter within it.
-    inline bool CoversShellTrack(const Track& track, const TrackRef& ref)
+    // A shell track (the registered get of the shell site, `shellSite`,
+    // fx_observer.h ShellRegisteredSite: one entry per CWeapon and slot, alive
+    // over several shots) with a playable shell request on its weapon or
+    // shooter within it.
+    inline bool CoversShellTrack(const Track& track, const TrackRef& ref, std::uint32_t shellSite)
     {
-        if (ref.site != kShellRegisteredSite)
+        if (ref.site != shellSite)
             return false;
         for (const Intent& i : track.intents)
             if (i.kind == static_cast<std::uint8_t>(Kind::Shell) && Playable(i) && SameOwner(i, ref.attach) &&
@@ -397,9 +411,9 @@ namespace replay::weaponfx
         return a == i.fxHash && b == i.fxHashAlt && r == ir;
     }
 
-    // The engine's plane test (0x14525A1..0x1452659): planes[0..3] are the
-    // x, y, z and d rows of the first four planes (+0x530..+0x560), [4..7]
-    // the second four (+0x570..+0x5A0).
+    // The engine's plane test (the muzzle core's): planes[0..3] are the x, y,
+    // z and d rows of the first four planes (+0x530..+0x560), [4..7] the
+    // second four (+0x570..+0x5A0).
     inline bool EngineInView(const float planes[8][4], const float p[3], float radius = kViewRadius)
     {
         for (int lane = 0; lane < 4; ++lane)

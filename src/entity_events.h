@@ -242,7 +242,7 @@ namespace replay::entity
     };
     using ExplosionAudioTrack = TimedEvents<ExplosionAudioEvent>;
     // An animation audio event of a recorded ped or horse (the clip's Audio
-    // tag: AddAnimEvent 0x2C2D934 on the ped's audio entity), kept only when the
+    // tag: AddAnimEvent on the ped's audio entity), kept only when the
     // engine made nothing observable from it (no sound, footstep or speech line:
     // those have their own tracks). Playback queues it on the puppet's audio
     // entity through the same AddAnimEvent, in normal forward play only, and the
@@ -274,11 +274,11 @@ namespace replay::entity
     // how (zoom, flags). Attached effects on an unrecorded entity are not
     // stored; the shot record keeps the muzzle flash and the bullet impact.
     // FxSettings: the instance fields the engine's sites write before the start
-    // (build 1491.50): +0x350 (0x2C4F508, from the entity), +0x380..+0x38B and
-    // +0x38C (0x2C4E008, 0x2C4DE90), +0x39C (0x145292E, muzzle), +0x3A0
-    // (0x144D633, impact), +0x3A8 (the relocate distance: 10.0 at the instance
-    // init 0x29D6179, 1.0 at the hoof site 0x146C1F9), +0x3BC (u16, 0x29D61BB
-    // init, site 0x145441C); +0x5CC is evidence only. Read at the start (and per
+    // (build 1491.50): +0x350 (its setter, from the entity), +0x380..+0x38B and
+    // +0x38C (the tint and alpha setters), +0x39C (the muzzle flash core),
+    // +0x3A0 (the bullet impact core), +0x3A8 (the relocate distance: 10.0 at
+    // the instance init, 1.0 at the hoof dust site), +0x3BC (u16, the instance
+    // init and one effect site); +0x5CC is evidence only. Read at the start (and per
     // tick for a registered effect), written back on our instance before its
     // start. The names "tint", "alpha", "lod" and "cull" are guesses; offsets
     // and writers come from the binary.
@@ -331,7 +331,7 @@ namespace replay::entity
         if ((mask & FxSettings::kTele3A8) && !same(&a.tele3A8, &b.tele3A8, 4))
             diff |= FxSettings::kTele3A8;
         // The byte +0x3BC only; +0x3BD (the high byte of the u16 kept in the clip)
-        // is the instance update's own (0x29ED5D9) and is neither written back nor
+        // is the instance update's own and is neither written back nor
         // compared.
         if ((mask & FxSettings::kCull3BC) && (a.cull3BC & 0xFFu) != (b.cull3BC & 0xFFu))
             diff |= FxSettings::kCull3BC;
@@ -375,7 +375,7 @@ namespace replay::entity
         std::uint32_t timeMs = 0;
         std::uint32_t effectHash = 0;
         std::uint32_t assetHash = 0;
-        std::uint32_t callerSite = 0; // engine caller RVA (evidence)
+        std::uint32_t callerSite = 0; // engine caller RVA (the playback compares it: a site id on disk, clip_sites.h)
         ReplayId entity;              // invalid: placed in the world
         std::int32_t bone = -1;
         float zoom = 1.0f;
@@ -403,7 +403,7 @@ namespace replay::entity
         bool attached = false;
         std::uint32_t attachModel = 0;
         float attachPos[3] = {};
-        std::uint32_t callerReturn = 0; // evidence: the core's caller
+        std::uint32_t callerReturn = 0; // the core's caller (the generic path replays; a site id on disk)
         std::uint32_t engineId = 0;     // the id the engine gave it (the result)
         std::uint32_t requestId = 0;    // the id the caller asked for (a pool re-adds with its own)
         std::uint8_t flag = 0;
@@ -458,7 +458,7 @@ namespace replay::entity
     };
     using GoreTrack = TimedEvents<GoreEvent>;
 
-    // The gameplay gore event (handler 0xB4EB3C): the whole 0x50-byte event
+    // The gameplay gore event (the gore handler's argument): the whole 0x50-byte event
     // with the ped and inflictor as replay ids (the pointers are replaced at
     // playback).
     struct GoreHitEvent
@@ -485,7 +485,7 @@ namespace replay::entity
         // Record +0x78, an entity pointer the engine copies into the new
         // record: kept as the recorded entity it named, zeroed in `record`.
         // Null when it named nothing recorded (null is a value the engine
-        // itself passes, bullet path 0x125E11C).
+        // itself passes, on the bullet blood path).
         ReplayId ref78Entity;
         std::uint8_t record[0x160] = {};
     };
@@ -598,8 +598,8 @@ namespace replay::entity
         FxSettings settings;
     };
     // Section RGSS: a stretch the engine's site did not call the key (no call
-    // strictly inside (fromMs, toMs)); the registry stops the instance softly
-    // (0x2C52635) and restarts it when the call comes back (0x2C5268A), one
+    // strictly inside (fromMs, toMs)); the registry's update stops the instance
+    // softly and restarts it when the call comes back (its restart call), one
     // burst per call run (the hoof dust).
     struct RegisteredFxGap
     {
@@ -612,7 +612,7 @@ namespace replay::entity
         std::uint8_t flag = 0; // the engine call's r9b and last two bytes, replayed as is
         std::uint8_t arg8 = 0;
         std::uint8_t arg9 = 0;
-        std::uint32_t callerSite = 0; // evidence
+        std::uint32_t callerSite = 0; // engine caller RVA (the playback compares it: a site id on disk)
         // The entity the engine attached the instance to (a burning object,
         // a wading ped): the recorded entity when it is one, otherwise the
         // entity's model and position so playback can find the same world
@@ -786,7 +786,7 @@ namespace replay::entity
         std::uint64_t soundRef = 0;
         std::vector<std::uint8_t> params;
         std::uint64_t flags[4] = {};
-        // 0: deferred request (0x310E680); 1: direct create-and-play on the
+        // 0: deferred request; 1: direct create-and-play on the
         // ped audio; 2: direct create-and-play on a static audio entity
         // (collision and similar) tracking the ped; 3: collision sound on a
         // static audio entity at the ped's position, without tracker; 4:

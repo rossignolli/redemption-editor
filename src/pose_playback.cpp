@@ -106,7 +106,7 @@ namespace replay::pose::playback
             return;
         // SET_VEHICLE_EXTRA's third argument disables the extra. Only the extras
         // whose state differs: switching an extra that is already right runs the
-        // engine's extra toggle (0x15DF7FC) for nothing.
+        // engine's extra toggle for nothing.
         for (int extra = 0; extra < 32; ++extra)
         {
             if (!((extrasExist >> extra) & 1u))
@@ -339,7 +339,7 @@ namespace replay::pose::playback
         ENTITY::FREEZE_ENTITY_POSITION(ped, TRUE);
         ENTITY::SET_ENTITY_COLLISION(ped, FALSE, FALSE);
         // The trail manager holds 128 records world-wide and a full one refuses
-        // the puppets' (0xC26100, cmp [mgr+0xC], 0x80; no eviction). A hidden
+        // the puppets' (the record add: cmp [mgr+0xC], 0x80; no eviction). A hidden
         // entity keeps its record (only a deleted one is freed), and a busy scene
         // can hide hundreds of world peds and objects. Its record is given up
         // (entity+0xB4 bit 22: has a record) and back on restore.

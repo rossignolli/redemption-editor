@@ -1,59 +1,16 @@
 #pragma once
 
-// The dynamic mixer's scenes and the entities' audio mix groups, recorded and
-// replayed the way a replay editor usually replays mixer scenes (start and
-// stop with the scene hash), pure part.
+// The dynamic mixer's scenes and the entities' audio mix groups, recorded
+// (MIXS), pure part.
 //
-// Engine facts (build 1491.50):
-//   - the scripted conversation manager's update (0x2FC4F58 -> 0x2FCC0FC)
-//     picks the dominant playing conversation (0x2FA3AAC: state 3 at +0x130,
-//     the highest priority +0x144, then the nearest) among its conversations
-//     (+0x860, count +0x980), stops the scene of every other one (0x2FC2964:
-//     conversation +0xE8 -> mixer stop 0x327A07C) and starts, once, the scene
-//     0x5B9DE6B4 on the dominant one (0x2FC2200 -> mixer start 0x2F19018 at
-//     0x2FC2330, scene pointer kept at conversation +0xE8);
-//   - that scene gets a filter (0x2FC2200): a list of the conversation's
-//     participants' tags (participant array +0x30, count u16 +0x38, stride
-//     0xA0: tag u32 at +0x7C for each participant with the byte +0x98 set),
-//     mode 1 and invert 1, plus the metadata 0xB77A4E4D; the mixer's match
-//     (0x25315B0 -> 0x2531748 -> 0x2531528) compares the list with the audio
-//     mix group hashes of the sound's entity (entity audio vtable +0x78,
-//     words +0xEC, hashed by 0x252AE84). Inverted: the scene acts on the
-//     sounds of the entities that are NOT in the participants' mix groups.
-//     That is the conversation duck: everyone but the speakers;
-//   - the replay says the lines one by one on the direct path, so no
-//     conversation exists and the manager starts no scene: without this,
-//     ambient chatter plays at its normal level under a conversation;
-//   - an entity's mix group is set by ADD_ENTITY_TO_AUDIO_MIX_GROUP (handler
-//     0xF65E34 -> 0x2EE52E8(mixer 0x5B98760, entity, slot 0, hash, fade)) and
-//     read by _GET_ENTITY_AUDIO_MIX_GROUP (slot 0, 0 when none);
-//   - a script scene lives in the calling script thread's slot of the script
-//     audio object (0x5C81C20 + 0x37D0, 32 slots of 0x380 keyed by the
-//     active thread's id, 0x31BAD14); 0x31C8820 returns true without
-//     starting anything when that slot already holds a scene of the hash;
-//     the hash variant of START_AUDIO_SCENE is the native 0xDC2F83A0612CA34D
-//     (handler 0xF65254 -> 0x31C8910) and of STOP_AUDIO_SCENE 0x6AB944DF68B512D3
-//     (handler 0xF653E4 -> 0x31C946C): the playback uses them;
-//   - a scene's variables (SET_AUDIO_SCENE_VARIABLE -> 0x31C66EC, and the
-//     engine's own 0x3279628(scene, name hash, value)) are the array of 10
-//     {name hash, value} at scene +0x18, count at +0x68; the recording polls
-//     it and the playback sets the recorded values with 0x3279628;
-//   - the engine's code scenes (caller other than the two above) are started
-//     by systems driven by the game state (weather and ambient zones
-//     0x31CEFD4, the refcounted scene table 0x3211FE7, the audio engine's
-//     update 0x2F29985, ...); the playback may start them again directly in
-//     the mixer (0x2F19018 with a reference of the replay's own), only when
-//     the engine does not already have a scene of the hash open (then the
-//     engine owns it), behind MixSceneReplayCode (default 0);
-//   - a stop whose scene no longer carries the instance's hash (+0x328) is a
-//     stale reference; the recording polls each open scene (+0x310
-//     reference, +0x328 hash) and ends it when it vanished.
-// So the recording keeps every scene start and stop (hash, who started it,
-// the participants' tags of a conversation scene), the scene variables and
-// each recorded ped's mix group; the playback puts the puppets in the
-// recorded groups and starts the conversation scenes again with the recorded
-// tags (a conversation object of the replay's own) and the script scenes by
-// hash.
+// The recording keeps every scene start and stop (hash, who started it, the
+// participants' tags of a conversation scene), the scene variables and each
+// recorded ped's mix group; the speech duck and the category state read them
+// back. (Starting the recorded scenes again in the playback, MixSceneReplay,
+// left with its keys.) A stop whose scene no longer carries the
+// instance's hash (+0x328) is a stale reference.
+// Evidence: offline dump; the signatures are in mix_scene.cpp.
+// Research: docs/research/audio-mix-scenes.md
 //
 // Pure: unit tested in voices_tests.cpp.
 
@@ -66,9 +23,15 @@
 
 namespace replay::mixscene
 {
-    // Return addresses of the mixer start calls (RVA, build 1491.50).
-    constexpr std::uint32_t kCallerConversation = 0x2FC2335; // 0x2FC2200 at 0x2FC2330
-    constexpr std::uint32_t kCallerScript = 0x31C88EB;       // START_AUDIO_SCENE: 0x31C8820 at 0x31C88E6
+    // The return addresses (RVAs) of the mixer start calls that tell a kind:
+    // the conversation duck's start and START_AUDIO_SCENE's start in the
+    // script thread's slot. mix_scene.cpp finds them by signature; 0 when not
+    // found (then no start is of that kind).
+    struct Callers
+    {
+        std::uint32_t conversation = 0;
+        std::uint32_t script = 0;
+    };
     constexpr std::uint32_t kConversationScene = 0x5B9DE6B4;
 
     enum class Kind : std::uint8_t
@@ -79,11 +42,11 @@ namespace replay::mixscene
     };
     constexpr std::uint8_t kKindCount = 3;
 
-    inline Kind KindOfCaller(std::uint32_t callerRva)
+    inline Kind KindOfCaller(std::uint32_t callerRva, const Callers& callers)
     {
-        if (callerRva == kCallerConversation)
+        if (callerRva && callerRva == callers.conversation)
             return Kind::Conversation;
-        if (callerRva == kCallerScript)
+        if (callerRva && callerRva == callers.script)
             return Kind::Script;
         return Kind::Code;
     }
@@ -99,28 +62,10 @@ namespace replay::mixscene
         return "unknown";
     }
 
-    inline bool Replayable(Kind kind) { return kind == Kind::Script || kind == Kind::Conversation; }
-
-    // Which kinds the playback starts again (bit per kind).
-    constexpr std::uint8_t kReplayScript = 1;
-    constexpr std::uint8_t kReplayConversation = 2;
-    constexpr std::uint8_t kReplayCode = 4;
-    constexpr std::uint8_t kReplayDefault = kReplayScript | kReplayConversation;
-    inline bool Replayable(Kind kind, std::uint8_t kinds)
-    {
-        switch (kind)
-        {
-        case Kind::Script: return (kinds & kReplayScript) != 0;
-        case Kind::Conversation: return (kinds & kReplayConversation) != 0;
-        case Kind::Code: return (kinds & kReplayCode) != 0;
-        }
-        return false;
-    }
-
-    // The scene object's fields the replay reads (build 1491.50): the
-    // reference the mixer clears on stop (+0x310, written by 0x2F18E40), the
-    // hash (+0x328, written by 0x2F19018), the variables (+0x18, 10 pairs of
-    // name hash and float, count at +0x68, 0x3279628).
+    // The scene object's fields the replay reads: the reference the mixer
+    // clears on stop (+0x310, written by the pool start), the hash (+0x328,
+    // written by the mixer start), the variables (+0x18, 10 pairs of name hash
+    // and float, count at +0x68, the variable set).
     constexpr std::uint32_t kSceneReference = 0x310;
     constexpr std::uint32_t kSceneHash = 0x328;
     constexpr std::uint32_t kSceneVariables = 0x18;
@@ -412,6 +357,7 @@ namespace replay::mixscene
     {
         std::uint32_t nextId = 1;
         std::map<std::uint64_t, Instance> open; // scene pointer -> instance (startMs: first seen)
+        Callers callers;                        // the start sites that tell a kind
 
         // A start: returns the instance (a pointer seen again replaces the old one).
         const Instance& Start(std::uint64_t scene, std::uint32_t hash, std::uint32_t caller, std::uint32_t nowMs,
@@ -421,7 +367,7 @@ namespace replay::mixscene
             instance.id = nextId++;
             instance.hash = hash;
             instance.caller = caller;
-            instance.kind = KindOfCaller(caller);
+            instance.kind = KindOfCaller(caller, callers);
             instance.startMs = nowMs;
             instance.tagCount = static_cast<std::uint8_t>(std::min(tagCount, kMaxTags));
             for (std::size_t n = 0; n < instance.tagCount; ++n)
@@ -439,7 +385,7 @@ namespace replay::mixscene
             if (found == open.end() || found->second.hash != hash || found->second.caller != 0)
                 return 0;
             found->second.caller = caller;
-            found->second.kind = KindOfCaller(caller);
+            found->second.kind = KindOfCaller(caller, callers);
             return found->second.id;
         }
         // A stop: the instance id it ends (0: never seen start).
@@ -490,75 +436,6 @@ namespace replay::mixscene
         return added;
     }
 
-    // ---- the playback's plan --------------------------------------------
-
-    // The replayable instances active at timeMs (ids), at most `limit`.
-    inline std::vector<std::uint32_t> Wanted(const Track& track, std::uint32_t timeMs, std::size_t limit)
-    {
-        std::vector<std::uint32_t> out;
-        for (const Instance& instance : track.instances)
-            if (Replayable(instance.kind) && instance.ActiveAt(timeMs) && out.size() < limit)
-                out.push_back(instance.id);
-        return out;
-    }
-
-    // The same with the kinds the playback replays; a script or
-    // code scene whose hash the engine already has open (engineOpen) is the
-    // engine's (it started it again by itself), and the hashes in `skip`
-    // (MixSceneCodeSkip) are never replayed as code scenes. A conversation
-    // scene is never filtered by hash (every conversation shares it).
-    inline std::vector<std::uint32_t> Wanted(const Track& track, std::uint32_t timeMs, std::size_t limit, std::uint8_t kinds,
-        const std::vector<std::uint32_t>& engineOpen, const std::vector<std::uint32_t>& skip)
-    {
-        std::vector<std::uint32_t> out;
-        for (const Instance& instance : track.instances)
-        {
-            if (!Replayable(instance.kind, kinds) || !instance.ActiveAt(timeMs) || out.size() >= limit)
-                continue;
-            if (instance.kind != Kind::Conversation &&
-                std::find(engineOpen.begin(), engineOpen.end(), instance.hash) != engineOpen.end())
-                continue;
-            if (instance.kind == Kind::Code && std::find(skip.begin(), skip.end(), instance.hash) != skip.end())
-                continue;
-            out.push_back(instance.id);
-        }
-        return out;
-    }
-
-    // The same with the scenes the replay
-    // owns (`owned`: the hidden live player's state scenes the clip has;
-    // started whatever the kinds and never left to the engine, whose start
-    // the replay refuses) and the scenes never started here (`never`: the
-    // speech ducks, which the engine's own driver starts from the inputs
-    // the replay writes).
-    inline std::vector<std::uint32_t> Wanted(const Track& track, std::uint32_t timeMs, std::size_t limit, std::uint8_t kinds,
-        const std::vector<std::uint32_t>& engineOpen, const std::vector<std::uint32_t>& skip,
-        const std::vector<std::uint32_t>& owned, const std::vector<std::uint32_t>& never)
-    {
-        std::vector<std::uint32_t> out;
-        for (const Instance& instance : track.instances)
-        {
-            if (!instance.ActiveAt(timeMs) || out.size() >= limit)
-                continue;
-            if (std::find(never.begin(), never.end(), instance.hash) != never.end())
-                continue;
-            const bool own = instance.kind != Kind::Conversation &&
-                std::find(owned.begin(), owned.end(), instance.hash) != owned.end();
-            if (!own)
-            {
-                if (!Replayable(instance.kind, kinds))
-                    continue;
-                if (instance.kind != Kind::Conversation &&
-                    std::find(engineOpen.begin(), engineOpen.end(), instance.hash) != engineOpen.end())
-                    continue;
-                if (instance.kind == Kind::Code && std::find(skip.begin(), skip.end(), instance.hash) != skip.end())
-                    continue;
-            }
-            out.push_back(instance.id);
-        }
-        return out;
-    }
-
     // A stop of a scene whose hash at the stop is not the instance's: the
     // reference was stale (the scene had already gone).
     inline bool StaleStop(const Instance& instance, std::uint32_t hashAtStop) { return hashAtStop != instance.hash; }
@@ -578,37 +455,6 @@ namespace replay::mixscene
             return true;
         const float d = now - last;
         return d > 1e-4f || d < -1e-4f;
-    }
-
-    struct Diff
-    {
-        std::vector<std::uint32_t> start;
-        std::vector<std::uint32_t> stop;
-    };
-    inline Diff Plan(const std::vector<std::uint32_t>& wanted, const std::vector<std::uint32_t>& running)
-    {
-        Diff diff;
-        for (std::uint32_t id : wanted)
-            if (std::find(running.begin(), running.end(), id) == running.end())
-                diff.start.push_back(id);
-        for (std::uint32_t id : running)
-            if (std::find(wanted.begin(), wanted.end(), id) == wanted.end())
-                diff.stop.push_back(id);
-        return diff;
-    }
-
-    // What the playback does with a puppet's mix group now.
-    enum class GroupAction : std::uint8_t
-    {
-        None,   // already right
-        Add,    // put it in the recorded group
-        Remove, // the replay put it in a group the recording no longer has
-    };
-    inline GroupAction DecideGroup(std::uint32_t recorded, std::uint32_t current, bool appliedByReplay)
-    {
-        if (recorded != 0)
-            return current == recorded ? GroupAction::None : GroupAction::Add;
-        return appliedByReplay && current != 0 ? GroupAction::Remove : GroupAction::None;
     }
 
     // Is any of the entity's tags (its mix group) among a conversation

@@ -3,7 +3,7 @@
 // What each recorded melee hit came to in the replay (pure part).
 //
 // The melee track (who hit and the move's hash) replays a recorded hit through
-// the engine's melee audio entry 0x318A28C on the puppet (replay_events.cpp
+// the engine's melee audio entry on the puppet (replay_events.cpp
 // PlayPoseV2MeleeHits); the sounds the engine makes inside that call are the
 // hit's. A hit is:
 // - played: the call ran and made one sound or more;

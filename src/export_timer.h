@@ -9,31 +9,24 @@
 // frame may take a second of real time, so that step must be the export
 // clock's step, every frame, before the game updates.
 //
-// How (rung 5 of the engine access ladder, build 1491.50):
-//   fwTimer::Update (RVA 0x2B13D3C, prologue signature checked) computes
-//     realDelta = float(QPC() - [0x59B3CA8]) * [0x542819C]
-//   and then stores a second QPC() into [0x59B3CA8]; every time set is
-//   advanced by realDelta (times the warp: Dead Eye, SET_TIME_SCALE and the
-//   other slots still apply on top, as in normal play).
-//   The detour forwards every call to the original. Only while an export
-//   holds the lock, right before forwarding, it writes [0x59B3CA8] =
-//   QPC() - ticks(step), so the original's own subtraction yields the
-//   export step (plus the few ticks between our QPC read and its own). The
-//   delta the engine really used is read back after the call from the
-//   system time set (0x59B38F0 +0x0C, warp 1.0, never clamped) and the
-//   difference is carried into the next frame (StepPlanner): no drift. The
-//   original overwrites [0x59B3CA8] with a real QPC at the end of every
-//   call, so nothing fake survives the lock.
-// Signature checks: the prologue, the two instruction sites that read and
-// store [0x59B3CA8] and the time set helper's store of +0x0C. Any mismatch
-// refuses the install (and the export is refused, never recorded on the
-// wall clock).
+// How: a detour on fwTimer::Update forwards every call to the original; only
+// while an export holds the lock it backdates [previous counter] by the
+// export step first, so the engine's own subtraction yields that step. The
+// delta the engine really used is read back after the call and the
+// difference carried into the next frame (StepPlanner): no drift. The
+// original stores a real QPC at the end of every call, so nothing fake
+// survives the lock.
+// The clamp of the clamped time sets is logged at install, and a probe
+// compares GET_FRAME_TIME with the planned step every tick
+// (RENDER_EXPORT,phase=timer_check): a step below the minimum would make
+// the world run faster than the export.
 //
-// The clamp of the clamped sets ([0x3CC8388] min, [0x3CC838C] max step) is
-// read at install and logged: a step below the minimum (high fps times many
-// motion blur samples) would make the world run faster than the export;
-// the probe compares GET_FRAME_TIME with the planned step every tick and
-// logs the mismatches (RENDER_EXPORT,phase=timer_check).
+// Evidence: offline dump, build 1491.50 (rung 5 of the engine access
+// ladder). Signature checks on the prologue, the two sites that read and
+// store [previous counter] and the time set helper's store of +0x0C; any
+// mismatch refuses the install, and the export is refused, never recorded
+// on the wall clock.
+// Research: docs/research/export-timer.md
 //
 // Script fiber calls (Install, SetStepNs, Lock, Release, Stats); the
 // detour runs on the game's main thread and never calls natives.
@@ -112,9 +105,9 @@ namespace replay::exporttimer
         float lastGameStep = 0.0f;        // seconds of the game set (warp and clamp applied)
         std::int64_t errorTicks = 0;      // cumulative applied - wanted
         std::uint64_t writeFailures = 0;
-        float clampMin = 0.0f;            // [0x3CC8388]
-        float clampMax = 0.0f;            // [0x3CC838C]
-        float period = 0.0f;              // [0x542819C] seconds per counter tick
+        float clampMin = 0.0f;            // [min step]
+        float clampMax = 0.0f;            // [max step]
+        float period = 0.0f;              // [seconds per tick] of the counter
     };
 
     // Finds and hooks the timer; false (with the reason) when the build does

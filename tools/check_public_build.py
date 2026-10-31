@@ -48,10 +48,10 @@ READER_FILES = {os.path.normpath("src/mod_identity.h")}
 
 # Table-driven reads: (file, regex on the code line, section, where the keys come from).
 DYNAMIC = (
-    ("script.cpp", r"IniString\(info\.iniKey", "RedemptionEditor", "kFreeCamFields"),
-    ("script.cpp", r"IniString\(sp::kIniKeys\[index\]", "RedemptionEditor", "camera_spline.h kIniKeys"),
-    ("script.cpp", r"IniInt\(name, fallback", "RedemptionEditor", "key() lambdas (their literal calls are checked)"),
-    ("script.cpp", r"IniSection\(section\.data\(\)", None, "IniSectionText: the section logged as read (CONFIG_INI)"),
+    ("src/script_config.cpp", r"IniString\(info\.iniKey", "RedemptionEditor", "kFreeCamFields"),
+    ("src/script_config.cpp", r"IniString\(sp::kIniKeys\[index\]", "RedemptionEditor", "camera_spline.h kIniKeys"),
+    ("src/script_config.cpp", r"IniInt\(name, fallback", "RedemptionEditor", "key() lambdas (their literal calls are checked)"),
+    ("src/script_config.cpp", r"IniSection\(section\.data\(\)", None, "IniSectionText: the section logged as read (CONFIG_INI)"),
     ("src/editor_keys_ini.h", r"ProfileStringA\(kIniSection, key", "Keys", "editor_keys.h kActions"),
 )
 
@@ -152,7 +152,8 @@ def public_sources():
 
 
 # 6. The bench: the executor, its scenario parser, its hooks and fault commands, its inbox.
-BENCH_SOURCES = (os.path.normpath('src/replay_bench.cpp'), os.path.normpath('src/bench_script.cpp'))
+BENCH_SOURCES = (os.path.normpath('src/replay_bench.cpp'), os.path.normpath('src/replay_bench_execute.cpp'),
+                 os.path.normpath('src/bench_script.cpp'))
 BENCH_SYMBOLS = re.compile(r'\b(BenchHooks|g_benchHooks|g_benchThrowNextTick|g_benchHoldNormalExit|BenchCameraOp|'
                            r'REPLAY_BENCH_DIR|kInboxDir|BENCH_READY|ParseScript)\b|replay::bench::Attach\b|\\\\inbox')
 BENCH_ENTRY = re.compile(r'\b(Attach|Update|ScrubOverride|OwnCamera)\s*\(')
@@ -217,7 +218,7 @@ def shipped():
 
 def table_keys():
     """The keys of the table-driven reads."""
-    script = read('script.cpp')
+    script = read(os.path.join('src', 'script_config.cpp'))
     block = script[script.index('kFreeCamFields['):]
     block = block[:block.index('};')]
     freecam = [k for k in re.findall(r'\{"(\w*)",', block) if k]
@@ -290,7 +291,7 @@ def main():
             for m in GPP.finditer(line):
                 reads.setdefault((m.group(1), m.group(2)), []).append((rel, number, m.group(3)))
                 literal_hits += 1
-            if rel == 'script.cpp':
+            if rel == os.path.normpath('src/script_config.cpp'):
                 for m in LAMBDA.finditer(line):
                     reads.setdefault(('RedemptionEditor', m.group(1)), []).append((rel, number, m.group(2)))
             calls = [m for m in READ_ANY.finditer(line) if not line[max(0, m.start() - 3):m.start()].endswith('Dev')]

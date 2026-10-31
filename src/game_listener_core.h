@@ -2,34 +2,19 @@
 // The engine's volume listener of the live game, recorded and put back when
 // the replay plays the recorded game camera.
 //
-// With the same game camera the replay was 7 dB lower without it: the ped
-// audio distance metric (+0x4640, the minimum squared distance to the
-// listeners' volume points) gives 1.0 m for the player's own lines live
-// (camera 2 to 10 m away) and the camera distance in the replay. The live
-// listener sits near the player, the replay's at its script camera.
-//
-// Engine layout (RDR2 1491.50):
-// - the audio environment singleton (RVA 0x5B9C970, `lea rcx` site 0x3193BC3)
-//   holds two listener descriptions of 0x310 bytes at +0x20 (current and
-//   next of a microphone crossfade; current index byte +0x784);
-// - each description has volume points: count dword +0x2B0, point j position
-//   at +0x1D0 + j*0x90 (0x2525308 takes the minimum squared distance over
-//   them, 0x252BFA4 returns the slot);
-// - the microphone settings are chosen per frame from the dominant camera
-//   (0x31D8AE4: the override hash +0x780 a camera's metadata sets, else a map
-//   from the camera's metadata name), and each volume microphone places its
-//   point on an entity (type 2 the camera's attach entity, 3/4/8 globals that
-//   hold the player, 0 the camera frame) plus micLength toward or away from
-//   the camera (0x31D8C34);
-// - the engine's own volume listener override: bit 8 (0x100) of +0x650 with
-//   the matrix +0x6B0..+0x6E0 (position +0x6E0) replaces the computed point
-//   (0x31EB61D..0x31EB6C0); the animated scene handlers 0x324C5D8/0x324C728
-//   set it, 0x31E824D resets the matrix once the bit is clear.
+// Why: with the same game camera the replay was 7 dB lower. The ped audio
+// distance metric measures to the listener's volume points; live they sit
+// near the player, in the replay at the script camera.
 //
 // The replay records the live volume point (absolute position) and, while it
-// renders the recorded game camera, puts it back through that override, the
-// way the engine's scenes do (a write to a world system: only while the
-// replay owns the world, cleared on exit).
+// renders the recorded game camera, puts it back through the engine's own
+// volume listener override (bit 0x100 of +0x650, matrix +0x6B0), the way the
+// engine's scenes do. A write to a world system: only while the replay owns
+// the world, cleared on exit.
+// Evidence: offline dump; the code sites (kSites) hold every offset.
+// Research: docs/research/audio-listener.md
+#include "game_sig_core.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -38,8 +23,9 @@
 
 namespace replay::gamelistener
 {
-    // Layout (RDR2 1491.50).
-    constexpr std::uint32_t kEnvironmentRva = 0x5B9C970;
+    namespace sig = replay::sig;
+
+    // Layout (proven by the code sites below).
     constexpr std::uint32_t kListenerBase = 0x20;      // first description
     constexpr std::uint32_t kListenerStride = 0x310;   // two descriptions
     constexpr std::uint32_t kListenerCount = 2;
@@ -52,41 +38,20 @@ namespace replay::gamelistener
     constexpr std::uint32_t kVolumeOverrideBit = 0x100;
     constexpr std::uint32_t kVolumeOverrideMatrix = 0x6B0; // 4 rows of 16 bytes, position last (+0x6E0)
     constexpr std::uint32_t kMaxVolumePoints = 8;      // sanity bound for the probe
-    // The microphone:
-    // - per point j the slot is desc+0x190+j*0x90 (0x252BFA4); 0x31EB188
-    //   writes its weight 1/count at slot+0x50 (0x31EB7CD) and the microphone
-    //   metadata's float +0xC at slot+0x70 (0x31EB7B2);
-    // - the microphone in use is the metadata pointer at desc+0x300
-    //   (0x31D8C06 compares [env+0x320+0x310*cur]);
-    // - 0x31D8AE4 takes the override hash +0x780 with the crossfade +0x778
-    //   (0x31D8B37); without the override it asks the camera map 0x31DFCDC
-    //   (writes only its out dword and its frame; callees are getters and a
-    //   binary search), whose answer is a metadata reference looked up by
-    //   0x252B5AC (not a hash), then a second map at
-    //   env+0x10, else the default hash 0x2A7C18A2 by 0x252B584 (table
-    //   0x5B87450, type 0xA9); the replay records the hash of the metadata in
-    //   use (desc+0x300) through the table's (offset, hash) entries;
-    // - the engine writes +0x780 only at 0x32764C8, 0x3277E8E (an animated
-    //   scene's camera metadata, crossfade +0x778 first) and zeroes it at
-    //   0x3279896, 0x327ABBD (rip relative stores; the only other access to
-    //   +0x780 in the code that names the environment is the read 0x31D8B17).
-    constexpr std::uint32_t kMicCrossfade = 0x778;     // u32 ms, read with the override (0x31D8B37)
+    // The microphone: per point slot, the microphone in use (desc+0x300) and
+    // the override hash +0x780 with its crossfade +0x778, which the engine
+    // writes only from animated scene handlers. The replay records the hash of
+    // the microphone in use. Research: docs/research/audio-listener.md
+    constexpr std::uint32_t kMicCrossfade = 0x778;     // u32 ms, read with the override (mic_crossfade_read)
     constexpr std::uint32_t kSlotBase = 0x190;         // per description, slot j = +0x190 + j*0x90
     constexpr std::uint32_t kSlotWeight = 0x50;        // f32 (vec4 broadcast), 1/count
     constexpr std::uint32_t kSlotF70 = 0x70;           // f32 (vec4 broadcast), the microphone metadata's +0xC
     constexpr std::uint32_t kMicInUse = 0x300;         // per description, the microphone metadata pointer
-    constexpr std::uint32_t kMicTableRva = 0x5B87450;  // the audio metadata table 0x31D8AE4 searches
     constexpr std::uint8_t kMicMetadataType = 0xA9;
     constexpr std::uint32_t kMicDefaultHash = 0x2A7C18A2u;
-    constexpr std::uint32_t kMicMapRva = 0x31DFCDC;    // (env, u32* out, map) -> out (a metadata reference); not called
-    constexpr std::uint8_t kMicMapSignature[] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x56, 0x57,
-        0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20};
-    constexpr std::uint32_t kMetadataLookupRva = 0x252B584; // (table, hash, type) -> metadata or null
-    constexpr std::uint8_t kMetadataLookupSignature[] = {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x41, 0x0F, 0xB6, 0xD8, 0x45,
-        0x33, 0xC9, 0x44, 0x8B, 0xC3, 0xE8};
     constexpr std::uint8_t kMaxRecordedPoints = 4;     // LSTN v2 keeps up to this many points per sample
-    // The metadata table (0x2516734,
-    // 0x2535F8C, 0x2536130): [table] chunks, word [table+8] chunk count,
+    // The metadata table (as the chunk find, the entry search and the entry
+    // test read it): [table] chunks, word [table+8] chunk count,
     // chunk stride 0xD0; per chunk +0x10 data, dword +0x18 data size, dword
     // +0x1C entry count, +0x20 entries {u32 offset, u32 hash} sorted by hash,
     // byte +0xCD loaded. An object's pointer = data + offset.
@@ -112,75 +77,115 @@ namespace replay::gamelistener
         return 0;
     }
 
-    // Code sites checked at runtime before any read or write: the bytes prove
-    // the global (env_lea) and every field offset this module touches.
-    struct Site
-    {
-        const char* name;
-        std::uint32_t rva;
-        std::uint8_t size;
-        std::uint8_t bytes[16];
-    };
-    constexpr Site kSites[] = {
-        {"env_lea", 0x3193BC3, 7, {0x48, 0x8D, 0x0D, 0xA6, 0x8D, 0xA0, 0x02}},
-        {"vol_override_read", 0x31EB61D, 9, {0x8B, 0x87, 0x50, 0x06, 0x00, 0x00, 0xC1, 0xE8, 0x08}},
-        {"vol_matrix_pos_test", 0x31EB636, 8, {0xF3, 0x0F, 0x6F, 0x97, 0xE0, 0x06, 0x00, 0x00}},
-        {"vol_matrix_read", 0x31EB693, 14, {0x0F, 0x10, 0x87, 0xB0, 0x06, 0x00, 0x00, 0x0F, 0x10, 0xAF, 0xC0, 0x06, 0x00, 0x00}},
-        {"vol_override_reset", 0x31E824D, 12, {0x8B, 0x83, 0x50, 0x06, 0x00, 0x00, 0xC1, 0xE8, 0x08, 0x40, 0x84, 0xC7}},
-        {"vol_metric", 0x2525312, 7, {0x44, 0x8B, 0x99, 0xB0, 0x02, 0x00, 0x00}},
-        {"point_slot", 0x252BFA4, 9, {0x0F, 0xB6, 0xC2, 0x3B, 0x81, 0xB0, 0x02, 0x00, 0x00}},
-        {"listener_index", 0x31EDD73, 16, {0x83, 0xBB, 0x40, 0x06, 0x00, 0x00, 0xFF, 0x75, 0x0F, 0x0F, 0xBE, 0x8B, 0x84, 0x07, 0x00, 0x00}},
-        {"mic_override_read", 0x31D8B17, 6, {0x8B, 0x81, 0x80, 0x07, 0x00, 0x00}},
-        // The microphone fields.
-        {"mic_crossfade_read", 0x31D8B37, 6, {0x8B, 0xBB, 0x78, 0x07, 0x00, 0x00}},
-        {"mic_in_use_cmp", 0x31D8C06, 8, {0x48, 0x3B, 0x94, 0x18, 0x20, 0x03, 0x00, 0x00}},
-        {"mic_table_lea", 0x31D8B29, 7, {0x48, 0x8D, 0x0D, 0x20, 0xE9, 0x9A, 0x02}},
-        {"mic_map_call", 0x31D8B8D, 5, {0xE8, 0x4A, 0x71, 0x00, 0x00}},
-        {"slot_f70_write", 0x31EB7B2, 4, {0x0F, 0x11, 0x43, 0x70}},
-        {"slot_weight_write", 0x31EB7CD, 4, {0x0F, 0x11, 0x53, 0x50}},
-        // The camera map's answer is a metadata REFERENCE (chunk << 24 | offset),
-        // looked up by 0x252B5AC -> 0x2516734, not a hash (0x252B584 ->
-        // 0x25166EC -> 0x2535F8C). The hash of the microphone in use comes from
-        // the chunk's (offset, hash) list instead.
-        {"mic_map_ref_lookup", 0x31D8BA0, 5, {0xE8, 0x07, 0x2A, 0x35, 0xFF}},
-        {"meta_chunk_count", 0x251673C, 4, {0x0F, 0xB7, 0x41, 0x08}},
-        {"meta_chunks", 0x251674C, 3, {0x4C, 0x8B, 0x09}},
-        {"meta_chunk_stride", 0x2516758, 7, {0x4C, 0x69, 0xC0, 0xD0, 0x00, 0x00, 0x00}},
-        {"meta_chunk_size", 0x251675F, 5, {0x43, 0x3B, 0x54, 0x08, 0x18}},
-        {"meta_chunk_data", 0x2516768, 5, {0x4B, 0x03, 0x44, 0x08, 0x10}},
-        {"meta_entry_count", 0x2536135, 4, {0x45, 0x8B, 0x50, 0x1C}},
-        {"meta_chunk_loaded", 0x2536144, 7, {0x45, 0x38, 0x88, 0xCD, 0x00, 0x00, 0x00}},
-        {"meta_entries", 0x2536174, 4, {0x4D, 0x8B, 0x40, 0x20}},
-        {"meta_entry_hash", 0x2536184, 5, {0x45, 0x3B, 0x5C, 0xC0, 0x04}},
-        {"meta_entry_offset", 0x2536087, 3, {0x8B, 0x0C, 0xC8}},
-    };
+    // Code sites, found by signature (game_sig_core.h) before any read or
+    // write: their bytes prove the globals and every field offset this module
+    // touches.
+    //
+    // The ped audio update loads the environment for the listener test.
+    inline const sig::Signature kPedEnvUpdate{"listener_ped_env_update",
+        "48 89 5C 24 08 57 48 83 EC 50 48 8B 01 48 8B F9 FF 90 F0 00 00 00", 0x3193B88};
+    inline const sig::Signature kEnvLea{"env_lea", kPedEnvUpdate, sig::Offset{0x3B}, "48 8D 0D ?? ?? ?? ??", 0x3193BC3};
+    inline const sig::Signature kEnvironment{"listener_environment", kEnvLea, sig::Rel32{0x3, 0x7}, "", 0x5B9C970};
+    // The volume builder: the engine's override (flags +0x650, matrix +0x6B0..
+    // +0x6E0) and the slots of the points (+0x50 weight, +0x70), through the
+    // point slot getter.
+    inline const sig::Signature kVolumeBuilder{"listener_volume_builder",
+        "48 8B C4 88 50 10 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 18 FF FF FF 48 81 EC A8 01 00 00 0F 29 70 A8",
+        0x31EB188};
+    inline const sig::Signature kVolOverrideRead{"vol_override_read", kVolumeBuilder, sig::Offset{0x495},
+        "8B 87 50 06 00 00 C1 E8 08", 0x31EB61D};
+    inline const sig::Signature kVolMatrixPosTest{"vol_matrix_pos_test", kVolumeBuilder, sig::Offset{0x4AE},
+        "F3 0F 6F 97 E0 06 00 00", 0x31EB636};
+    inline const sig::Signature kVolMatrixRead{"vol_matrix_read", kVolumeBuilder, sig::Offset{0x50B},
+        "0F 10 87 B0 06 00 00 0F 10 AF C0 06 00 00", 0x31EB693};
+    inline const sig::Signature kSlotF70Write{"slot_f70_write", kVolumeBuilder, sig::Offset{0x62A},
+        "0F 11 43 70", 0x31EB7B2};
+    inline const sig::Signature kSlotWeightWrite{"slot_weight_write", kVolumeBuilder, sig::Offset{0x645},
+        "0F 11 53 50", 0x31EB7CD};
+    inline const sig::Signature kPointSlot{"point_slot", kVolumeBuilder, sig::Rel32{0x435, 0x439},
+        "0F B6 C2 3B 81 B0 02 00 00", 0x252BFA4};
+    inline const sig::Signature kVolumeReset{"listener_volume_reset",
+        "48 8B C4 48 89 58 10 48 89 68 18 48 89 70 20 57 48 83 EC 40 48 8D B1 60 06 00 00", 0x31E8144};
+    inline const sig::Signature kVolOverrideReset{"vol_override_reset", kVolumeReset, sig::Offset{0x109},
+        "8B 83 50 06 00 00 C1 E8 08 40 84 C7", 0x31E824D};
+    // The volume metric (the minimum squared distance over the points).
+    inline const sig::Signature kVolumeMetric{"listener_volume_metric",
+        "0F 28 05 ?? ?? ?? ?? 45 33 C9 44 8B 99 B0 02 00 00", 0x2525308};
+    inline const sig::Signature kVolMetric{"vol_metric", kVolumeMetric, sig::Offset{0xA},
+        "44 8B 99 B0 02 00 00", 0x2525312};
+    inline const sig::Signature kListenerUpdate{"listener_index_update",
+        "48 89 5C 24 18 48 89 6C 24 20 56 57 41 54 41 56 41 57 48 81 EC 80 00 00 00", 0x31EDCCC};
+    inline const sig::Signature kListenerIndex{"listener_index", kListenerUpdate, sig::Offset{0xA7},
+        "83 BB 40 06 00 00 FF 75 0F 0F BE 8B 84 07 00 00", 0x31EDD73};
+    // The microphone chooser: the override +0x780 and its crossfade +0x778,
+    // the microphone table and its lookup by hash (table, hash, type) ->
+    // metadata or null, the camera map (env, u32* out, map) -> out, a
+    // metadata reference (never called by the replay), and the microphone in
+    // use (+0x320 + 0x310 * current).
+    inline const sig::Signature kMicChooser{"listener_mic_chooser",
+        "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 0F B6 05 ?? ?? ?? ??", 0x31D8AE4};
+    inline const sig::Signature kMicOverrideRead{"mic_override_read", kMicChooser, sig::Offset{0x33},
+        "8B 81 80 07 00 00", 0x31D8B17};
+    inline const sig::Signature kMicTableLea{"mic_table_lea", kMicChooser, sig::Offset{0x45},
+        "48 8D 0D ?? ?? ?? ??", 0x31D8B29};
+    inline const sig::Signature kMicTable{"listener_mic_table", kMicTableLea, sig::Rel32{0x3, 0x7}, "", 0x5B87450};
+    inline const sig::Signature kMetadataLookup{"listener_metadata_lookup", kMicChooser, sig::Rel32{0x4F, 0x53},
+        "40 53 48 83 EC 20 41 0F B6 D8 45 33 C9 44 8B C3 E8 ?? ?? ?? ??",
+        0x252B584};
+    inline const sig::Signature kMicCrossfadeRead{"mic_crossfade_read", kMicChooser, sig::Offset{0x53},
+        "8B BB 78 07 00 00", 0x31D8B37};
+    inline const sig::Signature kMicMapCall{"mic_map_call", kMicChooser, sig::Offset{0xA9},
+        "E8 ?? ?? ?? ??", 0x31D8B8D};
+    inline const sig::Signature kMicMap{"listener_mic_map", kMicMapCall, sig::Rel32{0x1, 0x5},
+        "48 89 5C 24 08 48 89 6C 24 18 56 57 41 54 41 56 41 57 48 83 EC 20", 0x31DFCDC};
+    inline const sig::Signature kMicMapRefLookup{"mic_map_ref_lookup", kMicChooser, sig::Offset{0xBC},
+        "E8 ?? ?? ?? ??", 0x31D8BA0};
+    // The camera map's answer is a metadata REFERENCE (chunk << 24 | offset),
+    // looked up by the reference lookup through the chunk find, not a hash
+    // (the metadata lookup, through the entry search). The hash of the
+    // microphone in use comes from the chunk's (offset, hash) list instead.
+    inline const sig::Signature kMetaRefLookup{"listener_meta_ref_lookup", kMicMapRefLookup, sig::Rel32{0x1, 0x5},
+        "40 53 48 83 EC 20 41 0F B6 D8 45 33 C9 44 8B C3 E8 ?? ?? ?? ?? 33 C9 48 85 C0 74 06 3A 18 48 0F 45 C1 48 83 "
+        "C4 20 5B C3", 0x252B5AC};
+    inline const sig::Signature kMicInUseCmp{"mic_in_use_cmp", kMicChooser, sig::Offset{0x122},
+        "48 3B 94 18 20 03 00 00", 0x31D8C06};
+    // The metadata table's layout: the chunks (the chunk find), the entries
+    // (the entry test and the entry search).
+    inline const sig::Signature kMetaChunkFind{"listener_meta_chunk_find",
+        "8D 42 FF 83 F8 FD 77 32 0F B7 41 08", 0x2516734};
+    inline const sig::Signature kMetaChunkCountSite{"meta_chunk_count", kMetaChunkFind, sig::Offset{0x8},
+        "0F B7 41 08", 0x251673C};
+    inline const sig::Signature kMetaChunksSite{"meta_chunks", kMetaChunkFind, sig::Offset{0x18},
+        "4C 8B 09", 0x251674C};
+    inline const sig::Signature kMetaChunkStrideSite{"meta_chunk_stride", kMetaChunkFind, sig::Offset{0x24},
+        "4C 69 C0 D0 00 00 00", 0x2516758};
+    inline const sig::Signature kMetaChunkSizeSite{"meta_chunk_size", kMetaChunkFind, sig::Offset{0x2B},
+        "43 3B 54 08 18", 0x251675F};
+    inline const sig::Signature kMetaChunkDataSite{"meta_chunk_data", kMetaChunkFind, sig::Offset{0x34},
+        "4B 03 44 08 10", 0x2516768};
+    inline const sig::Signature kMetaEntryTest{"listener_meta_entry_test",
+        "48 89 5C 24 08 45 8B 50 1C 45 33 C9", 0x2536130};
+    inline const sig::Signature kMetaEntryCountSite{"meta_entry_count", kMetaEntryTest, sig::Offset{0x5},
+        "45 8B 50 1C", 0x2536135};
+    inline const sig::Signature kMetaChunkLoadedSite{"meta_chunk_loaded", kMetaEntryTest, sig::Offset{0x14},
+        "45 38 88 CD 00 00 00", 0x2536144};
+    inline const sig::Signature kMetaEntriesSite{"meta_entries", kMetaEntryTest, sig::Offset{0x44},
+        "4D 8B 40 20", 0x2536174};
+    inline const sig::Signature kMetaEntryHashSite{"meta_entry_hash", kMetaEntryTest, sig::Offset{0x54},
+        "45 3B 5C C0 04", 0x2536184};
+    inline const sig::Signature kMetaEntrySearch{"listener_meta_entry_search",
+        "48 89 5C 24 08 48 89 6C 24 20 56 57 41 54 41 56 41 57 48 83 EC 30 83 C8 FF", 0x2535F8C};
+    inline const sig::Signature kMetaEntryOffsetSite{"meta_entry_offset", kMetaEntrySearch, sig::Offset{0xFB},
+        "8B 0C C8", 0x2536087};
 
-    // The lea's target (rip = the next instruction).
-    constexpr std::uint32_t EnvLeaTarget(const Site& lea)
-    {
-        const std::uint32_t d = static_cast<std::uint32_t>(lea.bytes[3]) | (static_cast<std::uint32_t>(lea.bytes[4]) << 8) |
-            (static_cast<std::uint32_t>(lea.bytes[5]) << 16) | (static_cast<std::uint32_t>(lea.bytes[6]) << 24);
-        return lea.rva + 7u + d;
-    }
-    static_assert(EnvLeaTarget(kSites[0]) == kEnvironmentRva, "env_lea must point at the environment");
-    static_assert(EnvLeaTarget(kSites[11]) == kMicTableRva, "mic_table_lea must point at the metadata table");
-    constexpr std::uint32_t CallTarget(const Site& call)
-    {
-        const std::uint32_t d = static_cast<std::uint32_t>(call.bytes[1]) | (static_cast<std::uint32_t>(call.bytes[2]) << 8) |
-            (static_cast<std::uint32_t>(call.bytes[3]) << 16) | (static_cast<std::uint32_t>(call.bytes[4]) << 24);
-        return call.rva + 5u + d;
-    }
-    static_assert(CallTarget(kSites[12]) == kMicMapRva, "mic_map_call must call the camera map");
-
-    inline bool SiteMatches(const Site& site, const std::uint8_t* code)
-    {
-        if (!code)
-            return false;
-        for (std::uint8_t n = 0; n < site.size; ++n)
-            if (code[n] != site.bytes[n])
-                return false;
-        return true;
-    }
+    // Every site the module needs, in the order it checks them (the first
+    // one missing is logged).
+    inline const sig::Signature* const kSites[] = {&kEnvLea, &kVolOverrideRead, &kVolMatrixPosTest, &kVolMatrixRead,
+        &kVolOverrideReset, &kVolMetric, &kPointSlot, &kListenerIndex, &kMicOverrideRead, &kMicCrossfadeRead,
+        &kMicInUseCmp, &kMicTableLea, &kMicMapCall, &kSlotF70Write, &kSlotWeightWrite, &kMicMapRefLookup,
+        &kMetaChunkCountSite, &kMetaChunksSite, &kMetaChunkStrideSite, &kMetaChunkSizeSite, &kMetaChunkDataSite,
+        &kMetaEntryCountSite, &kMetaChunkLoadedSite, &kMetaEntriesSite, &kMetaEntryHashSite, &kMetaEntryOffsetSite,
+        &kEnvironment, &kMicTable, &kMicMap, &kMetaRefLookup};
 
     constexpr std::uint32_t ListenerOffset(std::uint32_t index) { return kListenerBase + index * kListenerStride; }
 
@@ -335,55 +340,6 @@ namespace replay::gamelistener
         return true;
     }
 
-    // Whether the playback puts the recorded listener back this tick.
-    enum class Why : std::uint8_t
-    {
-        Apply = 0,
-        Off,             // ReplayGameListener=0
-        NotRecordedCam,  // another camera renders (markers, free camera, lent, live game camera)
-        NoTrack,         // the clip has no LSTN samples near the playhead
-        Unproven,        // a code site did not match: feature disabled
-        EngineOverride,  // the engine's own override is on (a scene) and is not ours
-    };
-
-    inline const char* WhyName(Why w)
-    {
-        switch (w)
-        {
-        case Why::Apply: return "apply";
-        case Why::Off: return "off";
-        case Why::NotRecordedCam: return "not_recorded_camera";
-        case Why::NoTrack: return "no_track";
-        case Why::Unproven: return "unproven";
-        case Why::EngineOverride: return "engine_override";
-        default: return "?";
-        }
-    }
-
-    struct Inputs
-    {
-        bool enabled = false;
-        bool proven = false;
-        bool recordedGameCamera = false;
-        bool haveTarget = false;
-        bool overrideBitSet = false; // bit 8 of +0x650 now
-        bool overrideIsOurs = false; // we set it and nobody cleared it
-    };
-
-    inline Why Decide(const Inputs& in)
-    {
-        if (!in.enabled)
-            return Why::Off;
-        if (!in.proven)
-            return Why::Unproven;
-        if (!in.recordedGameCamera)
-            return Why::NotRecordedCam;
-        if (!in.haveTarget)
-            return Why::NoTrack;
-        if (in.overrideBitSet && !in.overrideIsOurs)
-            return Why::EngineOverride;
-        return Why::Apply;
-    }
     // ---- The microphone put back ----
 
     // The sample in force at timeMs (the last one at or before it; the first

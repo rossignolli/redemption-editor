@@ -4,14 +4,14 @@
 // from the recording. While a clip plays, a replay entity sounds only what its
 // recorded tracks carry; its own animation and AI would make the same sounds on top.
 //
-// One-shots: every create-and-play goes through the core 0x2589A40 (build
-// 1491.50; 0x150-byte queue entries, audio entity at +0x140, ref at +0x148),
-// drained by 0x258A348 from the audio update 0x2F1CE4C. The recording keeps
+// One-shots: every create-and-play goes through the create-and-play core
+// (0x150-byte queue entries, audio entity at +0x140, ref at +0x148), drained
+// by the queue drain from the audio update. The recording keeps
 // those made on a recorded ped's audio (SND kind 1) and playback replays them.
 // A create-and-play on a puppet's audio (or the hidden player's and his mount's)
 // is refused unless the replay itself makes it (ReplayEmitScope, or inside a
 // footstep or melee call the replay runs). Refusing takes the core's own early
-// return (0x2589B6D: al = 0, no queue entry, init params untouched), the path an
+// return (al = 0, no queue entry, init params untouched), the path an
 // unregistered audio entity takes.
 //
 // Pure (no game); unit tested in tests/sound_particles_tests.cpp.
@@ -47,13 +47,13 @@ namespace replay::puppetaudio
     constexpr std::uint64_t kWeaponOneShotSpan = 0x200;
 
     // 2. Persistent sounds of the ped's own audio without a tracker (ESND pedAudio):
-    //    foley and clothing through the persistent cores 0x2589124 (by ref) and
-    //    0x2589058 (by hash). The puppet creates the same entry of another sound set
+    //    foley and clothing through the persistent cores (by ref and by hash). The
+    //    puppet creates the same entry of another sound set
     //    at the recorded time. Refused when the clip's ESND track carries ped audio
     //    sounds of the same engine call site (the return address into the core's
     //    caller), so a call site the recording never saw is left alone. Refusing is
     //    the cores' own early return for an unregistered audio entity
-    //    (0x258922E / 0x2589101: *out = 0, nothing created).
+    //    (*out = 0, nothing created).
     inline bool CallerCarried(std::uint32_t caller, const std::uint32_t* callers, std::size_t count)
     {
         if (!caller)
@@ -80,18 +80,19 @@ namespace replay::puppetaudio
     }
 
     // Rule 2 matches on the sound entry, not only the call site: sounds made through
-    // the generic persistent create-and-play wrapper 0x2588BE0 (it builds default
-    // params, calls the core 0x2589124 and plays) all return to 0x2588C2F, whichever
+    // the generic persistent create-and-play wrapper (it builds default params,
+    // calls the by-ref core and plays) all return to the same place in it, whichever
     // of its 140 call sites asked, so the call site alone would refuse loops the clip
     // never carried. The clip must carry the same entity, call site and entry.
     //
-    // A sound set entry ref is built by 0x252A888: the set's metadata offset in the
-    // low dword, (index | 0x800000) in the high dword, the index being the entry's
-    // place among the set's names sorted by hash (0x49F6E4, binary search through
-    // 0x252A8F4). Sets of one kind (the outfit or tack picks the set) list the same
-    // names, so the same name has the same index. A set entry ref keys by its index;
-    // any other ref (a direct metadata ref, high dword 0xFFFFF, built by 0x252A888
-    // from the set's own table or by 0x252B408) and a hash key by their whole value.
+    // A sound set entry ref is built by the child ref builder: the set's metadata
+    // offset in the low dword, (index | 0x800000) in the high dword, the index being
+    // the entry's place among the set's names sorted by hash (the name search, a
+    // binary search). Sets of one kind (the outfit or tack picks the set) list the
+    // same names, so the same name has the same index. A set entry ref keys by its
+    // index; any other ref (a direct metadata ref, high dword 0xFFFFF, built by the
+    // child ref builder from the set's own table or by the ref lookup) and a hash key
+    // by their whole value.
     constexpr std::uint32_t kSetEntryFlag = 0x800000;
     constexpr std::uint32_t kSetEntryIndexMask = 0xFFFFF;
     // The hidden player and his mount: no clip entity stands for them, so they
@@ -169,8 +170,8 @@ namespace replay::puppetaudio
     // it for a short sound (a shell lands where it fell). A loop (alive
     // kPoseV2EntitySoundLoopMs or more, or never ended in the recording) follows its
     // puppet when loopsFollow is on: the engine moves these every frame (the loop
-    // helper 0x319D96C and the tack loops in 0x319F8A4 set the position with
-    // 0x2536E48 on each update), so a replayed copy would stay where it was created.
+    // helper and the tack loops set the position with the position setter on each
+    // update), so a replayed copy would stay where it was created.
     inline bool PedAudioFollowsPuppet(bool pedAudio, bool positioned, bool loop, bool loopsFollow)
     {
         if (!pedAudio || !positioned)
@@ -196,15 +197,24 @@ namespace replay::puppetaudio
             return false;
         return nowMs - playedFromMs >= length;
     }
-    // An ESND row made by the ped's sound controller for a line of speech (call
-    // sites 0x2FA10CF and 0x2FA0DCC, inside 0x2FA10A4 and 0x2FA0D88) is the line's
-    // own sound: the speech track replays the line, whose controller makes that sound
-    // again. The row is left to the line when the line of the same owner at that time
-    // was played; played by the ESND track when the line was refused (the recorded
-    // sound over silence) or when no outcome came within maxWaitMs of the row's start.
-    inline bool SpeechControllerCaller(std::uint32_t caller)
+    // An ESND row made by the ped's sound controller for a line of speech (the
+    // returns of its wave and layer sound calls, speech_conversation.h
+    // kWaveSoundCall and kLayerSoundCall) is the line's own sound: the speech track
+    // replays the line, whose controller makes that sound again. The row is left to
+    // the line when the line of the same owner at that time was played; played by
+    // the ESND track when the line was refused (the recorded sound over silence) or
+    // when no outcome came within maxWaitMs of the row's start.
+    //
+    // The two return addresses (call + 5) as RVAs in this game, 0 for a call not
+    // found (nothing matches it).
+    struct SpeechControllerCallers
     {
-        return caller == 0x2FA10CFu || caller == 0x2FA0DCCu;
+        std::uint32_t wave = 0;
+        std::uint32_t layer = 0;
+    };
+    inline bool SpeechControllerCaller(std::uint32_t caller, const SpeechControllerCallers& controller)
+    {
+        return caller && (caller == controller.wave || caller == controller.layer);
     }
 
     // SoundGenericMode=packets: a replay entity's sound plays from its recording, so
@@ -214,31 +224,32 @@ namespace replay::puppetaudio
     // sounds) and refusing the line's own sound kills the line (stop reason 6 in
     // state 3, none of its sounds played).
     inline bool BlockPuppetCreate(bool block, bool onPuppetAudio, bool replayEmitting, bool insideReplayedSystem,
-        std::uint32_t caller)
+        std::uint32_t caller, const SpeechControllerCallers& controller)
     {
-        return block && onPuppetAudio && !replayEmitting && !insideReplayedSystem && !SpeechControllerCaller(caller);
+        return block && onPuppetAudio && !replayEmitting && !insideReplayedSystem &&
+            !SpeechControllerCaller(caller, controller);
     }
 
     // Rule 2 in SoundGenericMode=legacy, with the same speech exemption. The
-    // replayed line prepares its own sound through the controller (0x2FA10CF, return
-    // of 0x2FA10A4 into 0x2FA0100 from the line data's prepare 0x2FB6000) outside any
-    // replay call, and the clip carries that call site and entry for every ped that
-    // spoke: refusing it leaves the line data without a sound, the prepare returns 2
-    // and the state-2 update kills the line with stop reason 4 (0x2FA0DCC: reason 6 in
-    // state 3). The speech track owns the line; the controller's ESND row is left to
-    // the line or played over its refusal by SpeechRowRule, as in packets mode.
-    inline bool LegacyRefuseOwnPersistent(std::uint32_t caller, bool active, bool replayEmitting,
-        bool insideReplayedSystem, bool onPuppetAudio, bool hasTracker, bool callerCarried)
+    // replayed line prepares its own sound through the controller (the wave call,
+    // reached from the line data's prepare) outside any replay call, and the clip
+    // carries that call site and entry for every ped that spoke: refusing it leaves
+    // the line data without a sound, the prepare returns 2 and the state-2 update
+    // kills the line with stop reason 4 (the layer call: reason 6 in state 3). The
+    // speech track owns the line; the controller's ESND row is left to the line or
+    // played over its refusal by SpeechRowRule, as in packets mode.
+    inline bool LegacyRefuseOwnPersistent(std::uint32_t caller, const SpeechControllerCallers& controller, bool active,
+        bool replayEmitting, bool insideReplayedSystem, bool onPuppetAudio, bool hasTracker, bool callerCarried)
     {
-        return !SpeechControllerCaller(caller) &&
+        return !SpeechControllerCaller(caller, controller) &&
             RefuseOwnPersistent(active, replayEmitting, insideReplayedSystem, onPuppetAudio, hasTracker, callerCarried);
     }
 
     // The puppet's own speech. A replay ped has no speech AI: only the replay makes
     // lines on it. Here the puppet keeps its AI and asks lines of its own through the
-    // speech core (0x2FA1114); a replayed line of the same context is then refused by
-    // the core's check that the speaker's newest active line is another line of that
-    // context (code 18, 0x2F974A4) and dies in state 3 with reason 6. A core call on a
+    // speech core; a replayed line of the same context is then refused by the core's
+    // check that the speaker's newest active line is another line of that context
+    // (code 18) and dies in state 3 with reason 6. A core call on a
     // puppet's speech entity outside the replay's own calls (ReplayEmitScope) is
     // refused the way the core refuses (scope released, code 0x3F, nothing created).
     inline constexpr std::uint32_t kPuppetOwnSpeechRefusal = 0x3F;
@@ -249,8 +260,8 @@ namespace replay::puppetaudio
 
     // A replayed step (or melee) call runs the puppet's own code, and its one-shots
     // pass (insideReplayedSystem) because the recorder leaves them to that track. The
-    // step code branches on the puppet's state (e.g. the extra hoof set 0x0d167c at
-    // 0x318DED9, gated by the mount link row +0xA8 and component +0x50 byte +0x22 bit
+    // step code branches on the puppet's state (e.g. the extra hoof set 0x0d167c in
+    // the step code, gated by the mount link row +0xA8 and component +0x50 byte +0x22 bit
     // 0x08), so a puppet can make sounds the live entity never did. Inside a replayed
     // call, a one-shot of a set the owner never made anywhere in the clip is refused
     // when the clip has packets for that owner (a clip without the generic track, or
@@ -262,7 +273,7 @@ namespace replay::puppetaudio
     }
 
     // A persistent sound the engine creates by itself on a puppet (the persistent
-    // wrapper 0x2588BE0, return 0x2588C2F into the by-ref port 0x2589124) with no
+    // wrapper, through its call of the by-ref port) with no
     // counterpart in the clip, e.g. an animal loop that keeps playing with the replay
     // paused. Refused: a create through the persistent by-ref port of a clip owner
     // (not the hidden player) whose set the owner never made anywhere in the clip (no

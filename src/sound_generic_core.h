@@ -32,8 +32,9 @@
 // drains them every recording tick into the Recorder, which resolves the
 // owner, samples, keeps the budget and writes the packets.
 
-#include "sound_check_core.h" // OwnerClass, kNoOwner, kOwnerClassCount
-#include "event_ring.h"       // the ring protocol
+#include "sound_check_core.h"  // OwnerClass, kNoOwner, kOwnerClassCount
+#include "sound_census_core.h" // the creators (the audio entity's code ranges)
+#include "event_ring.h"        // the ring protocol
 
 #include <algorithm>
 #include <atomic>
@@ -102,16 +103,15 @@ namespace replay::soundgeneric
     inline std::uint64_t RefOfStableId(std::uint64_t id) { return id | kRefFlagMask; }
 
     // The ref and the entry a packet's sound is created again with.
-    // Creator B (0x2516900, build 1491.50) is called only at 0x25167EC (inside
-    // 0x25167D0, called by 0x2516774) and at 0x25168E9 (inside 0x25168A4), both
-    // right after 0x252B408 turned a NAME HASH into the metadata ref
-    // (`mov edx, dword [rax]` at 0x25167B7 and 0x25168E7). So a packet recorded at
-    // creator B (IdKind::Hash, or None with core 1) carries the resolved ref, not a
-    // hash: created again through the by-hash port it is looked up as a hash, not
-    // found, and creator B gets 0xFFFFFFFF and refuses. The by-ref port
-    // (0x2589124 -> 0x2517CB0: a ref whose high dword & 0xF00000 is not 0x800000 is
-    // direct and passes whole) takes it as it is, as the GSND track plays creator
-    // B's refs. coreBByRef false: by hash.
+    // Creator B is called only by its two entries, both right after the
+    // metadata lookup turned a NAME HASH into the metadata ref (`mov edx,
+    // dword [rax]`). So a packet recorded at creator B (IdKind::Hash, or None
+    // with core 1) carries the resolved ref, not a hash: created again through
+    // the by-hash port it is looked up as a hash, not found, and creator B
+    // gets 0xFFFFFFFF and refuses. The by-ref port (the by-ref core's ref
+    // resolver: a ref whose high dword & 0xF00000 is not 0x800000 is direct
+    // and passes whole) takes it as it is, as the GSND track plays creator B's
+    // refs. coreBByRef false: by hash.
     inline std::uint64_t CreateRefOf(IdKind kind, std::uint64_t stableId, std::uint64_t rawRef, std::uint8_t core,
         bool coreBByRef, bool& byHash)
     {
@@ -151,14 +151,14 @@ namespace replay::soundgeneric
     constexpr std::uint8_t kSourceCount = 3;
 
     // The init params +0x10C is not a variable list. The creators copy it as
-    // dwords (count at +0x124, up to 6: 0x2516AED, 0x25882E9), and the
+    // dwords (count at +0x124, up to 6: creator B and a create-and-play wrapper), and the
     // constructor leaves it as it was. The packet keeps its first 6 dwords as
     // three pairs (the dwords go back as they came).
     constexpr std::size_t kVariables = 3; // init params +0x10C: the dword list, as three pairs
     // The sound's init variables are at +0x10: 16 (hash, value) pairs, count at
-    // +0x90. The constructor 0x487E34 zeroes them; the params' SetVariableValue
-    // (S39, 0x2573638) adds one; the creators pass params +0x10 to the
-    // construction (0x2516F99), and a variable block sound's Init (0x257A240)
+    // +0x90. The params constructor zeroes them; the params' SetVariableValue
+    // (S39) adds one; the creators pass params +0x10 to the sound's
+    // construction, and a variable block sound's Init
     // takes the value of each variable it exports from that list (else its
     // metadata's random initial value).
     constexpr std::size_t kInitVariables = 16;
@@ -247,7 +247,7 @@ namespace replay::soundgeneric
         }
     }
 
-    // What the constructor 0x487E34 leaves in the params (build 1491.50): 1.0 at
+    // What the params constructor leaves in the params: 1.0 at
     // +0x94, +0x98, +0x9C, +0xA0 and +0xB0, pan -1 (+0xAE), 0xFF at +0xC4, -1 at
     // +0xF0 (the queue's prepare time limit), 9 at +0x100, 20000 at +0x104 (low
     // pass), -1 at +0x130 and +0x134, 0xFF at +0x136, flags 0x20 at +0x13A; the
@@ -344,9 +344,9 @@ namespace replay::soundgeneric
     }
 
     // Params +0xF8, the client variable: the creator copies it to the requested
-    // settings +0x22C (0x258A9E8 calls 0x25363F8), and the owner's audio entity
+    // settings +0x22C (through the client variable setter), and the owner's audio entity
     // reads it there every frame when the sound updates with its entity (flags
-    // 0x04; e.g. the horse's 0x31A56F8 places a skid's body by it, 0xEE56493E).
+    // 0x04; e.g. the horse's UpdateSound places a skid's body by it, 0xEE56493E).
     constexpr std::size_t kParamsClientVariable = 0xF8;
     constexpr std::size_t kParamsEnvGroup = 0xE0;
     constexpr std::uint8_t kParamsFlagUpdateEntity = 0x04;
@@ -569,11 +569,14 @@ namespace replay::soundgeneric
     constexpr std::size_t kCreatePacketBytesV3Min = kCreatePacketBytes + 1;
     // SGEN v4 adds the value dwords: a count byte and (index, raw) pairs of 5 bytes.
     constexpr std::size_t kCreatePacketBytesV4Min = kCreatePacketBytesV3Min + 1;
+    // SGEN v5 writes the caller and the vtable as site ids (4 more bytes each)
+    // and the static object's id (8).
+    constexpr std::size_t kCreatePacketBytesV5Min = kCreatePacketBytesV4Min + 4 + 4 + 8;
     inline std::size_t CreatePacketBytes(const CreatePacket& packet)
     {
         const std::size_t vars = packet.params.initVariableCount > kInitVariables ? kInitVariables : packet.params.initVariableCount;
         const std::size_t values = packet.params.valueCount > kValueDwords ? kValueDwords : packet.params.valueCount;
-        return kCreatePacketBytesV4Min + vars * 8 + values * 5;
+        return kCreatePacketBytesV5Min + vars * 8 + values * 5;
     }
     constexpr std::size_t kAdjustPacketHeadBytes = 4 + 4 + 1;
     constexpr std::size_t kEndPacketBytes = 4 + 4 + 1;
@@ -628,17 +631,75 @@ namespace replay::soundgeneric
 
     // ------------------------------------------------------------ callers
 
-    // The caller that names a family: the first frame outside the audio entity's
-    // own methods (the create-and-play wrappers 0x2588794 to 0x258A55C, the
-    // creators and their entries 0x2516000 to 0x2517000 and the queue drains):
-    // those ranges are the same for every sound and say nothing of who asked.
-    inline bool InAudioEntityWrappers(std::uint32_t rva)
+    // A stretch of the game's code as RVAs, end excluded; empty: not found.
+    struct CodeRange
     {
-        return (rva >= 0x2516000u && rva < 0x2517000u) || (rva >= 0x2588794u && rva < 0x258A560u) ||
-            (rva >= 0x312D8BCu && rva < 0x312DC00u);
+        std::uint32_t begin = 0;
+        std::uint32_t end = 0;
+    };
+
+    inline bool InRange(std::uint32_t rva, const CodeRange& range)
+    {
+        return range.begin && rva >= range.begin && rva < range.end;
     }
 
-    inline std::uint32_t FamilyCaller(const std::uint32_t* frames, std::size_t count)
+    // The audio entity's own methods, three runs of adjacent functions: the
+    // creators and their entries (from the first entry to creator A, the
+    // last), the create-and-play wrappers (from the first to the queue's
+    // drain, the last) and the other queue's drain (the audio update drains
+    // it right before the first). The running game's ranges start at the
+    // first function's signature and end where the last one's unwind entry
+    // (.pdata) ends (audio::GenericWrapperCode); `drain` is the queue's drain
+    // alone.
+    struct WrapperCode
+    {
+        CodeRange creators;
+        CodeRange wrappers;
+        CodeRange otherDrain;
+        CodeRange drain;
+    };
+
+    inline const sig::Signature kCreatorEntries{"generic_creator_entries",
+        "40 53 48 83 EC 20 83 64 24 40 00 48 8B DA 49 C1 E8 20 48 8D 54 24 40 41 8B C8", 0x2516088};
+    inline const sig::Signature kCreatorATail{"generic_creator_a_tail", census::kCreatorA, sig::Offset{0x3D0},
+        "48 81 C4 F0 00 00 00 41 5F 41 5E 41 5D 41 5C 5F 5E 5D C3", 0x251707C};
+    inline const sig::Signature kWrappers{"generic_wrappers",
+        "48 89 5C 24 08 57 48 83 EC 20 49 8B D8 48 8B F9 44 8B C2 48 8D 0D ?? ?? ?? ??", 0x2588794};
+    inline const sig::Signature kQueueDrain{"generic_queue_drain",
+        "48 89 5C 24 08 48 89 6C 24 18 56 57 41 55 41 56 41 57 48 83 EC 30 8B E9", 0x258A348};
+    inline const sig::Signature kQueueDrainTail{"generic_queue_drain_tail", kQueueDrain, sig::Offset{0x1ED},
+        "48 83 C4 30 41 5F 41 5E 41 5D 5F 5E E9 ?? ?? ?? ??", 0x258A535};
+    inline const sig::Signature kOtherDrain{"generic_other_drain",
+        "48 89 5C 24 10 48 89 6C 24 18 56 57 41 54 41 56 41 57 48 83 EC 30 48 8D 0D ?? ?? ?? ??", 0x312D8BC};
+    inline const sig::Signature kOtherDrainTail{"generic_other_drain_tail", kOtherDrain, sig::Offset{0x27D},
+        "48 83 C4 30 41 5F 41 5E 41 5C 5F 5E E9 ?? ?? ?? ??", 0x312DB39};
+
+    // The 1491.50 exe's ranges (each run from its first function's address
+    // there to the end of its last function's last instruction, the tails
+    // above): what the offline tools read that build's clips with.
+    inline WrapperCode KnownWrapperCode()
+    {
+        const auto end = [](const sig::Signature& tail) {
+            sig::Pattern pattern;
+            return sig::Parse(tail.pattern, pattern) ? tail.rva + static_cast<std::uint32_t>(pattern.size) : 0u;
+        };
+        WrapperCode code;
+        code.creators = {kCreatorEntries.rva, end(kCreatorATail)};
+        code.wrappers = {kWrappers.rva, end(kQueueDrainTail)};
+        code.otherDrain = {kOtherDrain.rva, end(kOtherDrainTail)};
+        code.drain = {kQueueDrain.rva, end(kQueueDrainTail)};
+        return code;
+    }
+
+    // The caller that names a family: the first frame outside the audio
+    // entity's own methods: those are the same for every sound and say
+    // nothing of who asked.
+    inline bool InAudioEntityWrappers(std::uint32_t rva, const WrapperCode& code)
+    {
+        return InRange(rva, code.creators) || InRange(rva, code.wrappers) || InRange(rva, code.otherDrain);
+    }
+
+    inline std::uint32_t FamilyCaller(const std::uint32_t* frames, std::size_t count, const WrapperCode& code)
     {
         std::uint32_t first = 0;
         for (std::size_t n = 0; n < count; ++n)
@@ -647,7 +708,7 @@ namespace replay::soundgeneric
                 continue;
             if (!first)
                 first = frames[n];
-            if (!InAudioEntityWrappers(frames[n]))
+            if (!InAudioEntityWrappers(frames[n], code))
                 return frames[n];
         }
         return first;
@@ -668,16 +729,15 @@ namespace replay::soundgeneric
 
     struct Config
     {
-        std::uint32_t updateHz = 20;   // SoundGenericUpdateHz: samples per second per sound and setting
-        double maxMBPerMin = 8.0;      // SoundGenericMaxMBPerMin: the clip bytes the track may add per minute
+        // The audio entity's code in the running game (audio::GenericWrapperCode):
+        // the family callers and the queue's creates. Empty: no frame is in it.
+        WrapperCode code;
+        std::uint32_t updateHz = 20;   // samples per second per sound and setting
+        double maxMBPerMin = 8.0;      // the clip bytes the track may add per minute
         // The player's keys.
-        bool play = true;                // SoundGenericPlay: 0 records only (the packets are counted, nothing plays)
-        // SoundGenericExport, 0 by default: the player stays off while an export owns
-        // the transport clock (the packets due then are counted as disabled).
-        bool playInExport = false;
-        std::uint32_t preloadMs = 500;   // SoundGenericPreloadMs: create and prepare a loading sound this early (0: off)
-        std::uint32_t preloadDelayMs = 100; // SoundGenericPreloadDelayMs: packets that waited this long in the recording
-        std::uint32_t holdMs = 150;      // SoundGenericHoldMs: the anti-double wait after a packet's time
+        std::uint32_t preloadMs = 500;   // create and prepare a loading sound this early
+        std::uint32_t preloadDelayMs = 100; // packets that waited this long in the recording
+        std::uint32_t holdMs = 150;      // the anti-double wait after a packet's time
         std::uint32_t slots = 64;        // SoundGenericSlots: sounds the player holds at once (8 to 256)
         std::string take;                // SoundGenericTake: family:taker;... (sound_owner_table.h)
         // SoundGenericMode, packets (default): the puppets' own sounds are refused at
@@ -687,70 +747,40 @@ namespace replay::soundgeneric
         // SoundGenericBlock, packet (default): the ports refuse a puppet's own create
         // only when the recording plays it or it is a proved double; all: everything.
         bool blockAll = false;
-        // SoundStepSetGate (default 1): inside a replayed step or melee call, a
-        // one-shot of a set the owner never made in the clip is refused
-        // (puppet_audio_rule.h).
-        bool stepSetGate = true;
         // SoundGenericTrace=owner@fromMs-toMs ("0:1@45000-48000", "*@..." every
         // owner): one log line per packet event in the window.
         std::string trace;
-        // SoundGenericEnvGroup=1 (default): a replayed create of an owner gets the
-        // puppet's environment group where the game gave one.
-        bool envGroups = true;
-        // SoundQueueEnvGroup=1: the mode c queue path gets the same group
-        // (QueueGenericSound leaves +0xE0 clear otherwise); ShotEnvGroupReplay=1: a
+        // A replayed create of an owner gets the puppet's environment group where
+        // the game gave one (the mode c queue path too); ShotEnvGroupReplay=1: a
         // weapon puppet's packet asks its holder's group (the live weapon rattle
-        // 0x31906D4 puts the holder's at +0xE0, 0x31907CE..0x31907EA; a weapon object
-        // answers none).
-        bool queueEnvGroups = true;
+        // puts the holder's at +0xE0; a weapon object answers none).
         bool weaponHolderEnv = true;
-        // SoundGenericEntityMode (a, b, c; read at the module's load): how a replayed
-        // entity_sound or sound_request packet of an owner makes its sound (EntityMode).
-        std::uint8_t entityMode = 0;
         // SoundGenericSkip (read at the module's load, empty by default): what the
         // player does not apply, items by ';'
         // (S16;S18;S19;S21;S22;S23;S24;S38;stop;forget;release).
         std::string skip;
-        // SoundClock=1 (default): SOUND_CLOCK lines (clip time against the QPC clock)
-        // while recording and playing, so a game audio capture on the same QPC clock
-        // maps to clip time exactly.
-        bool clockLog = true;
-        // SoundGenericDirectParams=0 (default): the direct create builds its params
-        // from the packet's fields; 1: from the track row that kept them whole when
-        // there is one (the category).
-        int directParams = 0;
         // SoundGenericMute=owner@fromMs-toMs (the SoundGenericTrace format): those
         // packets are not created (ablation).
         std::string mute;
         // SoundGenericEntityDrivenSkip (the SoundGenericSkip items, only for the
         // packets whose sound updates with its entity).
         std::string entityDrivenSkip = kEntityDrivenSkipDefault;
-        // SoundGenericPlayerRoute=1: the recorded player's packets on the hidden live
-        // player's audio entity.
-        bool playerRoute = false;
-        // SoundGenericWeaponOffShot=1: a weapon object's packet no weapon code asked
-        // for and away from every recorded shot of that weapon is the generic
-        // player's (soundowner::OffShot; 0: every weapon audio packet is the shot's).
-        bool weaponOffShot = true;
-        // SoundGenericCoreBByRef=1 (default): a packet recorded at creator B created
-        // again by ref (CreateRefOf); SoundGenericKeepLoops=1 (default): the live loops
-        // that cover the playhead go on across a jump in play
-        // (player::Config::keepLoops).
-        bool coreBByRef = true;
-        bool keepLoops = true;
-        // SoundGenericWorldCap=1 (default): a world packet (no owner) counts the slot
-        // cap with the instances of its own sound (stable id, else raw ref), not with
-        // every ownerless packet (0, for A/B); SoundGenericWorldCapCount=6: how many
-        // instances of one world sound play at once (0: no cap per sound, the slots'
-        // distance rule still bounds them).
-        bool worldCapPerSound = true;
+        // A weapon object's packet no weapon code asked for and away from every
+        // recorded shot of that weapon is the generic player's (soundowner::OffShot).
+        // A packet recorded at creator B is created again by ref (CreateRefOf); the
+        // live loops that cover the playhead go on across a jump in play
+        // (player::Config::keepLoops). A world packet (no owner) counts the slot cap
+        // with the instances of its own sound (stable id, else raw ref);
+        // How many instances of one world sound play at once (0: no cap per sound).
         std::uint32_t worldCapCount = 6;
-        // SoundGenericVehicleBlock=1 (default): in packets mode a puppet vehicle's or
-        // train car's own create of a sound the recording plays then is refused at the
-        // census creators (vehicle_sound_rule.h; 0: the vehicles make their own copies
-        // over the packets).
-        bool vehicleBlock = true;
+        // In packets mode a puppet vehicle's or train car's own create of a sound the
+        // recording plays then is refused at the census creators (vehicle_sound_rule.h).
     };
+
+    // The generic player stays off while an export owns the transport clock (the
+    // packets due then are counted as disabled): playing during an export crashed
+    // (the export crash research).
+    constexpr bool kPlayInExport = false;
 
     // The budget's levels: the adjust rate drops first (halved per level),
     // then the adjusts stop, then everything. The level rises when the last
@@ -793,21 +823,6 @@ namespace replay::soundgeneric
         // its recorded volume and ends are left to it too).
         Entity = 3,
     };
-
-    inline EntityMode EntityModeOfText(const char* text)
-    {
-        std::string word;
-        for (const char* c = text; c && *c; ++c)
-            if (*c != ' ' && *c != '\t' && *c != '\r' && *c != '\n')
-                word += static_cast<char>(*c >= 'A' && *c <= 'Z' ? *c - 'A' + 'a' : *c);
-        if (word == "b" || word == "override")
-            return EntityMode::Override;
-        if (word == "c" || word == "queue" || word == "game_queue")
-            return EntityMode::GameQueue;
-        if (word == "d" || word == "entity")
-            return EntityMode::Entity;
-        return EntityMode::Detached; // "a", empty, anything else
-    }
 
     inline const char* EntityModeLetter(EntityMode mode)
     {
@@ -1079,8 +1094,8 @@ namespace replay::soundgeneric
             const std::uint64_t intervalUs = IntervalUs();
             // The values set in the create's own frame are the sound's start values,
             // never throttled. The creator applies the params' defaults (volume 0 dB) and
-            // the owner sets the real one microseconds later (e.g. a wagon's loop helper
-            // 0x30FEB40: create, play, pitch, volume); throttled, that value would wait
+            // the owner sets the real one microseconds later (e.g. a wagon's loop helper:
+            // create, play, pitch, volume); throttled, that value would wait
             // 50 ms and the replay would play the start at 0 dB.
             const bool createFrame = event.timeUs >= live.createUs && event.timeUs - live.createUs <= kCreateFrameUs;
             if (sampler->emitted && event.timeUs < sampler->lastUs + intervalUs && !createFrame)
@@ -1290,10 +1305,10 @@ namespace replay::soundgeneric
             return false;
         }
 
-        static bool ThroughQueueDrain(const std::uint32_t* frames, std::size_t count)
+        bool ThroughQueueDrain(const std::uint32_t* frames, std::size_t count) const
         {
             for (std::size_t n = 0; n < count; ++n)
-                if (frames[n] >= 0x258A348u && frames[n] < 0x258A546u)
+                if (InRange(frames[n], m_config.code.drain))
                     return true;
             return false;
         }
@@ -1350,7 +1365,7 @@ namespace replay::soundgeneric
                 const std::uint64_t delayMs = event.timeUs > request.timeUs ? (event.timeUs - request.timeUs) / 1000 : 0;
                 packet.createDelayMs = static_cast<std::uint16_t>(delayMs > 0xFFFF ? 0xFFFF : delayMs);
                 packet.source = source;
-                packet.caller = FamilyCaller(request.callers, kCallerFrames);
+                packet.caller = FamilyCaller(request.callers, kCallerFrames, m_config.code);
                 for (std::size_t n = 0; n < 3; ++n)
                     packet.path[n] = request.callers[n];
                 m_stats.delayMsTotal += delayMs;
@@ -1366,7 +1381,7 @@ namespace replay::soundgeneric
                 packet.source = Source::Direct;
                 // The census frames: 0 is the census detour, 1 the creator's
                 // entry; the family is above them.
-                packet.caller = FamilyCaller(event.callers, kCallerFrames);
+                packet.caller = FamilyCaller(event.callers, kCallerFrames, m_config.code);
                 for (std::size_t n = 0; n < 3; ++n)
                     packet.path[n] = event.callers[n];
                 ++m_stats.createsDirect;

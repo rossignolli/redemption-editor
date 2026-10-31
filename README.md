@@ -109,8 +109,8 @@ It's free software under GPL-3.0. Read it, learn from it, break it, improve it.
   1440p and 4K.
 - **Replay Settings** grouped as Recording, Playback, Storage and Interface, with an **Interface scale** from 80 to
   125%.
-- 13 languages that follow the game's language. **F1** lists every key of the screen you're on; every key can be
-  changed in `RedemptionEditor.ini`.
+- 14 languages that follow the game's language (Turkish, which the game lacks: `Language=tr`). **F1** lists every
+  key of the screen you're on; every key can be changed in `RedemptionEditor.ini`.
 - **Easy bug reports:** **Shift+F2** marks a moment, **Shift+F1** packs the log, your marks and those clips into one
   ZIP.
 
@@ -142,21 +142,45 @@ The editor in game, at 4K (click for full size).
 
 ## Install
 
-1. Install [Script Hook RDR2](http://www.dev-c.com/rdr2/scripthookrdr2/) and [ReShade](https://reshade.me) **with
-   full add-on support** for `RDR2.exe`.
-2. Download the ZIP from [GitHub Releases](https://github.com/rossignolli/redemption-editor/releases/latest) or
+1. Install [Script Hook RDR2](http://www.dev-c.com/rdr2/scripthookrdr2/).
+2. Install [ReShade](https://reshade.me) **with full add-on support** for `RDR2.exe`, even if you already have
+   ReShade (see below).
+3. Download the ZIP from [GitHub Releases](https://github.com/rossignolli/redemption-editor/releases/latest) or
    [Nexus Mods](https://www.nexusmods.com/reddeadredemption2/mods/11299) and copy everything inside it into the game
    folder (the one with `RDR2.exe`).
-3. Start Story Mode, press **Shift+F4** to save the last 60 seconds, then **F2** to open the editor.
+4. Start Story Mode, press **Shift+F4** to save the last 60 seconds, then **F2** to open the editor.
+
+**ReShade, the right way.** The standard ReShade download loads no add-ons, so with it F2 does nothing: you need the
+other one.
+
+1. On [reshade.me](https://reshade.me), click **"Download ReShade 6.8.x with full add-on support"** (the second
+   button, not the first). Already have ReShade? Reinstall it with this one; your presets and shaders stay.
+2. In the installer pick `RDR2.exe`, then the **same API the game uses** (Settings > Graphics > Graphics API). For
+   the video export, use Vulkan.
+3. That's it: the add-on loads by itself when the game starts, nothing to enable in the ReShade menu. On Vulkan,
+   ReShade installs to `C:\ProgramData\ReShade` instead of the game folder, so no `dxgi.dll` next to `RDR2.exe` is
+   normal.
+
+**F2 does nothing?** The mod tells you why on screen once the game is playable, and again when you press F2 (the
+log's `RESHADE_CHECK` line says the same). `ReShade.log` in the game folder says it too; search it for
+`RedemptionEditor`:
+
+| `ReShade.log` says | What to do |
+|---|---|
+| `Loading add-on from ...RedemptionEditor.addon64` | The add-on loaded. Check that `RedemptionEditorCore.dll` is next to `RDR2.exe`. |
+| `Skipped loading add-on ... only limited add-on functionality` | You have the standard ReShade. Reinstall it with the **full add-on support** download. |
+| nothing about it | ReShade is not running for `RDR2.exe`, or is set to the wrong API. Reinstall it for `RDR2.exe` with the API the game uses. |
+
+Turned it off in the ReShade menu (Home > Add-ons)? Tick Redemption Editor again and restart the game.
 
 **Requirements**
 
 
 | | |
 |---|---|
-| Game | Red Dead Redemption 2 on PC, build **1.0.1491.50**. Tested on Steam; the Epic Games Store and Rockstar Games Launcher versions should work too, so tell us in an issue how it went. |
+| Game | Red Dead Redemption 2 on PC, build **1.0.1491.50**. Tested on Steam; the Epic Games Store and Rockstar Games Launcher versions should work too, so tell us in an issue how it went. On another build the mod looks for the game code it needs at start, and a feature whose code it can't find turns itself off (the log's `SIG_SUMMARY` line says which; [docs/signatures.md](docs/signatures.md)). |
 | Script Hook RDR2 | by Alexander Blade (`ScriptHookRDR2.dll` and its `dinput8.dll` ASI loader). |
-| ReShade | **6.6.2 to 6.8.x with full add-on support.** Without it the mod still records (F4, Shift+F4) and plays the last clip (F7), but the editor and the export don't open. |
+| ReShade | **6.6.2 to 6.8.x, the "full add-on support" download** (the standard download does not load the editor). Without it the mod still records (F4, Shift+F4) and plays the last clip (F7), but the editor and the export don't open. |
 | Graphics API | **Vulkan or DirectX 12.** Recording, playback and the editor work on both; the **video export needs Vulkan**. |
 
 **Game in Program Files?** Nothing to change. Windows doesn't let the game write to `C:\Program Files` (the
@@ -240,13 +264,16 @@ The ASI and the core never call each other. They talk through two named shared m
 Every feature uses the lowest rung that works (details in [docs/architecture.md](docs/architecture.md)):
 
 1. **Natives** through Script Hook RDR2, on the script thread.
-2. **Guarded reads** of engine fields whose layout was proven for build 1.0.1491.50, inside SEH (`src/guarded_memory.h`).
+2. **Guarded reads** of engine fields whose layout is in the bytes of a checked signature, inside SEH
+   (`src/guarded_memory.h`).
 3. **Guarded writes** of plain fields, only on objects the replay owns (its puppets, their weapons, its ropes).
-4. **Calls to engine functions**, only after the function's first bytes match the expected signature at its RVA.
-5. **Detours** (MinHook), with the same signature check. A detour forwards every call to the original and changes
+4. **Calls to engine functions** found by signature (`src/game_sig.h`): the function's own bytes, with only the
+   address bytes left out, checked at its known address on 1.0.1491.50 and searched once on any other build.
+5. **Detours** (MinHook), on functions found the same way. A detour forwards every call to the original and changes
    behaviour only for replay entities, or for the world while the replay owns it.
 
-A signature mismatch turns that feature off and logs it; nothing ever falls back to a guessed address. Detours never
+A signature not found exactly once turns its feature off and logs it; nothing ever falls back to a guessed address
+([docs/signatures.md](docs/signatures.md)). Detours never
 call natives: they copy what they need into a ring buffer the script thread reads on its next tick. Enabling hooks
 freezes every game thread for 60 to 160 ms, so they are queued and applied in one batch (`src/hook_batch.h`). The main
 detours:
@@ -484,7 +511,8 @@ Contributions are welcome, from a translation fix to a new detour. The full guid
 ## Translations
 
 The interface speaks English, Brazilian Portuguese, Spanish (Spain and Latin America), French, German, Italian,
-Polish, Russian, Japanese, Korean and Chinese (Simplified and Traditional), and follows the game's language.
+Polish, Russian, Japanese, Korean, Chinese (Simplified and Traditional) and Turkish, and follows the game's
+language (the game has no Turkish: `Language=tr` in `RedemptionEditor.ini` picks it).
 
 Every player facing text goes through `TR("key", "English")` in the code. `editor/lang/en.lang` is generated from it by
 `py tools\i18n\lang_table.py --write`, and each translation is `editor/lang/<code>.lang`, a plain `key = text` file.
@@ -513,8 +541,8 @@ welcome.
 - **A rare `ERROR: FFFFFFFF`** while the game reloads your save after a replay, mostly when the PC is low on memory.
   Your clips are safe.
 - **Clips can get big:** a minute in a busy town can take a few hundred MB before the background compression.
-- **Clips are tied to the game build** they were recorded on, and clips from a newer version of the mod may not open
-  in an older one.
+- **Clips from another game build open**, but what the mod can't find on your build (a sound, an effect) is left
+  out. Clips from a newer version of the mod may not open in an older one.
 - **Other script mods** that change characters or the world can clash with a replay.
 - **A read only game folder:** clips an earlier version saved there open, but the editor can't rename or delete them;
   a change to one is saved as a copy in the Documents folder.

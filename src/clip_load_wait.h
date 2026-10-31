@@ -62,6 +62,50 @@ namespace replay::clipload
         return !sceneActive || DistanceSq(sceneAt, camera) > config.retargetMeters * config.retargetMeters;
     }
 
+    // The engine has one load scene: a LOAD_SCENE_STOP from anyone ends ours
+    // and IS_LOAD_SCENE_LOADED then stays false (its handler, 1491.50
+    // 0x10A8E88, wants the scene active, its state 2 and the required
+    // resources in). The game's ambient_load starts one whenever
+    // IS_LOAD_SCENE_ACTIVE is false; the wait does the same with its own.
+    enum class SceneStep
+    {
+        Keep,     // ours, active, near the camera
+        Start,    // none of ours yet (or the start was refused)
+        Retarget, // the camera moved away: load again there
+        Lost,     // ours was stopped by someone else: start it again
+    };
+
+    inline SceneStep PlanScene(bool ours, bool engineActive, const Vec3& sceneAt, const Vec3& camera, const Config& config = {})
+    {
+        if (!ours)
+            return SceneStep::Start;
+        if (!engineActive)
+            return SceneStep::Lost;
+        return NeedsRetarget(true, sceneAt, camera, config) ? SceneStep::Retarget : SceneStep::Keep;
+    }
+
+    // How long the engine's streaming queue (GET_NUMBER_OF_STREAMING_REQUESTS)
+    // has been empty, for the wait's line: a load scene that never reports
+    // loaded with the queue empty for seconds is not one still streaming.
+    class StreamingIdle
+    {
+    public:
+        void Feed(std::uint64_t nowMs, int requests)
+        {
+            if (requests > 0)
+                m_idleSince = 0;
+            else if (!m_idleSince)
+                m_idleSince = nowMs ? nowMs : 1;
+        }
+        std::uint64_t IdleMs(std::uint64_t nowMs) const
+        {
+            return m_idleSince && nowMs >= m_idleSince ? nowMs - m_idleSince : 0;
+        }
+
+    private:
+        std::uint64_t m_idleSince = 0;
+    };
+
     // Not used by the script: a jump's far test is the seek settle's
     // (seek_settle.h FarBitsOf: 100 m, the collision, the model window), with the
     // frozen picture instead of the black screen.

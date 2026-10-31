@@ -18,9 +18,7 @@
 // released at the playback's end. The detector object_look_mismatch reads the
 // object again 0.5 s and 2 s after a set and on a QA mark.
 //
-// Ini ObjectLook (1 by default): records and plays. ObjectLookEvidence (0 by
-// default): every read logged (OBJECT_LOOK_READ, first read and changes per
-// object), with ObjectLook=0 the evidence-only path (nothing recorded or set).
+// Ini ObjectLook (1 by default): records and plays.
 
 #include "object_look_core.h"
 #include "replay_context.h"
@@ -31,9 +29,7 @@ namespace replay::objlook
 {
     void Attach(Context& context);
     void SetRecordAndPlay(bool on);
-    void SetEvidence(bool on);
     bool RecordAndPlay();
-    bool Evidence();
     // The code signatures checked (once) and the feature on.
     bool Active();
 

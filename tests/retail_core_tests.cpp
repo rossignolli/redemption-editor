@@ -55,6 +55,7 @@ int RunIniPublicTests(); // ini whitelist, dev reads, first-run ini, report clip
 int RunStoragePathsTests(); // the base folder (Program Files fallback), read roots, layered settings
 int RunRecIndicatorTests(); // the recording indicator: modes, fallback, brief clock
 int RunI18nTests(); // the languages: lang files, fallbacks, UTF-8, the choice, the pseudo language
+int RunModelNamesTests(); // entity labels: model names by hash, hex, numbers
 int RunEntityCacheTests(); // entity cache, event ranges, lifecycle stamp
 int RunTrainConsistTests(); // trains: consist walk, links, speed, puppet judge
 int RunGallopTests(); // gallop: player horse audio sites, trusted regions, replay effect sites
@@ -64,6 +65,7 @@ int RunParticleReplayTests(); // particle effects in the replay
 int RunFxResidueTests();
 int RunWeaponBonesTests();
 int RunFrozenPoseTests();
+int RunPoseRateTests(); // pose rate: stair stepped (low rate) animation and one frame flips in a recording
 int RunMuscleWatchTests();
 int RunStrapStateTests(); // weapon straps: the rebuild request and bits played on a puppet weapon
 int RunWeaponOrderTests(); // a puppet weapon's components: the wraps last (the bolt-action wrap over the scope)
@@ -93,6 +95,8 @@ int RunPlayerWeaponBankTests(); // gunshot sounds
 int RunDecalAddGuardTests(); // decal crashes 0x2C42D1A and 0x15E5BD
 int RunWorldFocusTests();
 int RunGameListenerTests();
+int RunGameSigTests(); // signatures instead of fixed addresses
+int RunGameSigSiteTests(); // clips name game addresses by signature
 int RunVolumeProbeTests(); // volume probe
 int RunWindReplayTests(); // wind in the replay
 int RunPedSpeedTests(); // hoof volume
@@ -114,6 +118,9 @@ int RunMountPlacementTests(); // rider follows mount at the ped pre-render
 int RunJitterTests();
 int RunProjectTests(); // projects, trim and markers, project file
 int RunProjectExportTests(); // whole project export: pieces, seams, sound
+int RunExportMemoryTests(); // the export's memory telemetry lines
+int RunExportSegmentsTests(); // segmented export: boundaries, manifest, resume, join
+int RunExportHoldTests(); // the export held while the game shows a menu
 int RunSkyTrackTests(); // the clouds at the playhead
 int RunEnvOverrideTests(); // the editor's environment settings
 int RunExportScheduleTests(); // render export
@@ -312,6 +319,7 @@ int main()
     g_failures += RunStoragePathsTests();
     g_failures += RunRecIndicatorTests();
     g_failures += RunI18nTests();
+    g_failures += RunModelNamesTests();
     g_failures += RunEntityCacheTests();
     g_failures += RunTrainConsistTests();
     g_failures += RunGallopTests();
@@ -321,6 +329,7 @@ int main()
     g_failures += RunFxResidueTests();
     g_failures += RunWeaponBonesTests();
     g_failures += RunFrozenPoseTests();
+    g_failures += RunPoseRateTests();
     g_failures += RunMuscleWatchTests();
     g_failures += RunStrapStateTests();
     g_failures += RunWeaponOrderTests();
@@ -345,6 +354,8 @@ int main()
     g_failures += RunDecalAddGuardTests();
     g_failures += RunWorldFocusTests();
     g_failures += RunGameListenerTests();
+    g_failures += RunGameSigTests();
+    g_failures += RunGameSigSiteTests();
     g_failures += RunVolumeProbeTests();
     g_failures += RunWindReplayTests();
     g_failures += RunPedSpeedTests();
@@ -370,6 +381,9 @@ int main()
     g_failures += RunJitterTests();
     g_failures += RunProjectTests();
     g_failures += RunProjectExportTests();
+    g_failures += RunExportMemoryTests();
+    g_failures += RunExportSegmentsTests();
+    g_failures += RunExportHoldTests();
     g_failures += RunSkyTrackTests();
     g_failures += RunEnvOverrideTests();
     g_failures += RunExportScheduleTests();

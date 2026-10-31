@@ -37,9 +37,10 @@ namespace ui_harness
         const char* const kLongClip2 = "Blackwater ferry escape with Dutch and boys v3.rpclip";
         const char* const kLongProject = "Van der Linde gang final chapter director cut 2";
         const char* const kLongRegion = "Saint Denis, Bayou Nwa, Lemoyne, United States";
-        const char* const kTargetLabels[] = {"Arthur Morgan (player)", "Dutch van der Linde", "Hosea Matthews", "John Marston",
-            "Horse: The Count", "Stagecoach driver 1", "Lenny Summers", "Sadie Adler", "Micah Bell", "Javier Escuella",
-            "O'Driscoll gunman 14", "Pinkerton agent Milton"};
+        // Model names, as the core names the clip's entities (src/model_names.h).
+        const char* const kTargetLabels[] = {"player_zero", "cs_dutch", "cs_hoseamatthews", "cs_johnmarston",
+            "a_c_horse_kentuckymountainsaddle_bay", "a_m_m_valtownfolk_01 #1", "a_m_m_valtownfolk_01 #2", "cs_mrsadler", "cs_micah",
+            "coach_stagecoach004x", "w_repeater_pumpaction01", "0x1A2B3C4D"};
 
         void Copy(char* to, std::size_t size, const char* text) { std::snprintf(to, size, "%s", text); }
 
@@ -318,6 +319,8 @@ namespace ui_harness
             g_editMessageUntil = 0;
             g_toastUntil = 0;
             g_recBrief = replay::recindicator::BriefTimer{};
+            g_replayOn = replay::recindicator::ReplayOnTimer{};
+            display_font::g_titleFace = 0;
             g_recEnv = replay::recindicator::Environment{};
             g_loadName.clear();
             g_openingAsked = false;
@@ -481,6 +484,7 @@ namespace ui_harness
                     g_fix.bufferHeldMs = Ms(41.0);
                     g_fix.bufferSeconds = 300;
                     g_fix.bufferMB = 1024;
+                    g_fix.bufferHeldMs = Ms(171.0); // the seconds that fit in 1024 MB of a busy town
                     g_fix.recordingMs = Ms(754.0);
                     g_fix.clipTotal = 312;
                     g_fix.projectListCount = 64;
@@ -503,6 +507,11 @@ namespace ui_harness
                 ProjectClips(120, false);
                 g_fix.projectFlags |= ProjectDirty;
                 g_homeIndex = 1; // Recorded Clips, then Edit Project
+            }});
+            f.push_back({"home/clip-open", "home with a clip open (Edit Clip and its icon) selected", [] {
+                g_screen = Screen::Home;
+                Playing(60000, 12000, true);
+                g_homeIndex = 1; // Recorded Clips, then Edit Clip
             }});
             f.push_back({"home/project-close", "home with a project open, Close Project selected", [] {
                 g_screen = Screen::Home;
@@ -551,15 +560,34 @@ namespace ui_harness
                 g_harnessMouse = HarnessMouse{true, 300.0f, itemsTop + 2 * 50.0f + 22.0f, false, true};
             }});
             // ---------------- Replay Settings ----------------
-            for (int row = 0; row < 12; ++row)
+            // Interface > Font on Segoe UI Bold: the whole interface in it.
+            f.push_back({"settings/font-segoe", "Replay Settings with the Font row on Segoe UI (every title text in Segoe UI Bold)", [] {
+                    g_screen = Screen::Settings;
+                    g_fix.bufferEnabled = 1;
+                    g_fix.bufferSeconds = 300;
+                    g_fix.bufferMB = 1024;
+                    g_fix.bufferHeldMs = Ms(171.0); // the seconds that fit in 1024 MB of a busy town
+                    g_fix.compressEnabled = 1;
+                    g_fix.compressDays = 45;
+                    g_fix.compressState = 2;
+                    g_fix.compressDone = 117;
+                    g_fix.compressTotal = 1204;
+                    g_fix.clipTotal = 1312;
+                    g_fix.compressedClips = 1088;
+                    g_fix.flags |= SnapshotReplayDeadEye | SnapshotLockCutsceneCamera | SnapshotFreezeOnPause;
+                    g_settingsIndex = 13;
+                    display_font::g_titleFace = 1;
+            }});
+            for (int row = 0; row < 14; ++row)
             {
                 static const char* const names[] = {"settings/row-0", "settings/row-1", "settings/row-2", "settings/row-3", "settings/row-4",
-                    "settings/row-5", "settings/row-6", "settings/row-7", "settings/row-8", "settings/row-9", "settings/row-10", "settings/row-11"};
+                    "settings/row-5", "settings/row-6", "settings/row-7", "settings/row-8", "settings/row-9", "settings/row-10", "settings/row-11", "settings/row-12", "settings/row-13"};
                 f.push_back({names[row], "Replay Settings in its four groups (Recording, Playback, Storage, Interface), each row selected (its help; the disk use on rows 4 to 6)", [row] {
                     g_screen = Screen::Settings;
                     g_fix.bufferEnabled = 1;
                     g_fix.bufferSeconds = 300;
                     g_fix.bufferMB = 1024;
+                    g_fix.bufferHeldMs = Ms(171.0); // the seconds that fit in 1024 MB of a busy town
                     g_fix.compressEnabled = 1;
                     g_fix.compressDays = 45;
                     g_fix.compressState = 2;
@@ -1144,6 +1172,15 @@ namespace ui_harness
                 g_toastUntil = Later();
                 g_toastClipMs = Ms(3599.0);
             }});
+            // Normal mode: REPLAY ON when the buffer starts, gone after 5 s.
+            f.push_back({"notices/replay-on", "the replay buffer just started (entering the game): REPLAY ON", [] {
+                g_fix.flags |= SnapshotBufferRunning;
+            }});
+            f.push_back({"notices/replay-on-gone", "the replay buffer running for a while: no row", [] {
+                g_fix.flags |= SnapshotBufferRunning;
+                g_replayOn.last = replay::recindicator::Kind::Replay;
+                g_replayOn.until = 1;
+            }});
             f.push_back({"notices/opening", "opening a clip while the recording is saved first", [] {
                 g_fix.flags |= SnapshotRecording | SnapshotSavingClip;
                 g_fix.recordingMs = Ms(61.0);
@@ -1257,6 +1294,7 @@ namespace ui_harness
                 g_fix.bufferHeldMs = Ms(41.0);
                 g_fix.bufferSeconds = 300;
                 g_fix.bufferMB = 1024;
+                g_fix.bufferHeldMs = Ms(171.0); // the seconds that fit in 1024 MB of a busy town
                 RemappedKeys();
                 g_homeIndex = 4;
             }});
@@ -1676,9 +1714,9 @@ namespace ui_harness
         return results;
     }
 
-    bool FontsReady() { return display_font::g_title.Ready() && display_font::g_body.Ready(); }
+    bool FontsReady() { return display_font::Title().Ready() && display_font::g_body.Ready() && (display_font::g_titleFace == 0 || &display_font::Title() != &display_font::g_title || display_font::TitleFaces(display_font::g_titleFace)->Failed()); }
 
-    std::size_t MissingGlyphs() { return display_font::g_title.MissingGlyphs() + display_font::g_body.MissingGlyphs(); }
+    std::size_t MissingGlyphs() { return display_font::Title().MissingGlyphs() + display_font::g_body.MissingGlyphs(); }
 
     void End()
     {

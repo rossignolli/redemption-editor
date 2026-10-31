@@ -12,13 +12,13 @@ namespace replay::editor
 {
     // Shared memory protocol between the core and the editor add-on. Both
     // versions are raised whenever the Command or Snapshot layout changes.
-    constexpr std::uint32_t kApiVersion = 26;
+    constexpr std::uint32_t kApiVersion = 28;
     constexpr std::uint32_t kMaxCameraKeyframesInSnapshot = 512; // a directed clip has hundreds
     constexpr std::uint32_t kSharedTransportMagic = 0x42504552u; // REPB
-    constexpr std::uint32_t kSharedTransportVersion = 25;
+    constexpr std::uint32_t kSharedTransportVersion = 27;
     constexpr std::uint32_t kMaxClipsInSnapshot = 64;
     constexpr std::uint32_t kMaxTargetsInSnapshot = 32;
-    constexpr std::uint32_t kTargetLabelCapacity = 24;
+    constexpr std::uint32_t kTargetLabelCapacity = 64; // a model name and " #n"
     constexpr std::size_t kClipNameCapacity = 64;
     constexpr std::size_t kSharedCommandCapacity = 256;
     constexpr std::size_t kSharedTransportNameCapacity = 96;
@@ -468,7 +468,10 @@ namespace replay::editor
         // (SnapshotLoadingWorld), so the core leaves out its own "Loading
         // replay..." text. Sent every 2 s; the core keeps it for 5 s, so an
         // add-on that stopped drawing gets the core's text back.
-        SetLoadingCue = 71
+        SetLoadingCue = 71,
+        // enabled: the pose detail of the recording (pose_deadband_smooth.h
+        // Detail: 1 standard, 2 maximum; saved to the ini as PoseDetail).
+        SetPoseDetail = 72
     };
 
 
@@ -813,7 +816,7 @@ namespace replay::editor
     };
     // Near clip (metres). 0 in a marker is the default, 0.1 m (a free
     // camera's usual value). The engine holds SET_CAM_NEAR_CLIP at 0.01 or
-    // more (game build 1491.50: handler 0xF64210 > 0xF753A8, maxss with 0.01, stored
+    // more (game build 1491.50: handler > core, maxss with 0.01, stored
     // at [cam+0x84]).
     constexpr float kNearClipDefault = 0.1f;
     constexpr float kNearClipMin = 0.01f;
@@ -1066,6 +1069,10 @@ namespace replay::editor
         std::uint32_t targetBoneMaskHigh[kMaxTargetsInSnapshot];
         // RedemptionEditor.ini RecordingIndicator (rec_indicator.h Mode).
         std::uint32_t recordingIndicator;
+        // RedemptionEditor.ini PoseDetail (pose_deadband_smooth.h Detail:
+        // 1 standard, 2 maximum; 0 the dev key's old codec).
+        std::uint32_t poseDetail;
+        std::uint32_t reservedAfterPoseDetail; // keeps the snapshot 8 byte sized
     };
 
     // Snapshot::seekLoadState.
@@ -1166,6 +1173,37 @@ namespace replay::editor
         return InterlockedCompareExchange64(value, 0, 0);
     }
 
+    // The snapshot is a seqlock: the editor may copy it while the probe
+    // rewrites it, and the sequence check afterwards throws such a copy away.
+    // Both copies go word by word through relaxed 64-bit atomics
+    // (ReadNoFence64/WriteNoFence64, plain movs on x64), so that overlap is
+    // not a C++ data race as a plain struct copy would be.
+    constexpr std::size_t kSnapshotWords = sizeof(Snapshot) / 8;
+
+    inline void StoreSnapshotWords(Snapshot& shared, const Snapshot* source) noexcept
+    {
+        volatile LONG64* words = reinterpret_cast<volatile LONG64*>(&shared);
+        const unsigned char* bytes = reinterpret_cast<const unsigned char*>(source);
+        for (std::size_t n = 0; n < kSnapshotWords; ++n)
+        {
+            LONG64 word = 0;
+            if (bytes)
+                std::memcpy(&word, bytes + n * 8, 8);
+            WriteNoFence64(words + n, word);
+        }
+    }
+
+    inline void LoadSnapshotWords(Snapshot& destination, const Snapshot& shared) noexcept
+    {
+        const volatile LONG64* words = reinterpret_cast<const volatile LONG64*>(&shared);
+        unsigned char* bytes = reinterpret_cast<unsigned char*>(&destination);
+        for (std::size_t n = 0; n < kSnapshotWords; ++n)
+        {
+            const LONG64 word = ReadNoFence64(words + n);
+            std::memcpy(bytes + n * 8, &word, 8);
+        }
+    }
+
     inline bool SharedTransportHeaderValid(
         const SharedTransport& transport,
         std::uint32_t processId) noexcept
@@ -1208,7 +1246,8 @@ namespace replay::editor
         InterlockedExchange(&transport.commandWrite, 0);
         InterlockedExchange(&transport.commandOverflowed, 0);
         transport.reservedAtomic = 0;
-        std::memset(&transport.snapshot, 0, sizeof(transport.snapshot));
+        // A reader that passed the online check may still be copying.
+        StoreSnapshotWords(transport.snapshot, nullptr);
         for (SharedCommandSlot& slot : transport.commands)
         {
             InterlockedExchange(&slot.ready, 0);
@@ -1233,9 +1272,12 @@ namespace replay::editor
         if (!SharedTransportOnline(transport, processId))
             return false;
         InterlockedIncrement(&transport.snapshotSequence);
-        transport.snapshot = source;
-        transport.snapshot.structSize = sizeof(Snapshot);
-        transport.snapshot.version = kApiVersion;
+        StoreSnapshotWords(transport.snapshot, &source);
+        // structSize and version are word 0 (asserted below).
+        const std::uint32_t head[2] = {static_cast<std::uint32_t>(sizeof(Snapshot)), kApiVersion};
+        LONG64 headWord = 0;
+        std::memcpy(&headWord, head, sizeof(headWord));
+        WriteNoFence64(reinterpret_cast<volatile LONG64*>(&transport.snapshot), headWord);
         InterlockedIncrement(&transport.snapshotSequence);
         return AtomicRead(&transport.online) != 0;
     }
@@ -1259,7 +1301,7 @@ namespace replay::editor
             // too much for a second copy on the reader's stack. A torn read
             // returns false and the caller keeps its last good snapshot
             // elsewhere.
-            destination = transport.snapshot;
+            LoadSnapshotWords(destination, transport.snapshot);
             const LONG sequenceAfter =
                 AtomicRead(&transport.snapshotSequence);
             const LONG64 epochAfter = AtomicRead64(&transport.epoch);
@@ -1440,4 +1482,9 @@ namespace replay::editor
         std::is_trivially_copyable_v<SharedCommandSlot>);
     static_assert(std::is_standard_layout_v<SharedTransport> &&
         std::is_trivially_copyable_v<SharedTransport>);
+    static_assert(sizeof(Snapshot) % 8 == 0 && alignof(Snapshot) == 8 &&
+            offsetof(SharedTransport, snapshot) % 8 == 0,
+        "the snapshot is copied as aligned 64-bit words");
+    static_assert(offsetof(Snapshot, structSize) == 0 && offsetof(Snapshot, version) == 4,
+        "PublishSharedSnapshot writes structSize and version as word 0");
 }

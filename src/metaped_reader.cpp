@@ -1,7 +1,9 @@
 #include "metaped_reader.h"
 
+#include "engine_sigs.h"
 #include "entity_appearance.h" // ReadShopItems
 #include "entity_cache.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 
 #include "natives.h"
@@ -10,80 +12,59 @@
 
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 #include <sstream>
 
 namespace replay::metaped::engine
 {
     namespace
     {
-        // ---- game build 1491.50: the code the layout comes from ----------
-        // _GET_CHAR_EXPRESSION's core: ped -> 0x2BDDE1C (creature) ->
-        // 0xB32AD8 (container) -> 0x2BC96C4 (frame + 0x58, track 0x40).
-        constexpr std::uint32_t kGetterRva = 0xB44250;
-        constexpr std::uint8_t kGetter[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x83, 0x64, 0x24, 0x30, 0x00, 0x8B, 0xDA, 0x48, 0x85, 0xC9, 0x75, 0x05,
-            0x0F, 0x57, 0xC0, 0xEB, 0x2A, 0x33, 0xD2, 0xE8, 0xAE, 0x9B, 0x09, 0x02, 0x48, 0x8B, 0xC8, 0xE8, 0x62, 0xE8,
-            0xFE, 0xFF, 0x48, 0x85, 0xC0, 0x74, 0x10, 0x4C, 0x8D, 0x44, 0x24, 0x30, 0x0F, 0xB7, 0xD3, 0x48, 0x8B, 0xC8,
-            0xE8, 0x39, 0x54, 0x08, 0x02, 0xF3, 0x0F, 0x10, 0x44, 0x24, 0x30, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3};
-        constexpr std::uint32_t kCreatureRva = 0x2BDDE1C;
-        constexpr std::uint8_t kCreature[] = {
-            0x8B, 0x89, 0x9C, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x05, 0x5F, 0x65, 0x0F, 0x01, 0x81, 0xE1, 0xFF, 0xFF, 0x01,
-            0x00, 0x2B, 0x0D, 0x4B, 0x65, 0x0F, 0x01, 0x48, 0x03, 0xC9, 0x48, 0x8B, 0x14, 0xC8, 0x48, 0x8B, 0xCA, 0x48,
-            0x83, 0xE1, 0xFE, 0x48, 0xF7, 0xDA, 0x48, 0x1B, 0xC0, 0x48, 0x23, 0xC1, 0x74, 0x05, 0x48, 0x8B, 0x40, 0x28,
-            0xC3, 0x33, 0xC0, 0xC3};
-        constexpr std::uint32_t kCreatureTableDisp = 0x09, kCreatureTableNext = 0x0D; // qword 0x3CD4388
-        constexpr std::uint32_t kCreatureBaseDisp = 0x15, kCreatureBaseNext = 0x19;   // dword 0x3CD4380
-        constexpr std::uint32_t kContainerRva = 0xB32AD8;
-        constexpr std::uint8_t kContainer[] = {
-            0x44, 0x0F, 0xB6, 0x0D, 0x10, 0x01, 0x1B, 0x03, 0x41, 0x83, 0xC8, 0xFF, 0x49, 0x0F, 0xBE, 0xC0, 0x4A, 0x8D,
-            0x14, 0x8D, 0x01, 0x00, 0x00, 0x00, 0x48, 0x03, 0xD0, 0x8B, 0xC2, 0x8A, 0x94, 0x08, 0x04, 0x01, 0x00, 0x00,
-            0x80, 0xFA, 0x14, 0x75, 0x0C, 0x41, 0xFF, 0xC0, 0x41, 0x83, 0xF8, 0x03, 0x7C, 0xDA, 0x33, 0xC0, 0xC3, 0x0F,
-            0xB6, 0xC2, 0x48, 0x8B, 0x44, 0xC1, 0x18, 0xC3};
-        constexpr std::uint32_t kContainerIndexDisp = 0x04, kContainerIndexNext = 0x08; // byte 0x3CE2BF0
-        constexpr std::uint32_t kFrameRva = 0x2BC96C4;
-        constexpr std::uint8_t kFrame[] = {
-            0x4D, 0x8B, 0xC8, 0x48, 0x83, 0xC1, 0x58, 0x44, 0x0F, 0xB7, 0xC2, 0xB2, 0x40, 0xE9, 0xE6, 0x66, 0xA9, 0xFF};
-        constexpr std::uint32_t kFrameValueRva = 0x265FDBC;
-        constexpr std::uint8_t kFrameValue[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x59,
-            0x08, 0x48, 0x8B, 0xF9, 0x48, 0x8B, 0xCB, 0x49, 0x8B, 0xF1, 0xE8, 0xDF, 0x82, 0xFF, 0xFF, 0x41, 0x83, 0xC9,
-            0xFF, 0x4C, 0x8B, 0xC0, 0x48, 0x85, 0xC0, 0x74, 0x1F, 0x48, 0x8B, 0xD0, 0x48, 0xB8, 0xAB, 0xAA, 0xAA, 0xAA,
-            0xAA, 0xAA, 0xAA, 0x2A, 0x48, 0x2B, 0x13, 0x48, 0xF7, 0xEA, 0x48, 0x8B, 0xCA, 0x48, 0xC1, 0xE9, 0x3F, 0x48,
-            0x03, 0xD1, 0xEB, 0x03, 0x41, 0x8B, 0xD1, 0x4D, 0x85, 0xC0, 0x74, 0x2B, 0x4C, 0x8B, 0x07, 0x8B, 0xC2, 0x48,
-            0x8D, 0x14, 0x40, 0x48, 0x8B, 0x47, 0x08, 0x48, 0x8B, 0x08, 0x0F, 0xB7, 0x04, 0x51, 0x46, 0x39, 0x0C, 0x00,
-            0x74, 0x11, 0x48, 0x8B, 0x03, 0x0F, 0xB7, 0x0C, 0x50, 0x42, 0x8B, 0x04, 0x01, 0x89, 0x06, 0xB0, 0x01, 0xEB,
-            0x02, 0x32};
-        constexpr std::uint32_t kDofFindRva = 0x26580BC;
-        constexpr std::uint8_t kDofFind[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x41, 0x0F, 0xB7, 0xC0, 0x4C, 0x8B, 0x01, 0x44, 0x0F, 0xB6, 0xDA, 0x41, 0xC1,
-            0xE3, 0x10, 0x44, 0x0B, 0xD8, 0x8B, 0x41, 0x2C, 0x48, 0x8D, 0x0C, 0x40, 0x48, 0xB8, 0xAB, 0xAA, 0xAA, 0xAA,
-            0xAA, 0xAA, 0xAA, 0x2A, 0x48, 0x03, 0xC9, 0x48, 0xF7, 0xE9, 0x4A, 0x8D, 0x1C, 0x01, 0x48, 0x8B, 0xC2, 0x48,
-            0xC1, 0xE8, 0x3F, 0x48, 0x03, 0xD0, 0xEB, 0x32, 0x4C, 0x8B, 0xCA, 0x49, 0xD1, 0xF9, 0x4B, 0x8D, 0x04, 0x49,
-            0x4D, 0x8D, 0x14, 0x40, 0x41, 0x0F, 0xB6, 0x4A, 0x04, 0x41, 0x0F, 0xB7, 0x42, 0x02, 0xC1, 0xE1, 0x10, 0x0B,
-            0xC8, 0x41, 0x3B, 0xCB};
-        // _SET_PED_SCALE's core: two places by the metaped's state.
-        constexpr std::uint32_t kScaleSetRva = 0xFEF2FC;
-        constexpr std::uint8_t kScaleSet[] = {
-            0x48, 0x85, 0xC9, 0x0F, 0x84, 0x98, 0x00, 0x00, 0x00, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x0F, 0x29, 0x74, 0x24,
-            0x20, 0x48, 0x8B, 0xD9, 0x0F, 0x28, 0xF1, 0x0F, 0x2F, 0x35, 0x64, 0x00, 0x32, 0x02, 0x76, 0x75, 0xE8, 0xC5,
-            0x7D, 0x8C, 0xFF, 0x8B, 0x8B, 0x9C, 0x00, 0x00, 0x00, 0x81, 0xE1, 0xFF, 0xFF, 0x01, 0x00, 0x2B, 0x0D, 0x0B,
-            0xDB, 0x9F, 0x02, 0x84, 0xC0, 0x8B, 0xC1, 0x74, 0x30, 0x48, 0x69, 0xC8, 0x48, 0x01, 0x00, 0x00, 0x0F, 0x28,
-            0xCE, 0x48, 0x8B, 0x05, 0xFC, 0xDA, 0x9F, 0x02, 0x48, 0x8B, 0x94, 0x01, 0xE0, 0x00, 0x00, 0x00, 0x48, 0x8B,
-            0xC2, 0x48, 0x83, 0xE0, 0xFE, 0x48, 0xF7, 0xDA, 0x48, 0x1B, 0xC9, 0x48, 0x23, 0xC8, 0xE8, 0x33, 0xEB, 0x9F,
-            0xFF, 0xEB, 0x28, 0x48, 0x69, 0xC8, 0x48, 0x01, 0x00, 0x00, 0x48, 0x8B, 0x05, 0xCF, 0xDA, 0x9F, 0x02, 0x48,
-            0x8B, 0x54, 0x01, 0x50, 0x48, 0x8B, 0xCA, 0x48, 0x83, 0xE1, 0xFE, 0x48, 0xF7, 0xDA, 0x48, 0x1B, 0xC0, 0x48,
-            0x23, 0xC1, 0xF3, 0x0F, 0x11, 0x70, 0x48, 0x0F, 0x28, 0x74, 0x24, 0x20, 0x48, 0x83, 0xC4, 0x30, 0x5B, 0xC3};
-        constexpr std::uint32_t kScaleBaseDisp = 0x35, kScaleBaseNext = 0x39;   // dword 0x39ECE40
-        constexpr std::uint32_t kScaleTableDisp = 0x4C, kScaleTableNext = 0x50; // qword 0x39ECE48
-        // The "ready" test the setter branches on (0x8B70E8): the dressing
-        // object [[ped + 0x28] + 0x750] with +0xB72 and +0xB75 both 0.
-        constexpr std::uint32_t kScaleReadyRva = 0x8B70E8;
-        constexpr std::uint8_t kScaleReady[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x8B, 0x15, 0x20, 0x48, 0x06, 0x04, 0x48, 0x8B, 0xD9, 0x48, 0x83, 0xC1,
-            0x10, 0xE8, 0x70, 0x6C, 0x32, 0x02, 0x33, 0xD2, 0x48, 0x85, 0xC0, 0x75, 0x27, 0x48, 0x8B, 0x43, 0x28, 0x48,
-            0x85, 0xC0, 0x74, 0x1E, 0x48, 0x8B, 0x80, 0x50, 0x07, 0x00, 0x00, 0x48, 0x85, 0xC0, 0x74, 0x12, 0x38, 0x90,
-            0x72, 0x0B, 0x00, 0x00, 0x75, 0x0A, 0x38, 0x90, 0x75, 0x0B, 0x00, 0x00, 0x75, 0x02, 0xB2, 0x01, 0x8A, 0xC2,
-            0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3};
+        namespace sig = replay::sig;
+
+        // _GET_CHAR_EXPRESSION's core. The getter finds the ped's creature (the
+        // reads below repeat engine_sigs.h kCreatureLookup), then calls the frame
+        // container and the expression frame (frame + 0x58, track 0x40); the frame
+        // jumps to the frame value, which calls the degree-of-freedom find. The
+        // offsets below are in these bytes: a build that moved one does not match.
+        const sig::Signature kGetter{"char_expression_getter",
+            "40 53 48 83 EC 20 83 64 24 30 00 8B DA 48 85 C9 75 05 0F 57 C0 EB 2A 33 D2 E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? "
+            "?? ?? 48 85 C0 74 10 4C 8D 44 24 30 0F B7 D3 48 8B C8 E8 ?? ?? ?? ?? F3 0F 10 44 24 30 48 83 C4 20 5B C3",
+            0xB44250};
+        const sig::Signature kContainer{"frame_container", kGetter, sig::Rel32{0x22, 0x26},
+            "44 0F B6 0D ?? ?? ?? ?? 41 83 C8 FF 49 0F BE C0 4A 8D 14 8D 01 00 00 00 48 03 D0 8B C2 8A 94 08 04 01 00 00 "
+            "80 FA 14 75 0C 41 FF C0 41 83 F8 03 7C DA 33 C0 C3 0F B6 C2 48 8B 44 C1 18 C3",
+            0xB32AD8};
+        const sig::Signature kBufferIndex{"buffer_index", kContainer, sig::Rel32{0x04, 0x08}, "", 0x3CE2BF0}; // byte
+        const sig::Signature kFrame{"expression_frame", kGetter, sig::Rel32{0x37, 0x3B},
+            "4D 8B C8 48 83 C1 58 44 0F B7 C2 B2 40 E9 ?? ?? ?? ??", 0x2BC96C4};
+        const sig::Signature kFrameValue{"frame_value", kFrame, sig::Rel32{0x0E, 0x12},
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 59 08 48 8B F9 48 8B CB 49 8B F1 E8 ?? ?? ?? ?? 41 83 C9 "
+            "FF 4C 8B C0 48 85 C0 74 1F 48 8B D0 48 B8 AB AA AA AA AA AA AA 2A 48 2B 13 48 F7 EA 48 8B CA 48 C1 E9 3F 48 "
+            "03 D1 EB 03 41 8B D1 4D 85 C0 74 2B 4C 8B 07 8B C2 48 8D 14 40 48 8B 47 08 48 8B 08 0F B7 04 51 46 39 0C 00 "
+            "74 11 48 8B 03 0F B7 0C 50 42 8B 04 01 89 06 B0 01 EB 02 32",
+            0x265FDBC};
+        const sig::Signature kDofFind{"dof_find", kFrameValue, sig::Rel32{0x1D, 0x21},
+            "48 89 5C 24 08 41 0F B7 C0 4C 8B 01 44 0F B6 DA 41 C1 E3 10 44 0B D8 8B 41 2C 48 8D 0C 40 48 B8 AB AA AA AA "
+            "AA AA AA 2A 48 03 C9 48 F7 E9 4A 8D 1C 01 48 8B C2 48 C1 E8 3F 48 03 D0 EB 32 4C 8B CA 49 D1 F9 4B 8D 04 49 "
+            "4D 8D 14 40 41 0F B6 4A 04 41 0F B7 42 02 C1 E1 10 0B C8 41 3B CB",
+            0x26580BC};
+        // _SET_PED_SCALE's core: two places by the metaped's state, after the
+        // "ready" test it calls (the dressing object [[ped + 0x28] + 0x750] with
+        // +0xB72 and +0xB75 both 0).
+        const sig::Signature kScaleSet{"scale_setter",
+            "48 85 C9 0F 84 ?? ?? ?? ?? 53 48 83 EC 30 0F 29 74 24 20 48 8B D9 0F 28 F1 0F 2F 35 ?? ?? ?? ?? 76 75 E8 ?? "
+            "?? ?? ?? 8B 8B 9C 00 00 00 81 E1 FF FF 01 00 2B 0D ?? ?? ?? ?? 84 C0 8B C1 74 30 48 69 C8 48 01 00 00 0F 28 "
+            "CE 48 8B 05 ?? ?? ?? ?? 48 8B 94 01 E0 00 00 00 48 8B C2 48 83 E0 FE 48 F7 DA 48 1B C9 48 23 C8 E8 ?? ?? ?? "
+            "?? EB 28 48 69 C8 48 01 00 00 48 8B 05 ?? ?? ?? ?? 48 8B 54 01 50 48 8B CA 48 83 E1 FE 48 F7 DA 48 1B C0 48 "
+            "23 C1 F3 0F 11 70 48 0F 28 74 24 20 48 83 C4 30 5B C3",
+            0xFEF2FC};
+        const sig::Signature kScaleReady{"scale_ready", kScaleSet, sig::Rel32{0x23, 0x27},
+            "40 53 48 83 EC 20 8B 15 ?? ?? ?? ?? 48 8B D9 48 83 C1 10 E8 ?? ?? ?? ?? 33 D2 48 85 C0 75 27 48 8B 43 28 48 "
+            "85 C0 74 1E 48 8B 80 50 07 00 00 48 85 C0 74 12 38 90 72 0B 00 00 75 0A 38 90 75 0B 00 00 75 02 B2 01 8A C2 "
+            "48 83 C4 20 5B C3",
+            0x8B70E8};
+        const sig::Signature kScaleBaseIndex{"scale_base_index", kScaleSet, sig::Rel32{0x35, 0x39}, "", 0x39ECE40}; // dword
+        const sig::Signature kScaleTable{"scale_table", kScaleSet, sig::Rel32{0x4C, 0x50}, "", 0x39ECE48};          // qword
         constexpr std::uint32_t kScaleEntryStride = 0x148;
         constexpr std::uint32_t kScaleReadyComponent = 0xE0, kScaleReadyField = 0x620;
         constexpr std::uint32_t kScalePendingComponent = 0x50, kScalePendingField = 0x48;
@@ -116,22 +97,15 @@ namespace replay::metaped::engine
         };
         Globals g;
         Stats g_stats;
-        bool g_record = true;
-        bool g_apply = true;
 
-        std::uintptr_t Base() { return reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)); }
-
-        bool Same(std::uint32_t rva, const std::uint8_t* bytes, std::size_t size)
+        // The first signature of `list` the game does not have (its name), or
+        // null when all resolved.
+        const char* FirstMissing(std::initializer_list<const sig::Signature*> list)
         {
-            return replay::mem::Matches(reinterpret_cast<const void*>(Base() + rva), bytes, size);
-        }
-
-        std::uintptr_t RipTarget(std::uint32_t rva, std::uint32_t dispAt, std::uint32_t next)
-        {
-            std::int32_t disp = 0;
-            if (!replay::mem::Read(Base() + rva + dispAt, disp))
-                return 0;
-            return Base() + rva + next + static_cast<std::intptr_t>(disp);
+            for (const sig::Signature* s : list)
+                if (!sig::Find(*s))
+                    return s->name;
+            return nullptr;
         }
 
         void RunChecks()
@@ -139,49 +113,27 @@ namespace replay::metaped::engine
             if (g.checked)
                 return;
             g.checked = true;
-            struct Item
+            if (const char* missing = FirstMissing({&kGetter, &enginesig::kCreatureLookup, &enginesig::kCreatureTable,
+                    &enginesig::kCreatureBaseIndex, &kContainer, &kBufferIndex, &kFrame, &kFrameValue, &kDofFind}))
+                g.failed = missing;
+            else
             {
-                const char* name;
-                std::uint32_t rva;
-                const std::uint8_t* bytes;
-                std::size_t size;
-            };
-            const Item expressionItems[] = {
-                {"char_expression_getter", kGetterRva, kGetter, sizeof(kGetter)},
-                {"creature_lookup", kCreatureRva, kCreature, sizeof(kCreature)},
-                {"frame_container", kContainerRva, kContainer, sizeof(kContainer)},
-                {"expression_frame", kFrameRva, kFrame, sizeof(kFrame)},
-                {"frame_value", kFrameValueRva, kFrameValue, sizeof(kFrameValue)},
-                {"dof_find", kDofFindRva, kDofFind, sizeof(kDofFind)},
-            };
-            g.expressions = true;
-            for (const Item& item : expressionItems)
-                if (!Same(item.rva, item.bytes, item.size))
-                {
-                    g.expressions = false;
-                    g.failed = item.name;
-                    break;
-                }
-            if (g.expressions)
-            {
-                g.creatureTable = RipTarget(kCreatureRva, kCreatureTableDisp, kCreatureTableNext);
-                g.creatureBase = RipTarget(kCreatureRva, kCreatureBaseDisp, kCreatureBaseNext);
-                g.bufferIndex = RipTarget(kContainerRva, kContainerIndexDisp, kContainerIndexNext);
-                // The expected addresses (a rebased module moves all three together).
-                g.expressions = g.creatureTable == Base() + 0x3CD4388 && g.creatureBase == Base() + 0x3CD4380 &&
-                    g.bufferIndex == Base() + 0x3CE2BF0;
-                if (!g.expressions)
-                    g.failed = "expression_globals";
+                g.expressions = true;
+                g.creatureTable = sig::Find(enginesig::kCreatureTable);
+                g.creatureBase = sig::Find(enginesig::kCreatureBaseIndex);
+                g.bufferIndex = sig::Find(kBufferIndex);
             }
-            g.scale = Same(kScaleSetRva, kScaleSet, sizeof(kScaleSet)) && Same(kScaleReadyRva, kScaleReady, sizeof(kScaleReady));
-            if (g.scale)
+            if (const char* missing = FirstMissing({&kScaleSet, &kScaleReady, &kScaleBaseIndex, &kScaleTable}))
             {
-                g.scaleBase = RipTarget(kScaleSetRva, kScaleBaseDisp, kScaleBaseNext);
-                g.scaleTable = RipTarget(kScaleSetRva, kScaleTableDisp, kScaleTableNext);
-                g.scale = g.scaleBase == Base() + 0x39ECE40 && g.scaleTable == Base() + 0x39ECE48;
+                if (g.failed == "none")
+                    g.failed = missing;
             }
-            if (!g.scale && g.failed == "none")
-                g.failed = "scale_setter";
+            else
+            {
+                g.scale = true;
+                g.scaleBase = sig::Find(kScaleBaseIndex);
+                g.scaleTable = sig::Find(kScaleTable);
+            }
         }
 
         template <typename T>
@@ -190,7 +142,8 @@ namespace replay::metaped::engine
             return replay::mem::Read(address, out);
         }
 
-        // The ped's extension index, as 0x2BDDE1C and 0xFEF2FC compute it.
+        // The ped's extension index, as the creature lookup and the scale setter
+        // compute it.
         bool PedIndex(std::uintptr_t ped, std::uintptr_t baseAddress, std::uint32_t& index)
         {
             std::uint32_t raw = 0, base = 0;
@@ -269,12 +222,6 @@ namespace replay::metaped::engine
         constexpr std::uint64_t kCrossCheckReads = 24; // the first reads of a session
     }
 
-    void SetEnabled(bool record, bool apply)
-    {
-        g_record = record;
-        g_apply = apply;
-    }
-
     bool ReaderOn()
     {
         RunChecks();
@@ -286,8 +233,8 @@ namespace replay::metaped::engine
         RunChecks();
         std::ostringstream line;
         line << "METAPED_READER,phase=config,expressions=" << (g.expressions && !g.crossOff ? "on" : "off")
-             << ",scale=" << (g.scale ? "on" : "off") << ",record=" << (g_record ? 1 : 0)
-             << ",apply=" << (g_apply ? 1 : 0) << ",failed=" << (g.crossOff ? "cross_check" : g.failed.c_str())
+             << ",scale=" << (g.scale ? "on" : "off")
+             << ",failed=" << (g.crossOff ? "cross_check" : g.failed.c_str())
              << ",cross_checks=" << g_stats.crossChecks << ",cross_mismatches=" << g_stats.crossMismatches;
         return line.str();
     }
@@ -376,8 +323,9 @@ namespace replay::metaped::engine
         const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(replay::entities::AddressOf(ped));
         if (!address)
             return ReadResult::NoEntity;
-        // 0x8B70E8: ready when the dressing object has +0xB72 and +0xB75 at 0
-        // (its extension test, 0x2BDDD70 on ped + 0x10, is not repeated).
+        // The scale setter's ready test (kScaleReady): ready when the dressing
+        // object has +0xB72 and +0xB75 at 0 (its extension test on ped + 0x10 is
+        // not repeated).
         std::uintptr_t drawData = 0, dressing = 0;
         std::uint8_t busyA = 1, busyB = 1;
         bool ready = false;
@@ -411,12 +359,9 @@ namespace replay::metaped::engine
         state.cleanliness = PED::_GET_PED_DAMAGE_CLEANLINESS(ped);
         if (state.cleanliness >= 0)
             state.flags |= kHasCleanliness;
-        // The shop items and their wearable states (natives, independent of
-        // the reader's ini MetapedRecord).
+        // The shop items and their wearable states (natives).
         entity::appearance::ReadShopItems(ped, state.shopItems);
         state.flags |= kHasShopItems;
-        if (!g_record)
-            return;
         std::uint32_t notSet = 0;
         if (ReadExpressions(ped, state.expressions, notSet) == ReadResult::Ok)
             state.flags |= kHasExpressions;
@@ -431,8 +376,6 @@ namespace replay::metaped::engine
     ApplyReport Apply(int puppet, const State& state)
     {
         ApplyReport report;
-        if (!g_apply)
-            return report;
         ++g_stats.applies;
         bool changed = false;
         if (state.flags & kHasExpressions)

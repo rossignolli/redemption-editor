@@ -2,6 +2,8 @@
 
 #include "speech_duck.h"
 
+#include "engine_sigs.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "hook_batch.h"
 #include "mix_scene_pool_core.h"
@@ -17,18 +19,43 @@
 #include <cstring>
 
 // Implementation of speech_duck.h. The reads go through replay::mem after the sites of
-// speech_duck_core.h matched once; the detour is installed only after the
-// driver's prologue and the same sites matched, and its writes run under SEH
-// (a fault stops writing for the session and is counted).
+// speech_duck_core.h were found once (game_sig.h); the detour is installed only
+// on the driver found with its prologue and after the same sites, and its writes
+// run under SEH (a fault stops writing for the session and is counted).
 
 namespace replay::speechduck
 {
+    using enginesig::kDuckDriver;
+
     namespace
     {
         using U = std::uint64_t;
 
+        namespace sig = replay::sig;
+
         Config g_cfg;
-        std::uintptr_t g_base = 0;
+
+        // The driver's inputs and gates, found by the proof (the detour writes
+        // the level, the flags and the second level).
+        struct Inputs
+        {
+            std::uintptr_t level = 0;
+            std::uintptr_t level2 = 0;
+            std::uintptr_t flags = 0;
+            std::uintptr_t mute = 0;
+            std::uintptr_t mode = 0;
+            std::uintptr_t block = 0;
+            std::uintptr_t skip = 0;
+            std::uintptr_t scene = 0;  // the duck scene's reference
+            std::uintptr_t scene2 = 0; // the second duck's
+        };
+        Inputs g_in;
+
+        std::uintptr_t Rva(std::uintptr_t address)
+        {
+            const std::uintptr_t base = sig::ImageBase();
+            return address && base && address >= base ? address - base : 0;
+        }
 
         enum class Proof : std::uint8_t { Unknown, Proven, Failed };
         Proof g_proof = Proof::Unknown;
@@ -58,19 +85,22 @@ namespace replay::speechduck
         // SEH: no object with a destructor in here.
         void Inject()
         {
+            const std::uintptr_t levelAt = g_in.level, flagsAt = g_in.flags, level2At = g_in.level2;
+            if (!levelAt || !flagsAt || !level2At)
+                return;
             __try
             {
                 const float level = g_level.load(std::memory_order_relaxed);
-                *reinterpret_cast<volatile float*>(g_base + kLevelRva) = level;
+                *reinterpret_cast<volatile float*>(levelAt) = level;
                 if (level > 0.0f)
                 {
                     const std::uint32_t flags = g_flags.load(std::memory_order_relaxed);
-                    volatile std::uint8_t* bytes = reinterpret_cast<volatile std::uint8_t*>(g_base + kFlagsRva);
+                    volatile std::uint8_t* bytes = reinterpret_cast<volatile std::uint8_t*>(flagsAt);
                     for (std::uint32_t n = 0; n < 4; ++n)
                         bytes[n] = static_cast<std::uint8_t>((flags >> n) & 1u);
                 }
                 if (g_level2Known.load(std::memory_order_relaxed))
-                    *reinterpret_cast<volatile float*>(g_base + kLevel2Rva) = g_level2.load(std::memory_order_relaxed);
+                    *reinterpret_cast<volatile float*>(level2At) = g_level2.load(std::memory_order_relaxed);
                 g_writes.fetch_add(1, std::memory_order_relaxed);
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
@@ -102,40 +132,47 @@ namespace replay::speechduck
 
         // ---------------------------------------------------------- proof
 
+        // The first site not found (the RVA its signature declares in
+        // failedRva), or null when all are: then the inputs are kept.
         const char* CheckSites(std::uint32_t& failedRva)
         {
-            if (!g_base)
-                g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-            if (!g_base)
+            if (!sig::ImageBase())
             {
                 failedRva = 0;
                 return "module";
             }
             for (const Site& site : kSites)
             {
-                std::uint8_t code[sizeof(site.bytes)]{};
-                bool same = mem::Copy(code, g_base + site.rva, site.size);
-                for (std::uint8_t n = 0; same && n < site.size; ++n)
-                    same = code[n] == site.bytes[n];
-                if (!same || (site.ripAt >= 0 && SiteTarget(site) != site.target))
+                const std::uintptr_t reach = site.reach ? sig::Find(*site.reach) : 0;
+                const std::uintptr_t same = site.same ? sig::Find(*site.same) : 0;
+                if (!sig::Find(site.at) || (site.reach && !reach) || (site.same && (!same || reach != same + site.plus)))
                 {
-                    failedRva = site.rva;
+                    failedRva = site.at.rva;
                     return site.name;
                 }
             }
-            // The duck's start site (the driver's own call into the pool).
+            // The duck's start site (the driver's own call into the pool start).
             const mixscene::pool::Driver* duck = mixscene::pool::DriverByHash(kDuckScene);
             if (!duck || !mixscene::pool::DriverConsistent(*duck))
             {
-                failedRva = duck ? duck->callRva : 0;
+                failedRva = duck ? duck->call.rva : 0;
                 return "duck_start_table";
             }
-            std::uint8_t call[5]{};
-            if (!mem::Copy(call, g_base + duck->callRva, sizeof(call)) || std::memcmp(call, duck->callBytes, sizeof(call)) != 0)
+            const std::uintptr_t start = sig::Find(duck->start);
+            if (!sig::Find(duck->call) || !start || start != sig::Find(mixscene::pool::kPoolStart))
             {
-                failedRva = duck->callRva;
+                failedRva = duck->call.rva;
                 return "duck_start_call";
             }
+            g_in.level = sig::Find(kLevel);
+            g_in.level2 = sig::Find(kLevel2);
+            g_in.flags = sig::Find(kFlags);
+            g_in.mute = sig::Find(kGateMute);
+            g_in.mode = sig::Find(kGateMode);
+            g_in.block = sig::Find(kGateBlock);
+            g_in.skip = sig::Find(kGateSkip);
+            g_in.scene = sig::Find(kSceneRef);
+            g_in.scene2 = sig::Find(kScene2Ref);
             return nullptr;
         }
 
@@ -150,8 +187,8 @@ namespace replay::speechduck
             {
                 g_proofLogged = true;
                 if (g_proof == Proof::Proven)
-                    *log << "SPEECH_DUCK,phase=proven,sites=" << kSiteCount << ",driver=0x" << std::hex << kDriverRva
-                         << ",level=0x" << kLevelRva << ",flags=0x" << kFlagsRva << std::dec
+                    *log << "SPEECH_DUCK,phase=proven,sites=" << kSiteCount << ",driver=0x" << std::hex
+                         << Rva(sig::Find(kDuckDriver)) << ",level=0x" << Rva(g_in.level) << ",flags=0x" << Rva(g_in.flags) << std::dec
                          << ",replay=" << (g_cfg.replay ? 1 : 0) << ",detour=" << (g_target ? 1 : 0) << '\n';
                 else
                     *log << "SPEECH_DUCK,phase=unproven,site=" << (g_failedSite ? g_failedSite : "?") << ",rva=0x" << std::hex
@@ -190,18 +227,18 @@ namespace replay::speechduck
         State ReadState()
         {
             State s;
-            s.read = mem::Read(g_base + kLevelRva, s.level) && mem::Read(g_base + kLevel2Rva, s.level2) &&
-                mem::Read(g_base + kFlagsRva, s.flags) && mem::Read(g_base + kGateMuteRva, s.mute) &&
-                mem::Read(g_base + kGateModeRva, s.mode) && mem::Read(g_base + kGateBlockRva, s.block) &&
-                mem::Read(g_base + kGateSkipRva, s.skip);
+            s.read = g_in.level && g_in.level2 && g_in.flags && g_in.mute && g_in.mode && g_in.block && g_in.skip &&
+                mem::Read(g_in.level, s.level) && mem::Read(g_in.level2, s.level2) && mem::Read(g_in.flags, s.flags) &&
+                mem::Read(g_in.mute, s.mute) && mem::Read(g_in.mode, s.mode) && mem::Read(g_in.block, s.block) &&
+                mem::Read(g_in.skip, s.skip);
             static std::uint8_t copy[mixscene::pool::kSceneSize];
-            if (mem::Read(g_base + kSceneRefRva, s.scene) && ReadSceneCopy(s.scene, copy))
+            if (g_in.scene && mem::Read(g_in.scene, s.scene) && ReadSceneCopy(s.scene, copy))
             {
                 s.sceneRead = true;
                 for (std::size_t n = 0; n < 7; ++n)
                     s.has[n] = mixscene::pool::VarOf(copy, kDuckVars[n], s.vars[n]);
             }
-            if (mem::Read(g_base + kScene2RefRva, s.scene2) && ReadSceneCopy(s.scene2, copy))
+            if (g_in.scene2 && mem::Read(g_in.scene2, s.scene2) && ReadSceneCopy(s.scene2, copy))
             {
                 s.scene2Read = true;
                 s.hasLevel2Var = mixscene::pool::VarOf(copy, kVarLevel2, s.level2Var);
@@ -272,9 +309,8 @@ namespace replay::speechduck
             error = "off";
             return false;
         }
-        g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        void* target = reinterpret_cast<std::uint8_t*>(g_base) + kDriverRva;
-        if (!mem::Matches(target, kDriverSignature, sizeof(kDriverSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kDuckDriver));
+        if (!target)
         {
             error = "driver_signature_mismatch";
             return false;
@@ -330,10 +366,8 @@ namespace replay::speechduck
     void Record(const Recording& clip, std::uint32_t timeMs, bool clockRunning, std::ostream& log)
     {
         (void)clip;
-        if (!g_cfg.log || !clockRunning)
+        if (!clockRunning)
             return;
-        if (!g_base)
-            g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
         if (!Prove(&log))
             return;
         const std::uint64_t wall = GetTickCount64();
@@ -354,8 +388,6 @@ namespace replay::speechduck
         g_nextPlayWall = 0;
         g_idleWhy = nullptr;
         g_lastWrites = g_writes.load(std::memory_order_relaxed);
-        if (!g_base)
-            g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
         const bool proven = Prove(&log);
         const mixscene::Track& track = clip.mixScenes;
         std::size_t conversations = 0, ducks = 0, ducks2 = 0;
@@ -408,7 +440,7 @@ namespace replay::speechduck
             g_haveLast = true;
         }
         const std::uint64_t wall = GetTickCount64();
-        if (g_cfg.log && wall >= g_nextPlayWall)
+        if (wall >= g_nextPlayWall)
         {
             g_nextPlayWall = wall + 1000;
             const std::uint64_t writes = g_writes.load(std::memory_order_relaxed);

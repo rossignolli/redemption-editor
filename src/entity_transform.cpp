@@ -35,6 +35,31 @@ namespace replay::entity
         return world;
     }
 
+    pose::WorldTransform FoldChildBone(
+        const pose::WorldTransform& offset,
+        const pose::WorldTransform& childBoneObject)
+    {
+        // inverse(child bone) is the identity expressed in the bone's frame.
+        const pose::WorldTransform inverse = RelativeTransform(childBoneObject, pose::WorldTransform{});
+        return ComposeTransform(offset, inverse);
+    }
+
+    FrameAgreement AttachFrameAgreement(
+        const pose::WorldTransform& parentBoneObject,
+        const pose::WorldTransform& frameOffset,
+        const pose::WorldTransform& recordedRelative)
+    {
+        const pose::WorldTransform placed = ComposeTransform(parentBoneObject, frameOffset);
+        const float dx = placed.position.x - recordedRelative.position.x;
+        const float dy = placed.position.y - recordedRelative.position.y;
+        const float dz = placed.position.z - recordedRelative.position.z;
+        FrameAgreement agreement;
+        agreement.distanceM = std::sqrt(dx * dx + dy * dy + dz * dz);
+        agreement.angleDeg =
+            pose::AngleBetween(placed.rotation, pose::Normalize(recordedRelative.rotation)) * 57.29578f;
+        return agreement;
+    }
+
     float PlacementErrorM(
         const pose::WorldTransform& parent,
         const pose::WorldTransform& seatRelative,

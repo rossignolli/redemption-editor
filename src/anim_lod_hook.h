@@ -3,30 +3,21 @@
 // Keeps the recorded peds animated at full detail whatever the game camera
 // sees, the way a replay recorder raises fidelity while it records.
 //
-// 0x2BD410C(fwAnimDirector* rcx, u8 lod dl, bool visible r8b) is where the
-// engine hands a ped's animation LOD to its anim director: 0x8F0740 calls it
-// every frame for each pre-rendered ped with lod = the distance LOD of the
-// graphics component (+0x4A0, from 0x8F0AD4 and the LOD multiplier) and
-// visible = seen this frame (or the anim-visible byte, anim_visible.h). Its
-// tail 0x2BD413C stores the creature component's requested LOD (+0xAE) and
-// effective LOD (+0xAF = visible ? lod : 3); the expressions keep only the
-// ones whose LOD range holds it (0x2BD036C -> 0x295560C -> 0x290F864). The
-// anim-visible byte fixes the off-screen case only: a ped seen at 25 m still
-// gets the distance LOD (1 or 2: frozen face, measured +280 to +610 bind
-// rows). The detour passes lod 0 and visible 1 for the directors of the
-// recorded peds: the animation of a ped near and on screen, with nothing
-// else changed (the draw LOD, the fade and the draw distance come from the
-// graphics component, which is not touched, unlike SET_PED_LOD_MULTIPLIER).
+// The LOD setter (kSetLod: fwAnimDirector* rcx, u8 lod dl, bool visible r8b)
+// is where the engine hands a ped's animation LOD to its anim director, every
+// frame for each pre-rendered ped. The detour passes lod 0 and visible 1 for
+// the directors of the recorded peds (the animation of a ped near and on
+// screen) and changes nothing else: the draw LOD, fade and draw distance come
+// from the graphics component, which is not touched. The anim-visible byte
+// (anim_visible.h) alone fixes only the off screen case, not the distance LOD.
+// Every call goes to the original.
 //
-// Callers (rel32 scan of both text sections): 0x8F0A70 (per frame), 0x8E0C4B
-// (model change, visible 1) and 0x322B32F (spawn, lod 0, visible 1). Every
-// call goes to the original.
-//
-// The director of a ped, as 0x2BDDE1C(ped) finds it (pure reads):
-//   slot = (u32 [ped+0x9C] & 0x1FFFF) - u32 [base+0x3CD4380];
-//   entry = u64 [u64 [base+0x3CD4388] + slot * 16] & ~1 (0: none);
-//   director = u64 [entry+0x28].
-// The detour only compares pointers, it never reads through them.
+// The detour only compares director pointers (found through the creature
+// lookup, engine_sigs.h kCreatureLookup), it never reads through them.
+// Evidence: offline dump (callers by rel32 scan).
+// Research: docs/research/pose-bind-and-finalizer.md
+
+#include "engine_sigs.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -35,8 +26,6 @@
 
 namespace replay::animlod
 {
-    constexpr std::uintptr_t kAnimTableBaseIndexRva = 0x3CD4380;
-    constexpr std::uintptr_t kAnimTableRva = 0x3CD4388;
     constexpr std::size_t kAnimRowBytes = 16;
     constexpr std::size_t kDirectorOffset = 0x28;
     constexpr std::size_t kEntityTypeOffset = 0x30;
@@ -52,9 +41,9 @@ namespace replay::animlod
     // read(address, out, size) -> bool: a guarded read. Pure, unit tested in
     // tests/scenery_speech_tests.cpp.
     template <typename Read>
-    std::uintptr_t DirectorOf(std::uintptr_t base, std::uintptr_t ped, Read read)
+    std::uintptr_t DirectorOf(const enginesig::Pool& creatures, std::uintptr_t ped, Read read)
     {
-        if (!base || !ped)
+        if (!creatures.Found() || !ped)
             return 0;
         std::uint8_t type = 0;
         if (!read(ped + kEntityTypeOffset, &type, sizeof(type)) || type != kEntityTypePed)
@@ -63,8 +52,8 @@ namespace replay::animlod
         std::uint32_t baseIndex = 0;
         std::uintptr_t table = 0;
         if (!read(ped + kComponentHandleOffset, &handle, sizeof(handle)) ||
-            !read(base + kAnimTableBaseIndexRva, &baseIndex, sizeof(baseIndex)) ||
-            !read(base + kAnimTableRva, &table, sizeof(table)) || !table)
+            !read(creatures.baseIndex, &baseIndex, sizeof(baseIndex)) ||
+            !read(creatures.table, &table, sizeof(table)) || !table)
         {
             return 0;
         }
@@ -103,7 +92,7 @@ namespace replay::animlod
 
     struct Stats
     {
-        std::uint64_t calls = 0;   // every call of 0x2BD410C
+        std::uint64_t calls = 0;   // every call of the LOD setter
         std::uint64_t forced = 0;  // calls for a forced director
         std::uint64_t changed = 0; // of those, the ones that had lod > 0 or visible 0
         // Of the forced calls, those whose engine (lod, visible) differs from

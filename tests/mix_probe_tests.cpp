@@ -27,20 +27,21 @@ namespace
 
     void TestKinds()
     {
+        const replay::soundowner::CallerRanges known = replay::soundowner::KnownCallerRanges();
         const std::uint32_t step[3] = {0x02516D2Fu, 0x0318E828u, 0x01000000u};
         const std::uint32_t movement[2] = {0x03193D20u, 0x0318E828u};
         const std::uint32_t speech[1] = {0x02FA10CFu - 0x100u};
         const std::uint32_t none[2] = {0x01000000u, 0x01000010u};
-        Check(KindOf(true, false, 0x1234, none, 2) == Kind::Shot, "kind: the weapon's audio is a shot");
-        Check(KindOf(false, true, 0x80000600000000ull | replay::soundowner::kWetHoofSet, none, 2) == Kind::HorseStep,
+        Check(KindOf(true, false, 0x1234, none, 2, known) == Kind::Shot, "kind: the weapon's audio is a shot");
+        Check(KindOf(false, true, 0x80000600000000ull | replay::soundowner::kWetHoofSet, none, 2, known) == Kind::HorseStep,
             "kind: the wet hoof set of a horse is a horse step");
-        Check(KindOf(false, false, 0x80000c00000000ull | replay::soundowner::kWetHoofSet, none, 2) == Kind::Footstep,
+        Check(KindOf(false, false, 0x80000c00000000ull | replay::soundowner::kWetHoofSet, none, 2, known) == Kind::Footstep,
             "kind: the wet hoof set of a person is a step (recorded peds 27:107 and 32:112)");
-        Check(KindOf(false, false, 0x55, step, 3) == Kind::Footstep, "kind: a person's step");
-        Check(KindOf(false, true, 0x55, step, 3) == Kind::HorseStep, "kind: a horse's step");
-        Check(KindOf(false, true, 0x55, movement, 2) == Kind::Movement, "kind: the innermost known caller wins (movement)");
-        Check(KindOf(false, false, 0x55, speech, 1) == Kind::Speech, "kind: the line's sound");
-        Check(KindOf(false, false, 0x55, none, 2) == Kind::Generic, "kind: no known caller");
+        Check(KindOf(false, false, 0x55, step, 3, known) == Kind::Footstep, "kind: a person's step");
+        Check(KindOf(false, true, 0x55, step, 3, known) == Kind::HorseStep, "kind: a horse's step");
+        Check(KindOf(false, true, 0x55, movement, 2, known) == Kind::Movement, "kind: the innermost known caller wins (movement)");
+        Check(KindOf(false, false, 0x55, speech, 1, known) == Kind::Speech, "kind: the line's sound");
+        Check(KindOf(false, false, 0x55, none, 2, known) == Kind::Generic, "kind: no known caller");
         Check(std::string(RoleName(Role::Main, false)) == "player" && std::string(RoleName(Role::Main, true)) == "puppet_player" &&
                   std::string(RoleName(Role::MainHorse, true)) == "horse_player",
             "role names per pass");
@@ -51,17 +52,18 @@ namespace
     // is on the queued request's frames.
     void TestQueuedKinds()
     {
+        const replay::soundowner::CallerRanges known = replay::soundowner::KnownCallerRanges();
         const std::uint32_t drain[3] = {0x0258A469u, 0x02F1D23Eu, 0x02EE86B1u};
         const std::uint32_t pedStep[4] = {0x02589A60u, 0x0318D0A0u, 0x0318DAFEu, 0};
         const std::uint32_t mainSound[4] = {0x0318E828u, 0, 0, 0};
         const std::uint32_t unknown[4] = {0x01000000u, 0x01000010u, 0, 0};
-        Check(KindOf(false, false, 0x800006001d9a86ull, drain, 3) == Kind::Generic, "queued: the drain's frames name nothing");
+        Check(KindOf(false, false, 0x800006001d9a86ull, drain, 3, known) == Kind::Generic, "queued: the drain's frames name nothing");
         const Kind step = Kind::Footstep;
-        Check(KindOf(false, false, 0x800006001d9a86ull, drain, 3, &step) == Kind::Footstep, "queued: the request's kind is taken");
+        Check(KindOf(false, false, 0x800006001d9a86ull, drain, 3, known, &step) == Kind::Footstep, "queued: the request's kind is taken");
         RequestFamilies requests;
-        requests.Note(0xA000, 0x800006001d9a86ull, 1000, pedStep, 4);
-        requests.Note(0xA000, 0x8000000033fd85ull, 1000, mainSound, 4);
-        requests.Note(0xA000, 0x55, 1000, unknown, 4);
+        requests.Note(0xA000, 0x800006001d9a86ull, 1000, pedStep, 4, known);
+        requests.Note(0xA000, 0x8000000033fd85ull, 1000, mainSound, 4, known);
+        requests.Note(0xA000, 0x55, 1000, unknown, 4, known);
         Check(requests.noted == 2 && requests.Pending() == 2, "queued: only requests whose frames name a system are kept");
         replay::soundowner::Family family = replay::soundowner::Family::Owned;
         Check(!requests.Take(0xB000, 0x800006001d9a86ull, family), "queued: another audio entity does not match");

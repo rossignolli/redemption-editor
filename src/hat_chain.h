@@ -2,35 +2,26 @@
 
 // The hat chain of a human skeleton.
 //
-// Floating hats are recorded that way: a story character's skeleton hangs the
-// hat from a short chain under the head (Micah: head 94 -> 121 -> 122 -> 123
-// -> 124, hat group 737..753 on 124; Dutch: head 88 -> 111 -> ... -> 114, hat
-// group 818 on 114). The engine's animation fits the hat to the head by moving
-// the chain's first bone (local x 0.16 for Micah, 0.17 for Dutch) only while
-// the ped is on screen; off screen the animation output leaves that track
-// unwritten and the pose finalizer takes the bind pose (0.26), 10 cm higher.
-// The recording copies what the finalizer wrote, so every sample of a ped the
-// game camera was not looking at carries the high hat.
+// A story character's skeleton hangs the hat from a short chain under the
+// head. The animation fits the hat by moving the chain's top bone only while
+// the ped is on screen; off screen the finalizer takes the bind pose, about
+// 10 cm higher, and the recording copies that, so peds the game camera did not
+// look at carry a floating hat.
 //
-// A hat point is a bone at the RDR2 human skeleton's hat offset from its
-// parent, (0, +-0.11, -0.09) (seen in three skeletons of three clips: the
-// base skeleton's own points and the first bone of the hat group). The chain
-// runs from a hat point's parent up to the head, the first ancestor with
-// many children (the face bones); a hat point hung on the head itself (the
-// generic peds' 959-bone layout) has no chain. The chain's top bone (the
-// head's child) is the one the animation moves; the subtree under it (the
-// rest of the chain, the hat points and the hat group) follows it.
+// A hat point is a bone at the human skeleton's hat offset from its parent,
+// (0, +-0.11, -0.09). The chain runs from a hat point's parent up to the head
+// (the first ancestor with many children); a hat point on the head itself has
+// no chain. The chain's top bone (the head's child) is the one the animation
+// moves; the subtree under it follows.
 //
 // Playback (FixSample, before each publish of a puppet's pose) puts the
-// fitted value back where the recording has the bind one: the value the
-// same record had on screen, else the value another record of the same
-// model had (Fitted), else kDefaultFitX; then the object transforms of the
-// subtree are composed again from the locals (the finalizer's own rule,
-// Compose ParentThenLocal with the parent's scale). Only a chain that carries
-// a hat group is touched: the twin chain (always at the bind pose, nothing on
-// it) and a hatless head stay as recorded. Measured on recorded clips with
-// ReplayClipTool hats: Micah's hat high in 87% of one, Dutch 93%, Bill 99%;
-// 28 hats never fitted in a whole clip (peds the camera never saw).
+// fitted value back where the recording has the bind one: the value the same
+// record had on screen, else the value another record of the same model had
+// (Fitted), else kDefaultFitX; then the subtree's object transforms are
+// composed again from the locals (the finalizer's rule, Compose ParentThenLocal
+// with the parent's scale). Only a chain that carries a hat group is touched:
+// the twin chain and a hatless head stay as recorded.
+// Research: docs/research/hats-look-and-chain.md
 //
 // Pure: no engine access; unit tested in tests/scenery_speech_tests.cpp and used
 // offline by ReplayClipTool hats.

@@ -2,43 +2,17 @@
 
 // The shader variables a creature animates: the moving muscles of a horse.
 //
-// Where they live (build 1491.50, dump rdr2-1491.50-pid18760):
-//  - Every creature whose drawable has animated shader variables gets a
-//    shader vars component (ctor 0x26507EC: vtable 0x3625E88, type byte
-//    +0x10 = 9; built by 0x88FF58 and, for the vehicle cloth squash, by
-//    0xB2DA78). Its slot 5 (0x2659AA0) answers "do I have this DOF" for the
-//    tracks 0x11 (shaderSlideU), 0x12 (shaderSlideV) and 0x17
-//    (animatedNormalMaps): the muscle weights are DOFs of that component.
-//  - The component keeps its own frame: the DOF table (crFrameData) at +0x28
-//    (+0x28 table of 6-byte DOFs: u16 value offset, u16 id, u8 track, u8 type
-//    & 0xF; +0x54 count) and the values at +0x68 (crFrame, 0x265EE10 /
-//    0x2660238: +0x68 buffer, +0x70 the frame data = component + 0x28, +0x9C
-//    u16 buffer bytes; a value of all ones is "not set", the buffer is filled
-//    with 0xFF at init).
-//  - The anim director's job writes it every animation update: 0x294F068
-//    chains, after the pose finalizer node (0x2952310 -> 0x295BBFC ->
-//    0x266C294), a frame write node (0x29520A8 -> 0x295AFC4) whose
-//    destination is the component's frame (lea rdx,[rax+68h]) and whose
-//    source is the motion tree's output: the node fills the destination with
-//    0xFF and copies every mapped DOF. The weights are what the horse's
-//    motion tree computes from its animation (clips and expressions); a
-//    puppet's motion tree plays nothing, so its weights are the rest values
-//    or "not set", whatever the replay writes into its skeleton.
-//  - The ped shader effect reads them in its update (vtable 0x34068B0 slot
-//    24, 0xB2D128(effect, ped): ped type 4 only) through 0xB2F0D0(effect,
-//    ped): ped -> [+0xA8] -> [+0x48] creature -> 0x87CBD0 (the component by
-//    its type: index byte [creature + 0x74 + type], [creature][index]) ->
-//    the bindings at +0x18 (16-byte rows: hash, value offset, id, track,
-//    type; u16 count at +0x20) -> the value at [component + 0x68] + offset,
-//    "not set" read as 0, clamped and packed into the effect's instance.
+// The weights live in the creature's shader vars component (its own crFrame
+// of DOFs); the anim director's job rewrites them every animation update from
+// the motion tree, and the ped shader effect reads them. A puppet's motion
+// tree plays nothing, so without help its weights are the rest values.
 //
-// What the replay does (it records the engine's results per entity and
-// per frame, not the inputs the engine derived them from): the
-// recording keeps each recorded horse's component values, about 30 times a
-// second (section SHVR), and the playback writes the recorded values into
-// the puppet's component buffer at the end of the engine's own write (a
-// detour of the job's frame write node 0x295AFC4, shader_vars_hook.h): every
-// reader after it, the shader included, sees them until the next update.
+// The replay records the engine's results, not its inputs: each recorded
+// horse's component values about 30 times a second (section SHVR); playback
+// writes them into the puppet's component buffer at the end of the engine's
+// own write (shader_vars_hook.h), so every later reader sees them until the
+// next update. Offline dump, build 1491.50.
+// Research: docs/research/shaders-muscle-vars.md
 //
 // Pure data: layout parsing, the half float codec, the recorded track (note,
 // lookup with interpolation, ring, cut, validation) and the mapping of a
@@ -53,21 +27,11 @@
 
 namespace replay::shadervars
 {
-    // MuscleRecord and MuscleReplay (developer keys), both on by default.
+    // The horses' muscles are always recorded (SHVR); MuscleReplay (a support
+    // switch, on by default) writes them back through the detour.
     struct ReplayConfig
     {
-        bool record = true;
         bool replay = true;
-        // Developer tests of cause (dev keys, off by default):
-        // MuscleDebugForce 1 writes every track 0x17 lane of every horse
-        // puppet (and, outside the replay, of the player's horse) to 1.0, 2 to
-        // 0.0; MuscleDebugSweat >= 0 gives the horse puppets SET_PED_SWEAT.
-        std::uint8_t debugForce = 0;
-        float debugSweat = -1.0f;
-        // MuscleDebugOverwrite 1: the engine copies into the puppet's buffer
-        // and the recorded values go on top (an earlier build's way); 0 (default):
-        // the recorded values replace the engine's copy.
-        bool debugOverwrite = false;
     };
 
     // Not an engine track: the ped's sweat (graphics component +0x488, which the
@@ -99,8 +63,8 @@ namespace replay::shadervars
     constexpr std::size_t kMaxPoints = 1u << 18;        // per block (2.4 hours at 30 a second)
 
     // A DOF of the component frame. The type is the frame's value type: 2 a
-    // float (4 bytes), 0, 1 and 4 a 16-byte vector (0xB2F0D0 reads type 2 as a
-    // float and type 4 as four; the frame write node copies 4 and 16-byte
+    // float (4 bytes), 0, 1 and 4 a 16-byte vector (the reader takes type 2 as
+    // a float and type 4 as four; the frame write node copies 4 and 16-byte
     // values). Other types are not kept.
     struct Dof
     {
@@ -265,7 +229,7 @@ namespace replay::shadervars
     inline bool IsSet(std::uint32_t bits) { return bits != kNotSet && std::isfinite(FloatOf(bits)); }
 
     // ---- half floats (IEEE 754 binary16) -----------------------------------
-    // The values go to the shader as bytes (0xB2F0D0: clamped, x 127.5 or
+    // The values go to the shader as bytes (the reader: clamped, x 127.5 or
     // x 255), so 11 significant bits keep what it sees. "Not set" and any
     // NaN are kHalfNotSet.
     constexpr std::uint16_t kHalfNotSet = 0xFFFF;

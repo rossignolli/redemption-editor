@@ -21,8 +21,7 @@ namespace replay::doors
     void UpdateRecording(Recording& clip, std::uint32_t nowMs, float x, float y, float z);
     void EndRecording(const Recording& clip, std::ostream& log);
 
-    // The ini's DoorRebindMs, DoorKeepOpenRatio and MapObjectsWaitMs
-    // (door_rebind.h).
+    // The ini's MapObjectsWaitMs (door_rebind.h).
     void Configure(const Config& config);
     const Config& GetConfig();
     // closedTheatre: the world clear of the closed theater ran (the door

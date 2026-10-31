@@ -1,5 +1,5 @@
 #include "weapon_observer.h"
-#include "guarded_memory.h"
+#include "game_sig.h"
 #include "profiler.h"
 
 #include "audio_observer.h"
@@ -55,6 +55,46 @@ namespace replay::weapon
         constexpr std::uint64_t kWeaponShoulder = 0x450;
         constexpr std::uint64_t kWeaponWeightA = 0x5D4;
         constexpr std::uint64_t kWeaponWeightB = 0x5D8;
+
+        namespace sig = replay::sig;
+
+        // The strap hide (weapon). Prologue: push rbx; sub rsp,20h; cmp qword
+        // ptr [rcx+440h],0; mov rbx,rcx; jne.
+        const sig::Signature kWeaponStrapHide{"weapon_strap_hide",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 48 8B D9 75 14 48 83 B9",
+            0x1172E44};
+        // The component hide setter it calls (weapon, component, hide): the
+        // mask holder [weapon+0x80], the model components (array +0x390, count
+        // +0x3E0) and bit index + 1 in the words at [holder+0x10], the words
+        // ApplyStrapState writes.
+        const sig::Signature kWeaponHideSetter{"weapon_component_hide_setter", kWeaponStrapHide, sig::Rel32{0x6D, 0x71},
+            "48 89 5C 24 08 4C 8B DA 48 85 D2 74 5F 48 8B 99 80 00 00 00 48 85 DB 74 53 4C 63 91 E0 03 00 00 45 33 C9 4D "
+            "85 D2 7E 44 33 C0 48 81 C1 90 03 00 00 8D 50 01 41 FF C1 4C 39 19 74 0E 48 03 C2 48 83 C1 08 49 3B C2 7C "
+            "EC EB 22 41 8B C9 41 8B C1 83 E1 1F 48 C1 E8 05 D3 E2 48 8B 4B 10 45 84 C0 74 07 F7 D2 21 14 81 EB 03 09 "
+            "14 81 48 8B 5C 24 08 C3",
+            0x119F67C};
+        // The owner ped's weapon manager and its strap writes: the 0x20000
+        // state and the rebuild bit 0x8000 of the flags word +0x62C, then the
+        // weights +0x5D4 and +0x5D8 (the fields ApplyStrapState writes).
+        const sig::Signature kWeaponManager{"weapon_manager",
+            "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 98 00 00 00 0F 29 70 A8 4C 8B E9",
+            0x117232C};
+        const sig::Signature kWeaponStrapWrites{"weapon_manager_strap_writes", kWeaponManager, sig::Offset{0x442},
+            "0F BA B3 2C 06 00 00 11 41 8B C1 40 80 FF 02 B9 00 00 02 00 0F 44 C1 09 83 2C 06 00 00 44 38 4D 7F 74 32 "
+            "44 38 4D A7 75 0A 48 85 F6 75 05 4D 85 E4 74 22 F3 0F 10 4D C7 F3 0F 10 45 CB 0F BA AB 2C 06 00 00 0F F3 "
+            "0F 11 83 D4 05 00 00 F3 0F 11 8B D8 05 00 00",
+            0x117276E};
+        // The setters of the two wear fields WriteWearRaw writes: the permanent
+        // degradation (rust) +0xD4 and the sixth channel +0xE4.
+        const sig::Signature kWeaponWearPermanent{"weapon_wear_permanent_setter",
+            "40 53 48 83 EC 20 48 8B 41 60 48 8B D9 48 85 C0 0F 84 ?? ?? ?? ?? 48 83 B8 80 0A 00 00 00 0F 57 C0 75 05 "
+            "0F 2E C8 75 76 0F 2F C8 72 0B F3 0F 5D 0D ?? ?? ?? ?? 0F 28 C1 48 83 B9 F0 00 00 00 00 F3 0F 11 81 D4 00 "
+            "00 00",
+            0x11A14E8};
+        const sig::Signature kWeaponWearE4{"weapon_wear_e4_setter",
+            "40 53 48 83 EC 20 0F 57 C0 48 8B D9 0F 2F C8 72 0B F3 0F 5D 0D ?? ?? ?? ?? 0F 28 C1 0F 28 C8 F3 0F 11 81 "
+            "E4 00 00 00",
+            0x119F310};
 
         bool GuardedWrite(std::uint64_t address, const void* data, std::size_t size)
         {
@@ -185,6 +225,10 @@ namespace replay::weapon
 
     bool ApplyStrapState(std::uint64_t object, const StrapState& state, StrapApplyResult* result)
     {
+        // Only where the engine's own writes of these fields were found.
+        static const bool proven = sig::Find(kWeaponHideSetter) && sig::Find(kWeaponStrapWrites);
+        if (!proven)
+            return false;
         std::uint64_t weapon = 0;
         if (!WeaponOf(object, weapon))
             return false;
@@ -343,6 +387,9 @@ namespace replay::weapon
     bool WriteWearRaw(std::uint64_t object, float permanent, float e4)
     {
         namespace look = replay::weaponlook;
+        static const bool proven = sig::Find(kWeaponWearPermanent) && sig::Find(kWeaponWearE4);
+        if (!proven)
+            return false;
         std::uint64_t weapon = 0;
         if (!WeaponOf(object, weapon))
             return false;
@@ -358,6 +405,7 @@ namespace replay::weapon
         constexpr std::uint64_t kAttachPosition = 0x30;
         constexpr std::uint64_t kAttachRotation = 0x40;
         constexpr std::uint64_t kAttachBone = 0x58;
+        constexpr std::uint64_t kAttachChildBone = 0x5A;
         std::uint64_t extensions = 0;
         std::uint64_t attach = 0;
         if (!Plausible(object) || !Read(object + kObjectExtensions, extensions) || !Plausible(extensions) ||
@@ -366,7 +414,7 @@ namespace replay::weapon
             return false;
         }
         AttachFrame frame;
-        if (!Read(attach + kAttachBone, frame.bone) ||
+        if (!Read(attach + kAttachBone, frame.bone) || !Read(attach + kAttachChildBone, frame.childBone) ||
             !replay::audio::ReadBytes(attach + kAttachPosition, frame.position, sizeof(frame.position)) ||
             !replay::audio::ReadBytes(attach + kAttachRotation, frame.rotation, sizeof(frame.rotation)))
         {
@@ -378,16 +426,6 @@ namespace replay::weapon
 
     namespace
     {
-        // Build 1491.50: 0x1172E44(weapon). Prologue: push rbx; sub rsp,20h;
-        // cmp qword ptr [rcx+440h],0; mov rbx,rcx; jne.
-        constexpr std::uintptr_t kStrapHideRva = 0x1172E44;
-        constexpr std::uint8_t kStrapHideSignature[] = {
-            0x40, 0x53,                                     // push rbx
-            0x48, 0x83, 0xEC, 0x20,                         // sub rsp, 20h
-            0x48, 0x83, 0xB9, 0x40, 0x04, 0x00, 0x00, 0x00, // cmp qword ptr [rcx+440h], 0
-            0x48, 0x8B, 0xD9,                               // mov rbx, rcx
-            0x75, 0x14,                                     // jne
-        };
         constexpr std::uint64_t kWeaponObject = 0xE8;
         using StrapHideFn = void(__fastcall*)(void*);
 
@@ -459,19 +497,14 @@ namespace replay::weapon
                 original(weapon);
         }
 
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size);
-        }
     }
 
     bool InstallStrapVisibility(std::string& error)
     {
         if (g_strapInstalled)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* target = base + kStrapHideRva;
-        if (!GuardedCompare(target, kStrapHideSignature, sizeof(kStrapHideSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kWeaponStrapHide));
+        if (!target)
         {
             error = "strap_hide_signature_mismatch";
             return false;
@@ -539,19 +572,14 @@ namespace replay::weapon
     // See InstallWeaponPassPose in weapon_observer.h.
     namespace
     {
-        // Build 1491.50: 0x117D49C(weapon). Prologue: mov rax,rsp;
-        // mov [rax+20h],rbx; push rbp,rsi,rdi,r12..r15; lea rbp,[rax-128h];
-        // sub rsp,1F0h. Only rcx is read before it is set (mov rbx,rcx;
-        // mov rdx,[rcx+0E8h]); the caller 0xC23738 ignores rax.
-        constexpr std::uintptr_t kWeaponPassRva = 0x117D49C;
-        constexpr std::uint8_t kWeaponPassSignature[] = {
-            0x48, 0x8B, 0xC4,                         // mov rax, rsp
-            0x48, 0x89, 0x58, 0x20,                   // mov [rax+20h], rbx
-            0x55, 0x56, 0x57,                         // push rbp, rsi, rdi
-            0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, // push r12..r15
-            0x48, 0x8D, 0xA8, 0xD8, 0xFE, 0xFF, 0xFF, // lea rbp, [rax-128h]
-            0x48, 0x81, 0xEC, 0xF0, 0x01, 0x00, 0x00, // sub rsp, 1F0h
-        };
+        // The weapon pass (weapon). Prologue: mov rax,rsp; mov [rax+20h],rbx;
+        // push rbp,rsi,rdi,r12..r15; lea rbp,[rax-128h]; sub rsp,1F0h. Only
+        // rcx is read before it is set (mov rbx,rcx; mov rdx,[rcx+0E8h]); its
+        // caller ignores rax.
+        const sig::Signature kWeaponPass{"weapon_pass",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 56 41 57 48 8D A8 D8 FE FF FF 48 81 EC F0 01 00 00 0F 29 70 "
+            "B8 45 33 ED",
+            0x117D49C};
         using WeaponPassFn = void(__fastcall*)(void*);
         std::atomic<WeaponPassFn> g_passOriginal{nullptr};
         std::atomic<std::int32_t> g_passInFlight{0};
@@ -677,7 +705,7 @@ namespace replay::weapon
             } inFlight;
             const WeaponPassFn original = g_passOriginal.load(std::memory_order_acquire);
             // A recorded weapon: its pose before the pass. The pass runs from one
-            // loop (0xC23738); the compare buffers are static, taken with a flag (a
+            // loop (its caller); the compare buffers are static, taken with a flag (a
             // second thread only skips the compare).
             std::uint32_t recordId = 0;
             bool recorded = false;
@@ -732,9 +760,8 @@ namespace replay::weapon
     {
         if (g_passInstalled)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* target = base + kWeaponPassRva;
-        if (!GuardedCompare(target, kWeaponPassSignature, sizeof(kWeaponPassSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kWeaponPass));
+        if (!target)
         {
             error = "weapon_pass_signature_mismatch";
             return false;

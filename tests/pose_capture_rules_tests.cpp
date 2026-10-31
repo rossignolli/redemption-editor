@@ -14,10 +14,6 @@
 // every tick the plain rule would have polled is a stall poll or a skipped
 // one; at the default (250 ms) an off camera NPC is never polled, a skeleton
 // the finalizer never visits on every tick.
-// Late backoff: NextLateCheckMs without the backoff is the fixed wait for
-// every input; with it, the 1, 2, 4, 8 s waits, the 250 ms on a change and
-// the restart at 1 s; the first check's stagger spreads the records of a
-// scan.
 #include "capture_capacity.h"
 #include "entity_selection.h"
 #include "object_pose.h"
@@ -720,105 +716,6 @@ namespace
                              "never visited skeletons and the corpses");
     }
 
-    // ---------------------------------------------------------------------
-    // Late backoff.
-    void TestLateBackoff()
-    {
-        int failures = 0;
-        // Without the backoff: the fixed wait, the clean wait untouched.
-        for (const std::uint64_t start : {0ull, 250ull, 1000ull, 4000ull, 8000ull})
-        {
-            for (int combo = 0; combo < 4; ++combo)
-            {
-                const bool changed = (combo & 1) != 0;
-                const bool lateCapture = (combo & 2) != 0;
-                std::uint64_t clean = start;
-                const std::uint64_t wait = NextLateCheckMs(false, changed, lateCapture, clean);
-                const bool fast = changed || lateCapture;
-                if (wait != (fast ? 250u : 1000u) || clean != start)
-                    ++failures;
-            }
-        }
-        // With it: clean checks 1, 2, 4, 8, 8 s.
-        std::uint64_t clean = kLateCheckMs;
-        const std::uint64_t cleanWaits[] = {1000, 2000, 4000, 8000, 8000, 8000};
-        for (const std::uint64_t expected : cleanWaits)
-            failures += NextLateCheckMs(true, false, false, clean) != expected ? 1 : 0;
-        // A change: 250 ms, and the clean waits start again at 1 s.
-        failures += NextLateCheckMs(true, true, false, clean) != 250 ? 1 : 0;
-        failures += NextLateCheckMs(true, false, false, clean) != 1000 ? 1 : 0;
-        failures += NextLateCheckMs(true, false, false, clean) != 2000 ? 1 : 0;
-        // A change that puts the record in end-of-frame capture: 250 ms while
-        // it stays (eight clean checks), then 1 s again once it leaves.
-        failures += NextLateCheckMs(true, true, true, clean) != 250 ? 1 : 0;
-        for (int check = 0; check < 7; ++check)
-            failures += NextLateCheckMs(true, false, true, clean) != 250 ? 1 : 0;
-        failures += NextLateCheckMs(true, false, false, clean) != 1000 ? 1 : 0; // the eighth: it left
-        failures += NextLateCheckMs(true, false, false, clean) != 2000 ? 1 : 0;
-        // A capped change (no end-of-frame capture): 250 ms, then 1 s.
-        failures += NextLateCheckMs(true, true, false, clean) != 250 ? 1 : 0;
-        failures += NextLateCheckMs(true, false, false, clean) != 1000 ? 1 : 0;
-        // Random outcomes: without the backoff always the old wait; with it
-        // never more than 8 s, never less than 250 ms.
-        std::mt19937 rng(222);
-        std::uint64_t cleanA = kLateCheckMs, cleanB = kLateCheckMs, maxWait = 0;
-        for (int check = 0; check < 100000; ++check)
-        {
-            const bool changed = rng() % 9 == 0;
-            const bool lateCapture = rng() % 5 == 0;
-            const std::uint64_t old = NextLateCheckMs(false, changed, lateCapture, cleanA);
-            if (old != ((changed || lateCapture) ? kLateCheckChangedMs : kLateCheckMs))
-                ++failures;
-            const std::uint64_t wait = NextLateCheckMs(true, changed, lateCapture, cleanB);
-            if (wait < kLateCheckChangedMs || wait > kLateBackoffMaxMs)
-                ++failures;
-            maxWait = (std::max)(maxWait, wait);
-        }
-        failures += cleanA != kLateCheckMs ? 1 : 0;
-        Check(failures == 0, "D2: NextLateCheckMs keeps the old waits without the backoff and backs off with it");
-        // Checks of a record that stays clean for a minute.
-        std::uint64_t elapsed = 0, checks = 0;
-        clean = kLateCheckMs;
-        while (elapsed < 60000)
-        {
-            ++checks;
-            elapsed += NextLateCheckMs(true, false, false, clean);
-        }
-        std::printf("  late check backoff: a clean record checks 60 -> %llu times a minute, longest wait %llu ms\n",
-            static_cast<unsigned long long>(checks), static_cast<unsigned long long>(maxWait));
-    }
-
-    void TestFirstCheckStagger()
-    {
-        // The records of one scan: ids as the recorder packs them (entity
-        // slot << 16 | instance) and pose segment ids (bit 31 and a count).
-        std::mt19937 rng(77);
-        std::vector<std::uint32_t> ids;
-        for (int index = 0; index < 50; ++index)
-            ids.push_back((static_cast<std::uint32_t>(rng() % 1500) << 16) | (1 + rng() % 400));
-        for (std::uint32_t index = 0; index < 10; ++index)
-            ids.push_back(0x80000000u | (index + 1));
-        int failures = 0;
-        int bucket[60] = {}; // ticks of 1000/60 ms
-        for (const std::uint32_t id : ids)
-        {
-            const std::uint32_t delay = LateFirstCheckDelayMs(id);
-            failures += delay >= 1000 || delay != LateFirstCheckDelayMs(id) ? 1 : 0;
-            ++bucket[(std::min)(59u, delay * 60u / 1000u)];
-        }
-        const int most = *std::max_element(std::begin(bucket), std::end(bucket));
-        const int used = static_cast<int>(std::count_if(std::begin(bucket), std::end(bucket), [](int n) { return n > 0; }));
-        // Consecutive instances of one slot (the same entity's segments).
-        int bucketRun[60] = {};
-        for (std::uint32_t instance = 1; instance <= 60; ++instance)
-            ++bucketRun[(std::min)(59u, LateFirstCheckDelayMs((7u << 16) | instance) * 60u / 1000u)];
-        const int mostRun = *std::max_element(std::begin(bucketRun), std::end(bucketRun));
-        std::printf("  first check stagger: 60 records of one scan in %d of 60 ticks, at most %d in one (was 60 in "
-                    "one); 60 consecutive ids at most %d in one tick\n",
-            used, most, mostRun);
-        Check(failures == 0 && most <= 6 && used >= 25 && mostRun <= 6,
-            "D2: the first check's stagger is in [0, 1000) ms and spreads a scan's records");
-    }
 }
 
 // The held frames.
@@ -1566,9 +1463,7 @@ namespace
             mismatches += kept == expected && removed == removedExpected && gone == removedExpected.size() ? 0u : 1u;
         }
         Check(mismatches == 0, "1c: StableRemove keeps the order of the rest and sees each removed one");
-        Check(ClampWorkerPollMs(5) == 5 && ClampWorkerPollMs(0) == 1 && ClampWorkerPollMs(-3) == 1 &&
-                ClampWorkerPollMs(100) == 100 && ClampWorkerPollMs(250) == 100 && kWorkerPollMsDefault == 5,
-            "3d: PoseWorkerPollMs is 5 unless set, 1 to 100");
+        Check(kWorkerPollMs == 5, "3d: the worker polls every 5 ms");
     }
 
     namespace drainlist
@@ -2165,7 +2060,7 @@ namespace
 
         const auto reach = [&](std::uint32_t capacity, std::size_t& recorded, std::size_t& skipped) {
             SelectionConfig config;
-            config.capacity = replay::object_pose::PedPlaces(capacity, 0);
+            config.capacity = capacity;
             std::vector<std::int32_t> retire;
             std::vector<std::int32_t> add;
             SelectionReport report;
@@ -2192,13 +2087,6 @@ namespace
             "reach: 56 places stop at the 56th nearest, the rest inside 150 m left out");
         Check(recorded120 == insideEnter && skipped120 == 0 && reach120 <= 150.0f && reach120 > 145.0f,
             "reach: 120 places record every ped inside the enter radius");
-
-        // An object (the pelt) takes a place from the ped class: with 100
-        // ped bodies it is refused at 56 and accepted at 120.
-        Check(!replay::object_pose::ShouldPose(false, 26, 100, 0, 4, 56, 108, 64),
-            "object places: no place with the class full at 56");
-        Check(replay::object_pose::ShouldPose(false, 26, 100, 0, 4, 120, 108, 128),
-            "object places: a place at PedCapacity=120 with 100 bodies");
     }
 
     // The vehicle class by the pool (clip 1171-Blackwater): 8 recorded
@@ -2267,8 +2155,6 @@ int RunPoseCaptureRulesTests()
     TestStallPollDue();
     TestStallPolls();
     TestStallPollDefault();
-    TestLateBackoff();
-    TestFirstCheckStagger();
     TestHeldFrames();
     TestDrainListRules();
     TestDrainListModel();

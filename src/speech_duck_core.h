@@ -4,46 +4,28 @@
 // state (the input the engine's own driver reads), so the engine starts,
 // sets and stops the duck scene itself. Pure part; unit tested.
 //
-// Engine facts (build 1491.50):
-//   - the driver 0x2F2D1EC (no arguments; called once per audio update by
-//     0x2F216E0 at 0x2F224F3, which 0x2F1CE4C calls) reads the duck level
-//     [0x5B5BF24] (0x2F2D234): above 0 ([0x330F380]) and with [0x5C8EAD4] not
-//     above 0 it starts the scene 0x576520E1 into its reference 0x5BA5FE0
-//     (0x2F2D2A9, straight into the pool start 0x2F18E40) and sets seven
-//     variables on it: apply 0xE865CDE8 = level; 0xCC9C15B6 = level * (EDE ?
-//     curve 0x4D73F743 : 0); 0x015D3903 = level * EDC; 0xE269C300 = level *
-//     EDD; sfxApply 0x934A8049 = level * EDE; 0xB580F7AB = level * EDF;
-//     weatherApply 0x965062BE = level * (EDE ? [0x3E04E00] : 0), with EDC..EDF
-//     the four bytes at 0x5B82EDC (0x2F2D300..0x2F2D395) and only when
-//     [0x5B5BE7B] is 0 and [0x5C0FC30] is not (0x2F2D2CF, 0x2F2D2F4); at
-//     level 0 it stops the scene (0x2F2D449); it zeroes the level every call
-//     (0x2F2D455). A second part does the same for 0x0E585610 (reference
-//     0x5BA5FE8, variable 0xCA9ED31D) from the level [0x5B5BF48] (0x2F2D45B),
-//     which 0x2FC8864 writes every update (0x2FC898F);
-//   - the level is set to 1.0 by the scripted conversation manager
-//     (0x2FC4F58 -> 0x2FCC0FC, at 0x2FCC1D8) when one of its conversations
-//     has a line under way (0x2FBEE64 -> 0x2FBF194: state 3, past the line's
-//     start), and the byte i of 0x5B82EDC is set when a playing
-//     conversation's current line has its byte +0x20+i (line +0x100,
-//     0x2FBF21C -> 0x2FA8744); the four bytes are cleared every update
-//     (0x2EF2184).
-// Live, the scene is active with apply 1.0, weatherApply 1.0 and sfxApply
-// 1.0 (so EDE was set) exactly in the recorded conversations, and never in
-// the replay: the mod's lines are not the manager's conversations, so the
-// level stays 0. The ambient speech, weather, ambience, shots and horse
-// categories fall 3 to 7 dB in those windows.
+// Why: live, the scripted conversation manager raises the duck level while a
+// conversation line is under way, and the ambient speech, weather, ambience,
+// shots and horse categories fall 3 to 7 dB in those windows. The mod's lines
+// are not the manager's conversations, so in the replay the level stays 0.
 //
 // The mechanism (a replay records the code scenes' inputs it cannot
 // re-derive): the playback writes the duck's inputs right before the driver
-// reads them (a detour of 0x2F2D1EC that forwards the call): the level and,
+// reads them (a detour of the driver that forwards the call): the level and,
 // above 0, the four flags. From a clip that recorded the duck scene itself
 // (MIXS v3, the pool scan) the level is the recorded apply and each flag is
 // its recorded variable above 0; from an older clip the level is 1 while a
 // recorded conversation scene is active and the flags are
 // SpeechDuckDerivedFlags (default EDE: the measured weatherApply and sfxApply
 // need it; EDC, EDD and EDF are not measured).
+//
+// Evidence: offline dump of build 1491.50 (the signatures below hold the
+// bytes); the levels measured in recorded clips.
+// Research: docs/research/speech-duck-and-slots.md
 
+#include "engine_sigs.h"
 #include "mix_scene_core.h"
+#include "mix_scene_pool_core.h" // the game state driver, the duck's start
 
 #include <cstddef>
 #include <cstdint>
@@ -54,17 +36,86 @@
 
 namespace replay::speechduck
 {
-    // ---- engine layout (build 1491.50) ----
-    constexpr std::uint32_t kDriverRva = 0x2F2D1EC;
-    constexpr std::uint32_t kLevelRva = 0x5B5BF24;   // f32
-    constexpr std::uint32_t kLevel2Rva = 0x5B5BF48;  // f32
-    constexpr std::uint32_t kFlagsRva = 0x5B82EDC;   // 4 bytes EDC..EDF
-    constexpr std::uint32_t kSceneRefRva = 0x5BA5FE0;
-    constexpr std::uint32_t kScene2RefRva = 0x5BA5FE8;
-    constexpr std::uint32_t kGateMuteRva = 0x5B5BE7B;   // byte: set = the gated variables are 0
-    constexpr std::uint32_t kGateModeRva = 0x5C0FC30;   // dword: 0 = the gated variables are 0
-    constexpr std::uint32_t kGateBlockRva = 0x5C8EAD4;  // dword: above 0 = no scene
-    constexpr std::uint32_t kGateSkipRva = 0x3E04DAB;   // byte: set = the driver skips the duck (another mode)
+    using enginesig::kDuckDriver;
+    using enginesig::kSoundGroupCaller;
+
+    // ---- engine layout ----
+
+    // The game state driver's call of the duck driver (engine_sigs.h, its
+    // prologue up to its first branch). The skip gate (byte: set = the driver
+    // skips the duck, another mode) is the global of its cmp [gate],sil.
+    inline const sig::Signature kDriverCall{"duck_driver_call", mixscene::pool::kGameStateDriver, sig::Offset{0xE13},
+        "E8 ?? ?? ?? ??", 0x2F224F3};
+    inline const sig::Signature kDriverCallTarget{"duck_driver_call_target", kDriverCall, sig::Rel32{0x01, 0x05}, "",
+        0x2F2D1EC};
+    inline const sig::Signature kGateSkip{"duck_gate_skip", kDuckDriver, sig::Rel32{0x20, 0x24}, "", 0x3E04DAB};
+    // The driver's reads of its inputs: the level (f32; read, and zeroed every
+    // call), the block gate (dword: above 0 = no scene), the duck scene's
+    // reference, the mute gate (byte: set = the gated variables are 0), the
+    // mode gate (dword: 0 = the gated variables are 0), the four flag bytes
+    // EDC..EDF (EDE read twice), the second level (f32) and the second duck's
+    // reference.
+    inline const sig::Signature kLevelRead{"duck_level_read", kDuckDriver, sig::Offset{0x48}, "F3 0F 10 3D ?? ?? ?? ??",
+        0x2F2D234};
+    inline const sig::Signature kLevel{"duck_level", kLevelRead, sig::Rel32{0x04, 0x08}, "", 0x5B5BF24};
+    inline const sig::Signature kLevelZero{"duck_level_zero", kDuckDriver, sig::Offset{0x269}, "21 35 ?? ?? ?? ??",
+        0x2F2D455};
+    inline const sig::Signature kLevelZeroed{"duck_level_zeroed", kLevelZero, sig::Rel32{0x02, 0x06}, "", 0x5B5BF24};
+    inline const sig::Signature kBlockGateRead{"duck_block_gate", kDuckDriver, sig::Offset{0x5D}, "39 35 ?? ?? ?? ??",
+        0x2F2D249};
+    inline const sig::Signature kGateBlock{"duck_gate_block", kBlockGateRead, sig::Rel32{0x02, 0x06}, "", 0x5C8EAD4};
+    inline const sig::Signature kSceneRefRead{"duck_scene_ref_read", kDuckDriver, sig::Offset{0x69},
+        "48 8B 3D ?? ?? ?? ??",
+        0x2F2D255};
+    inline const sig::Signature kSceneRef{"duck_scene_ref", kSceneRefRead, sig::Rel32{0x03, 0x07}, "", 0x5BA5FE0};
+    inline const sig::Signature kMuteGateRead{"duck_mute_gate", kDuckDriver, sig::Offset{0xE3}, "40 38 35 ?? ?? ?? ??",
+        0x2F2D2CF};
+    inline const sig::Signature kGateMute{"duck_gate_mute", kMuteGateRead, sig::Rel32{0x03, 0x07}, "", 0x5B5BE7B};
+    inline const sig::Signature kModeGateRead{"duck_mode_gate", kDuckDriver, sig::Offset{0x108}, "39 35 ?? ?? ?? ??",
+        0x2F2D2F4};
+    inline const sig::Signature kGateMode{"duck_gate_mode", kModeGateRead, sig::Rel32{0x02, 0x06}, "", 0x5C0FC30};
+    inline const sig::Signature kFlagEdeCurveRead{"duck_flag_ede_curve", kDuckDriver, sig::Offset{0x114},
+        "40 38 35 ?? ?? ?? ??", 0x2F2D300};
+    inline const sig::Signature kFlagEdeCurveByte{"duck_flag_ede_curve_byte", kFlagEdeCurveRead, sig::Rel32{0x03, 0x07},
+        "", 0x5B82EDE};
+    inline const sig::Signature kFlagEdcRead{"duck_flag_edc", kDuckDriver, sig::Offset{0x12C}, "40 38 35 ?? ?? ?? ??",
+        0x2F2D318};
+    inline const sig::Signature kFlags{"duck_flags", kFlagEdcRead, sig::Rel32{0x03, 0x07}, "", 0x5B82EDC};
+    inline const sig::Signature kFlagEddRead{"duck_flag_edd", kDuckDriver, sig::Offset{0x14E}, "40 38 35 ?? ?? ?? ??",
+        0x2F2D33A};
+    inline const sig::Signature kFlagEddByte{"duck_flag_edd_byte", kFlagEddRead, sig::Rel32{0x03, 0x07}, "", 0x5B82EDD};
+    inline const sig::Signature kFlagEdeRead{"duck_flag_ede", kDuckDriver, sig::Offset{0x168}, "40 38 35 ?? ?? ?? ??",
+        0x2F2D354};
+    inline const sig::Signature kFlagEdeByte{"duck_flag_ede_byte", kFlagEdeRead, sig::Rel32{0x03, 0x07}, "", 0x5B82EDE};
+    inline const sig::Signature kFlagEdfRead{"duck_flag_edf", kDuckDriver, sig::Offset{0x182}, "40 38 35 ?? ?? ?? ??",
+        0x2F2D36E};
+    inline const sig::Signature kFlagEdfByte{"duck_flag_edf_byte", kFlagEdfRead, sig::Rel32{0x03, 0x07}, "", 0x5B82EDF};
+    inline const sig::Signature kLevel2Read{"duck_level2_read", kDuckDriver, sig::Offset{0x26F},
+        "F3 0F 10 15 ?? ?? ?? ??",
+        0x2F2D45B};
+    inline const sig::Signature kLevel2{"duck_level2", kLevel2Read, sig::Rel32{0x04, 0x08}, "", 0x5B5BF48};
+    inline const sig::Signature kScene2RefRead{"duck_scene2_ref_read", kDuckDriver, sig::Offset{0x27E},
+        "48 8B 0D ?? ?? ?? ??", 0x2F2D46A};
+    inline const sig::Signature kScene2Ref{"duck_scene2_ref", kScene2RefRead, sig::Rel32{0x03, 0x07}, "", 0x5BA5FE8};
+    // The conversation manager's update sets the level to 1.0; the flags'
+    // owner clears the four bytes every update; the second level's update
+    // writes it.
+    inline const sig::Signature kConversationUpdate{"duck_conversation_update",
+        "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8B F9 E8 ?? ?? ?? ?? 48 8B D8", 0x2FCC0FC};
+    inline const sig::Signature kManagerLevelSet{"duck_manager_level_set", kConversationUpdate, sig::Offset{0xDC},
+        "C7 05 ?? ?? ?? ?? 00 00 80 3F", 0x2FCC1D8};
+    inline const sig::Signature kManagerLevel{"duck_manager_level", kManagerLevelSet, sig::Rel32{0x02, 0x0A}, "",
+        0x5B5BF24};
+    inline const sig::Signature kFlagsCleared{"duck_flags_cleared", kSoundGroupCaller, sig::Offset{0x234},
+        "83 25 ?? ?? ?? ?? 00", 0x2EF2184};
+    inline const sig::Signature kFlagsClearedTarget{"duck_flags_cleared_target", kFlagsCleared, sig::Rel32{0x02, 0x07},
+        "", 0x5B82EDC};
+    inline const sig::Signature kLevel2Update{"duck_level2_update",
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 50 8B A9 80 09 00 00", 0x2FC8864};
+    inline const sig::Signature kLevel2Written{"duck_level2_written", kLevel2Update, sig::Offset{0x12B},
+        "F3 0F 11 35 ?? ?? ?? ??", 0x2FC898F};
+    inline const sig::Signature kLevel2WrittenTarget{"duck_level2_written_target", kLevel2Written,
+        sig::Rel32{0x04, 0x08}, "", 0x5B5BF48};
 
     constexpr std::uint32_t kDuckScene = 0x576520E1u;
     constexpr std::uint32_t kDuck2Scene = 0x0E585610u;
@@ -74,7 +125,7 @@ namespace replay::speechduck
     constexpr std::uint32_t kVarEdd = 0xE269C300u;     // level * EDD
     constexpr std::uint32_t kVarEde = 0x934A8049u;     // sfxApply = level * EDE
     constexpr std::uint32_t kVarEdf = 0xB580F7ABu;     // level * EDF
-    constexpr std::uint32_t kVarWeather = 0x965062BEu; // weatherApply = level * (EDE ? [0x3E04E00] : 0)
+    constexpr std::uint32_t kVarWeather = 0x965062BEu; // weatherApply = level * (EDE ? a weather global : 0)
     constexpr std::uint32_t kVarLevel2 = 0xCA9ED31Du;  // the second duck's level
     constexpr std::uint32_t kDuckVars[7] = {kApply, kVarCurve, kVarEdc, kVarEdd, kVarEde, kVarEdf, kVarWeather};
 
@@ -84,56 +135,37 @@ namespace replay::speechduck
     constexpr std::uint8_t kFlagEdf = 8;
     constexpr std::uint8_t kDefaultDerivedFlags = kFlagEde;
 
-    // The driver's prologue up to its first branch (72 bytes): mov rax,rsp;
-    // two saves; push rbp; lea rbp,[rax-5Fh]; sub rsp,0D0h; movaps; xor
-    // esi,esi; cmp [0x3E04DAB],sil; five movaps; jne.
-    constexpr std::uint8_t kDriverSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x70, 0x08, 0x48, 0x89, 0x78, 0x10, 0x55,
-        0x48, 0x8D, 0x68, 0xA1, 0x48, 0x81, 0xEC, 0xD0, 0x00, 0x00, 0x00, 0x0F, 0x29, 0x78, 0xE8, 0x33, 0xF6, 0x40, 0x38,
-        0x35, 0x9B, 0x7B, 0xED, 0x00, 0x44, 0x0F, 0x29, 0x40, 0xD8, 0x44, 0x0F, 0x29, 0x48, 0xC8, 0x44, 0x0F, 0x29, 0x50,
-        0xB8, 0x44, 0x0F, 0x29, 0x58, 0xA8, 0x44, 0x0F, 0x29, 0x60, 0x98, 0x44, 0x0F, 0x29, 0x68, 0x88, 0x0F, 0x85, 0x27,
-        0x02, 0x00, 0x00};
-
+    // A site as the log names it: the instruction, what its call or rip
+    // operand reaches, and the global that reach must be (`plus` bytes after
+    // it): every site of one global agrees, as when they all had its address.
     struct Site
     {
         const char* name;
-        std::uint32_t rva;
-        std::uint8_t size;
-        std::uint8_t bytes[10];
-        std::int8_t ripAt;
-        std::uint8_t insnEnd;
-        std::uint32_t target;
+        const sig::Signature& at;
+        const sig::Signature* reach;
+        const sig::Signature* same;
+        std::uint32_t plus;
     };
-    constexpr Site kSites[] = {
-        {"driver_call", 0x2F224F3, 5, {0xE8, 0xF4, 0xAC, 0x00, 0x00}, 1, 5, kDriverRva},
-        {"level_read", 0x2F2D234, 8, {0xF3, 0x0F, 0x10, 0x3D, 0xE8, 0xEC, 0xC2, 0x02}, 4, 8, kLevelRva},
-        {"level_zero", 0x2F2D455, 6, {0x21, 0x35, 0xC9, 0xEA, 0xC2, 0x02}, 2, 6, kLevelRva},
-        {"block_gate", 0x2F2D249, 6, {0x39, 0x35, 0x85, 0x18, 0xD6, 0x02}, 2, 6, kGateBlockRva},
-        {"scene_ref", 0x2F2D255, 7, {0x48, 0x8B, 0x3D, 0x84, 0x8D, 0xC7, 0x02}, 3, 7, kSceneRefRva},
-        {"mute_gate", 0x2F2D2CF, 7, {0x40, 0x38, 0x35, 0xA5, 0xEB, 0xC2, 0x02}, 3, 7, kGateMuteRva},
-        {"mode_gate", 0x2F2D2F4, 6, {0x39, 0x35, 0x36, 0x29, 0xCE, 0x02}, 2, 6, kGateModeRva},
-        {"flag_ede_curve", 0x2F2D300, 7, {0x40, 0x38, 0x35, 0xD7, 0x5B, 0xC5, 0x02}, 3, 7, kFlagsRva + 2},
-        {"flag_edc", 0x2F2D318, 7, {0x40, 0x38, 0x35, 0xBD, 0x5B, 0xC5, 0x02}, 3, 7, kFlagsRva + 0},
-        {"flag_edd", 0x2F2D33A, 7, {0x40, 0x38, 0x35, 0x9C, 0x5B, 0xC5, 0x02}, 3, 7, kFlagsRva + 1},
-        {"flag_ede", 0x2F2D354, 7, {0x40, 0x38, 0x35, 0x83, 0x5B, 0xC5, 0x02}, 3, 7, kFlagsRva + 2},
-        {"flag_edf", 0x2F2D36E, 7, {0x40, 0x38, 0x35, 0x6A, 0x5B, 0xC5, 0x02}, 3, 7, kFlagsRva + 3},
-        {"level2_read", 0x2F2D45B, 8, {0xF3, 0x0F, 0x10, 0x15, 0xE5, 0xEA, 0xC2, 0x02}, 4, 8, kLevel2Rva},
-        {"scene2_ref", 0x2F2D46A, 7, {0x48, 0x8B, 0x0D, 0x77, 0x8B, 0xC7, 0x02}, 3, 7, kScene2RefRva},
-        {"manager_level_set", 0x2FCC1D8, 10, {0xC7, 0x05, 0x42, 0xFD, 0xB8, 0x02, 0x00, 0x00, 0x80, 0x3F}, 2, 10, kLevelRva},
-        {"flags_cleared", 0x2EF2184, 7, {0x83, 0x25, 0x51, 0x0D, 0xC9, 0x02, 0x00}, 2, 7, kFlagsRva},
-        {"level2_written", 0x2FC898F, 8, {0xF3, 0x0F, 0x11, 0x35, 0xB1, 0x35, 0xB9, 0x02}, 4, 8, kLevel2Rva},
+    inline const Site kSites[] = {
+        {"driver_call", kDriverCall, &kDriverCallTarget, &kDuckDriver, 0},
+        {"level_read", kLevelRead, &kLevel, nullptr, 0},
+        {"level_zero", kLevelZero, &kLevelZeroed, &kLevel, 0},
+        {"block_gate", kBlockGateRead, &kGateBlock, nullptr, 0},
+        {"scene_ref", kSceneRefRead, &kSceneRef, nullptr, 0},
+        {"mute_gate", kMuteGateRead, &kGateMute, nullptr, 0},
+        {"mode_gate", kModeGateRead, &kGateMode, nullptr, 0},
+        {"flag_ede_curve", kFlagEdeCurveRead, &kFlagEdeCurveByte, &kFlags, 2},
+        {"flag_edc", kFlagEdcRead, &kFlags, nullptr, 0},
+        {"flag_edd", kFlagEddRead, &kFlagEddByte, &kFlags, 1},
+        {"flag_ede", kFlagEdeRead, &kFlagEdeByte, &kFlags, 2},
+        {"flag_edf", kFlagEdfRead, &kFlagEdfByte, &kFlags, 3},
+        {"level2_read", kLevel2Read, &kLevel2, nullptr, 0},
+        {"scene2_ref", kScene2RefRead, &kScene2Ref, nullptr, 0},
+        {"manager_level_set", kManagerLevelSet, &kManagerLevel, &kLevel, 0},
+        {"flags_cleared", kFlagsCleared, &kFlagsClearedTarget, &kFlags, 0},
+        {"level2_written", kLevel2Written, &kLevel2WrittenTarget, &kLevel2, 0},
     };
     constexpr std::size_t kSiteCount = sizeof(kSites) / sizeof(kSites[0]);
-
-    inline std::uint32_t SiteTarget(const Site& site)
-    {
-        if (site.ripAt < 0)
-            return 0;
-        const std::uint8_t* d = site.bytes + site.ripAt;
-        const std::int32_t disp = static_cast<std::int32_t>(static_cast<std::uint32_t>(d[0]) |
-            (static_cast<std::uint32_t>(d[1]) << 8) | (static_cast<std::uint32_t>(d[2]) << 16) |
-            (static_cast<std::uint32_t>(d[3]) << 24));
-        return static_cast<std::uint32_t>(static_cast<std::int64_t>(site.rva) + site.insnEnd + disp);
-    }
 
     // ---- the plan ----
 
@@ -156,9 +188,9 @@ namespace replay::speechduck
     struct Input
     {
         Source source = Source::None;
-        float level = 0.0f;        // [0x5B5BF24]
+        float level = 0.0f;        // the level (kLevel)
         std::uint8_t flags = 0;    // EDC..EDF (bits 0..3), written only when level > 0
-        bool level2Known = false;  // [0x5B5BF48] written (recorded source only)
+        bool level2Known = false;  // the second level (kLevel2) written (recorded source only)
         float level2 = 0.0f;
         std::uint32_t instance = 0; // the recorded instance that gives it (0 none)
     };

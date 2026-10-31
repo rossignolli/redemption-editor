@@ -15,19 +15,20 @@
 //       only when a save exists (the engine's own slot table read under SEH)
 //       and the reload path passed its signature check;
 //   (c) reload the most recent save when the replay is left: the orphan
-//       queue operation at .data 0x3A24360 pushed by the savegame queue push
-//       0xBDBF58, or plan B, LoadFromSlot 0xBDC1B8 (the pause menu's path)
-//       with the newest slot;
+//       queue operation (kLoadOp, .data) pushed by the savegame queue push
+//       (kPush), or plan B, LoadFromSlot (kLoadFromSlot, the pause menu's
+//       path) with the newest slot;
 //   (d) in a mission nothing is cleared nor reloaded.
-// Addresses: build 1491.50. This header is pure (no engine access): the
-// decisions, the layouts and the checks over bytes already read; script.cpp
-// reads and calls.
+// This header is pure (no engine access): the decisions, the layouts, the
+// signatures of the engine code (game_sig_core.h) and the checks over bytes
+// already read; script.cpp reads and calls.
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
 
+#include "game_sig_core.h"
 #include "i18n.h" // the refusal notices in the player's language
 
 namespace replay::worldmodel
@@ -59,33 +60,22 @@ namespace replay::worldmodel
         return text[3] == '\0' ? Mode::Gta : Mode::Off;
     }
 
-    // WorldModelStep: how much of the model runs, so each step is tested
-    // alone. 1: only (a), the whole pool recorded; 2: (a) and (b), the world
+    // The steps of the model (the replay always runs 3; the ladder is kept
+    // for the tests). 1: only (a), the whole pool recorded; 2: (a) and (b), the world
     // cleared and the reload left to the user (pause menu, Load Game);
     // 3 (default): (a), (b) and (c).
     constexpr std::uint32_t kStepPool = 1;
     constexpr std::uint32_t kStepClear = 2;
     constexpr std::uint32_t kStepReload = 3;
 
-    inline std::uint32_t StepFromIni(std::uint32_t value)
-    {
-        return value < kStepPool ? kStepPool : value > kStepReload ? kStepReload : value;
-    }
-
-    // WorldReloadPath=queue (default: the orphan load-most-recent operation)
-    // or slot (plan B: the menu's LoadFromSlot with the newest slot).
+    // The save reload: the menu's LoadFromSlot with the newest slot (Slot,
+    // what the replay uses) or the orphan load-most-recent
+    // operation (Queue, the first plan; kept for the tests).
     enum class ReloadPath : std::uint8_t
     {
         Queue = 0,
         Slot = 1,
     };
-
-    inline ReloadPath ReloadPathFromIni(const char* text)
-    {
-        if (text && (text[0] == 's' || text[0] == 'S'))
-            return ReloadPath::Slot;
-        return ReloadPath::Queue;
-    }
 
     inline const char* ReloadPathName(ReloadPath path)
     {
@@ -94,20 +84,20 @@ namespace replay::worldmodel
 
     // ---- (b) clearing ------------------------------------------------------
 
-    // CLEAR_AREA bits decoded in the native's core 0xE73EA8.
-    constexpr std::uint32_t kClearProjectiles = 0x1;   // 0xE75600
-    constexpr std::uint32_t kClearVehicles = 0x8;      // 0xE745E4 over the vehicle pool
-    constexpr std::uint32_t kClearObjects = 0x200;     // 0xE75280 over the object pool
-    constexpr std::uint32_t kClearPeds = 0x4000;       // 0xE7540C over the ped pool
-    constexpr std::uint32_t kClearFires = 0x10000;     // 0xE74FFC, the fire area
+    // CLEAR_AREA bits decoded in the native's core.
+    constexpr std::uint32_t kClearProjectiles = 0x1;   // the projectiles
+    constexpr std::uint32_t kClearVehicles = 0x8;      // over the vehicle pool
+    constexpr std::uint32_t kClearObjects = 0x200;     // over the object pool
+    constexpr std::uint32_t kClearPeds = 0x4000;       // over the ped pool
+    constexpr std::uint32_t kClearFires = 0x10000;     // the fire area
     constexpr std::uint32_t kClearBroadcast = 0x80000; // a network event: never
     constexpr std::uint32_t kDefaultClearFlags = kClearProjectiles | kClearVehicles | kClearObjects | kClearPeds | kClearFires;
     // The core tests the 2D distance, so this radius covers the map.
     // Centre (0, 0, 0).
     constexpr float kClearRadius = 1000000.0f;
 
-    // WorldClearFlags in the ini may add bits (the startup_sp set 2442122);
-    // the broadcast bit is always taken out.
+    // A set of clear bits (the startup_sp set 2442122) without the broadcast
+    // bit.
     constexpr std::uint32_t SanitizeClearFlags(std::uint32_t flags)
     {
         return flags & ~kClearBroadcast;
@@ -123,14 +113,12 @@ namespace replay::worldmodel
 
     // The engine's slot headers (17 of 0x134 bytes; "SRDR3" first) and the
     // slot table (17 of 0x48 bytes; the save's date as six ints at +0x2C),
-    // read by the newest-slot sort 0xBC9A30 that the load operation uses:
-    // empty when the first header byte is 0 (0xBD2A74), skipped unless the
-    // header starts with SRDR3, dates compared field by field, strictly
-    // greater wins (0xBC1500), so the lowest index wins a tie.
+    // read by the newest-slot sort that the load operation uses (kNewestSlot):
+    // empty when the first header byte is 0, skipped unless the header starts
+    // with SRDR3, dates compared field by field, strictly greater wins (the
+    // date compare), so the lowest index wins a tie.
     constexpr std::uint32_t kSlotCount = 17;
-    constexpr std::uint32_t kHeaderRva = 0x49BD388;
     constexpr std::uint32_t kHeaderStride = 0x134;
-    constexpr std::uint32_t kSlotTableRva = 0x49F7670;
     constexpr std::uint32_t kSlotStride = 0x48;
     constexpr std::uint32_t kSlotDateOffset = 0x2C;
     constexpr char kHeaderMagic[5] = {'S', 'R', 'D', 'R', '3'};
@@ -152,7 +140,7 @@ namespace replay::worldmodel
         return slot;
     }
 
-    // 0xBC1500: a newer than b (strictly).
+    // The date compare: a newer than b (strictly).
     inline bool Newer(const std::int32_t (&a)[6], const std::int32_t (&b)[6])
     {
         for (int index = 0; index < 6; ++index)
@@ -198,10 +186,8 @@ namespace replay::worldmodel
     // ---- (c) the load operation ----------------------------------------------
 
     // The orphan "load most recent save" operation: a static object with no
-    // caller in the retail code; its Process 0xBBA2FC enumerates, sorts, loads the newest,
-    // and without one starts a new game (0xBE3004).
-    constexpr std::uint32_t kLoadOpRva = 0x3A24360;
-    constexpr std::uint32_t kLoadOpVtableRva = 0x3422360;
+    // caller in the retail code; its Process (kProcess) enumerates, sorts,
+    // loads the newest, and without one starts a new game.
     constexpr std::uint32_t kLoadOpType = 0x17;
     constexpr std::size_t kLoadOpSize = 0x20;
     constexpr std::size_t kOpVtable = 0x00;
@@ -211,7 +197,7 @@ namespace replay::worldmodel
     constexpr std::size_t kOpSlot = 0x14;    // -1
     constexpr std::size_t kOpSpare = 0x18;   // -1
     constexpr std::size_t kOpLoadArg = 0x1C; // byte 1, passed to BeginLoad
-    // The fields the reset writes: +0x10 to +0x1C (the ctor 0xBBF1DF writes
+    // The fields the reset writes: +0x10 to +0x1C (the ctor kLoadOpCtor writes
     // +0x14, +0x18 and the byte +0x1C; the state +0x10 is left by a finished
     // run at 4, so a second exit would start waiting: 0 here).
     constexpr std::size_t kOpResetBegin = kOpState;
@@ -221,72 +207,67 @@ namespace replay::worldmodel
     constexpr std::int32_t kStatusQueued = 1;
     constexpr std::int32_t kStatusError = 2;
 
-    // The savegame queue: a ring of 24 (0x49F1DC0), its count at 0x49F1E88.
-    constexpr std::uint32_t kQueueCountRva = 0x49F1E88;
+    // The savegame queue: a ring of 24, its count after it (kQueueCount).
     constexpr std::int32_t kQueueCapacity = 0x18;
 
     // The menu's operation (plan B): LoadFromSlot returns at once when its
-    // status at +0x08 (0x3A23D10) is 1.
-    constexpr std::uint32_t kMenuLoadOpStatusRva = 0x3A23D10;
+    // status at +0x08 (kMenuOpStatus) is 1.
 
-    // Internal functions and their prologues (build 1491.50); a mismatch
-    // disables the reload, and without a reload the world is never cleared.
-    struct Signature
-    {
-        const char* name;
-        std::uint32_t rva;
-        std::uint8_t bytes[16];
-    };
-    constexpr Signature kPushSignature{"PushOnToSavegameQueue", 0xBDBF58,
-        {0x45, 0x33, 0xC0, 0x48, 0x8B, 0xD1, 0x48, 0x85, 0xC9, 0x74, 0x55, 0xC7, 0x41, 0x08, 0x02, 0x00}};
-    constexpr Signature kProcessSignature{"LoadMostRecentProcess", 0xBBA2FC,
-        {0x48, 0x89, 0x5C, 0x24, 0x10, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0xBE, 0x02, 0x00}};
-    constexpr Signature kQueueUpdateSignature{"SavegameQueueUpdate", 0xBE4170,
-        {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x33, 0xDB, 0xC6, 0x05, 0x2F, 0x8E, 0xDD, 0x03, 0x01, 0x39}};
-    constexpr Signature kNewestSlotSignature{"NewestSlotSort", 0xBC9A30,
-        {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57}};
-    constexpr Signature kLoadFromSlotSignature{"LoadFromSlot", 0xBDC1B8,
-        {0x40, 0x53, 0x48, 0x83, 0xEC, 0x60, 0x83, 0x3D, 0x4B, 0x7B, 0xE4, 0x02, 0x01, 0x0F, 0x84, 0xD6}};
-
-    inline bool SignatureMatches(const Signature& signature, const std::uint8_t* code, std::size_t size)
-    {
-        return code && size >= sizeof(signature.bytes) && std::memcmp(code, signature.bytes, sizeof(signature.bytes)) == 0;
-    }
-
-    // Field sites: a 7-byte rip-relative instruction (lea or cmp with an
-    // imm8) whose target is one of the globals above. Matching the bytes
-    // proves the global's address in this build, not only the function.
-    // `disp` is where the 32-bit displacement starts: 3 for lea r64 (REX,
-    // opcode, ModRM), 2 for cmp dword [rip+disp], imm8 (opcode, ModRM; the
-    // imm8 is the last byte, inside the 7).
-    struct Site
-    {
-        const char* name;
-        std::uint32_t rva;
-        std::uint8_t bytes[7];
-        std::uint32_t disp;
-        std::uint32_t target;
-    };
-    constexpr Site kHeaderSite{"slot_headers", 0xBC9A93, {0x48, 0x8D, 0x2D, 0xEE, 0x38, 0xDF, 0x03}, 3, kHeaderRva};
-    constexpr Site kSlotDateSite{"slot_dates", 0xBCC270, {0x48, 0x8D, 0x05, 0x25, 0xB4, 0xE2, 0x03}, 3, kSlotTableRva + kSlotDateOffset};
-    constexpr Site kQueueCountSite{"queue_count", 0xBDBF6A, {0x83, 0x3D, 0x17, 0x5F, 0xE1, 0x03, 0x18}, 2, kQueueCountRva};
-    constexpr Site kOpVtableSite{"load_op_vtable", 0xBBF1E4, {0x48, 0x8D, 0x05, 0x75, 0x31, 0x86, 0x02}, 3, kLoadOpVtableRva};
-    constexpr Site kMenuBusySite{"menu_op_status", 0xBDC1BE, {0x83, 0x3D, 0x4B, 0x7B, 0xE4, 0x02, 0x01}, 2, kMenuLoadOpStatusRva};
-
-    // The address the site's displacement points at (rip = the next instruction).
-    constexpr std::uint32_t SiteTarget(const Site& site)
-    {
-        const std::uint32_t d = site.disp;
-        const std::uint32_t value = static_cast<std::uint32_t>(site.bytes[d]) | (static_cast<std::uint32_t>(site.bytes[d + 1]) << 8) |
-            (static_cast<std::uint32_t>(site.bytes[d + 2]) << 16) | (static_cast<std::uint32_t>(site.bytes[d + 3]) << 24);
-        return site.rva + 7u + value;
-    }
-
-    inline bool SiteMatches(const Site& site, const std::uint8_t* code, std::size_t size)
-    {
-        return code && size >= sizeof(site.bytes) && std::memcmp(code, site.bytes, sizeof(site.bytes)) == 0;
-    }
-
+    // ---- the engine code, by signature ---------------------------------------
+    //
+    // The functions and globals of the reload path (game_sig_core.h). One not
+    // found disables the reload for the session, and without a reload the
+    // world is never cleared.
+    //
+    // The push: a null operation is refused, status 2 on error; cmp [the
+    // queue count], 0x18 (the capacity).
+    inline const sig::Signature kPush{"worldmodel_push",
+        "45 33 C0 48 8B D1 48 85 C9 74 55 C7 41 08 02 00 00 00 83 3D ?? ?? ?? ?? 18", 0xBDBF58};
+    inline const sig::Signature kQueueCount{"worldmodel_queue_count", kPush, sig::Rel32{0x14, 0x19}, "", 0x49F1E88};
+    // The load operation's Process, its switch on the state at +0x10 (the
+    // field the reset writes), and the queue's update.
+    inline const sig::Signature kProcess{"worldmodel_load_most_recent_process",
+        "48 89 5C 24 10 56 48 83 EC 20 48 8B D9 BE 02 00 00 00", 0xBBA2FC};
+    inline const sig::Signature kProcessState{"worldmodel_process_state", kProcess, sig::Offset{0x12},
+        "8B 49 10 85 C9 0F 84 ?? ?? ?? ?? 83 E9 01 0F 84 ?? ?? ?? ?? 83 E9 01 0F 84 ?? ?? ?? ?? 83 E9 01", 0xBBA30E};
+    inline const sig::Signature kQueueUpdate{"worldmodel_savegame_queue_update",
+        "40 53 48 83 EC 20 33 DB C6 05 ?? ?? ?? ?? 01 39 1D ?? ?? ?? ??", 0xBE4170};
+    // The newest-slot sort, which reads the slot headers (lea rbp, [headers]),
+    // and the date getter (slot < 17; lea rax, [table + 0x2C]).
+    inline const sig::Signature kNewestSlot{"worldmodel_newest_slot_sort",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 54 41 55 41 56 41 57 48 81 EC C0 01 00 00 41 B8 11 00 00 "
+        "00 48 8D 44 24 28 41 8B F8 4C 8B F1 83 60 F8 00 83 60 FC 00 83 20 00 83 60 04 00 83 60 08 00 83 60 0C 00 48 "
+        "8D 40 18 48 83 EF 01 75 DF 85 D2 74 0B 8B CA 49 8B FE 48 83 C8 FF F3 AB 41 3B D0 48 8D 2D ?? ?? ?? ??",
+        0xBC9A30};
+    inline const sig::Signature kSlotHeaders{"worldmodel_slot_headers", kNewestSlot, sig::Rel32{0x66, 0x6A}, "",
+        0x49BD388};
+    inline const sig::Signature kSlotDateGetter{"worldmodel_slot_date_getter",
+        "83 F9 11 73 13 48 63 C1 48 8D 0C C0 48 8D 05 ?? ?? ?? ?? 48 8D 04 C8 C3", 0xBCC264};
+    inline const sig::Signature kSlotDates{"worldmodel_slot_dates", kSlotDateGetter, sig::Rel32{0x0F, 0x13}, "",
+        0x49F769C};
+    // LoadFromSlot returns at once when the menu's operation status is 1:
+    // cmp [status], 1.
+    inline const sig::Signature kLoadFromSlot{"worldmodel_load_from_slot",
+        "40 53 48 83 EC 60 83 3D ?? ?? ?? ?? 01 0F 84 ?? ?? ?? ?? 85 C9",
+        0xBDC1B8};
+    inline const sig::Signature kMenuOpStatus{"worldmodel_menu_op_status", kLoadFromSlot, sig::Rel32{0x08, 0x0D}, "",
+        0x3A23D10};
+    // The operation's constructor: its vtable, -1 at +0x14 and +0x18, the type
+    // 0x17 at +0x0C and the load byte 1 at +0x1C (the fields the reset writes).
+    inline const sig::Signature kLoadOpCtor{"worldmodel_load_op_ctor",
+        "83 61 08 00 48 8D 05 ?? ?? ?? ?? 48 89 01 83 C8 FF 89 41 14 89 41 18 48 8B C1 C7 41 0C 17 00 00 00 C6 41 1C "
+        "01 C3",
+        0xBBF1E0};
+    inline const sig::Signature kLoadOpVtable{"worldmodel_load_op_vtable", kLoadOpCtor, sig::Rel32{0x07, 0x0B}, "",
+        0x3422360};
+    // The operation itself: a static object (constant initialized; no code
+    // points at it but its exit destructor), found by its vtable: the one
+    // object the exe file holds that starts with kLoadOpVtable and has the
+    // type 0x17 at +0x0C (its status at +0x08 may be anything). A second one
+    // of the class, which a static constructor builds at start in the
+    // zero-filled tail of .data, is not it.
+    inline const sig::Signature kLoadOp{"worldmodel_load_op", kLoadOpVtable, sig::Instance{true},
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 17 00 00 00", 0x3A24360};
     struct OpView
     {
         std::uint64_t vtable = 0;
@@ -331,9 +312,10 @@ namespace replay::worldmodel
         return "?";
     }
 
-    inline OpCheck CheckOp(const OpView& view, std::uint64_t moduleBase)
+    // `vtable`: where the game has the operation's vtable (kLoadOpVtable).
+    inline OpCheck CheckOp(const OpView& view, std::uint64_t vtable)
     {
-        if (view.vtable != moduleBase + kLoadOpVtableRva)
+        if (!vtable || view.vtable != vtable)
             return OpCheck::WrongVtable;
         if (view.type != static_cast<std::int32_t>(kLoadOpType))
             return OpCheck::WrongType;

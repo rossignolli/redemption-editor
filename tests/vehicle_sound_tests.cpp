@@ -206,6 +206,8 @@ namespace
     {
         const Track track = WagonTrack();
         player::Config config;
+        config.code = KnownWrapperCode();
+        config.callers = owner::KnownCallerRanges();
         config.packets = true;
         config.enabled = true;
         config.vehicleBlock = vehicleBlock;

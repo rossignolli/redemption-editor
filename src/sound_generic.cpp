@@ -1,5 +1,6 @@
 #include "sound_generic.h"
 
+#include "audio_observer.h" // GenericWrapperCode
 #include "mod_clock.h"
 #include "mod_identity.h"
 #include "pose_capture.h"
@@ -57,19 +58,7 @@ namespace replay::soundgeneric
         {
             // On by default, a support switch (ini_public.h kSupportSwitches; it installs the sound port detours).
             g_enabled = replay::identity::IniInt("SoundGeneric", 1, path) != 0;
-            const int hz = static_cast<int>(replay::identity::DevIniInt("SoundGenericUpdateHz", 20, path));
-            g_config.updateHz = static_cast<std::uint32_t>(hz < 1 ? 1 : hz > 120 ? 120 : hz);
-            const int mb = static_cast<int>(replay::identity::DevIniInt("SoundGenericMaxMBPerMin", 8, path));
-            g_config.maxMBPerMin = mb < 0 ? 0.0 : static_cast<double>(mb);
             // The player's keys.
-            g_config.play = replay::identity::DevIniInt("SoundGenericPlay", 1, path) != 0;
-            g_config.playInExport = replay::identity::DevIniInt("SoundGenericExport", 0, path) != 0;
-            const int preload = static_cast<int>(replay::identity::DevIniInt("SoundGenericPreloadMs", 500, path));
-            g_config.preloadMs = static_cast<std::uint32_t>(preload < 0 ? 0 : preload > 5000 ? 5000 : preload);
-            const int delay = static_cast<int>(replay::identity::DevIniInt("SoundGenericPreloadDelayMs", 100, path));
-            g_config.preloadDelayMs = static_cast<std::uint32_t>(delay < 0 ? 0 : delay);
-            const int hold = static_cast<int>(replay::identity::DevIniInt("SoundGenericHoldMs", 150, path));
-            g_config.holdMs = static_cast<std::uint32_t>(hold < 0 ? 0 : hold > 2000 ? 2000 : hold);
             const int slots = static_cast<int>(replay::identity::DevIniInt("SoundGenericSlots", 64, path));
             g_config.slots = static_cast<std::uint32_t>(slots < 8 ? 8 : slots > 256 ? 256 : slots);
             char take[512]{};
@@ -78,40 +67,19 @@ namespace replay::soundgeneric
             // Always packets, blocked by packet (the mode parsers stay for their tests).
             g_config.packets = true;
             g_config.blockAll = false;
-            g_config.stepSetGate = replay::identity::DevIniInt("SoundStepSetGate", 1, path) != 0;
             char trace[96]{};
             replay::identity::DevIniString("SoundGenericTrace", "", trace, sizeof(trace), path);
             g_config.trace = trace;
-            g_config.envGroups = replay::identity::DevIniInt("SoundGenericEnvGroup", 1, path) != 0;
-            g_config.queueEnvGroups = replay::identity::DevIniInt("SoundQueueEnvGroup", 1, path) != 0;
             g_config.weaponHolderEnv = replay::identity::IniInt("ShotEnvGroupReplay", 1, path) != 0;
-            // SoundGenericEntityMode: a, b or c.
-            char entityMode[32]{};
-            replay::identity::DevIniString("SoundGenericEntityMode", "c", entityMode, sizeof(entityMode), path);
-            g_config.entityMode = static_cast<std::uint8_t>(EntityModeOfText(entityMode));
             char skip[256]{};
             replay::identity::DevIniString("SoundGenericSkip", "release", skip, sizeof(skip), path);
             g_config.skip = skip;
-            g_config.clockLog = replay::identity::DevIniInt("SoundClock", 1, path) != 0;
-            g_config.directParams = static_cast<int>(replay::identity::DevIniInt("SoundGenericDirectParams", 0, path));
             char mute[96]{};
             replay::identity::DevIniString("SoundGenericMute", "", mute, sizeof(mute), path);
             g_config.mute = mute;
             char driven[128]{};
             replay::identity::DevIniString("SoundGenericEntityDrivenSkip", kEntityDrivenSkipDefault, driven, sizeof(driven), path);
             g_config.entityDrivenSkip = driven;
-            g_config.playerRoute = replay::identity::DevIniInt("SoundGenericPlayerRoute", 0, path) != 0;
-            SetOriginSkip(replay::identity::DevIniInt("SoundGenericOriginSkip", 1, path) != 0);
-            g_config.weaponOffShot = replay::identity::DevIniInt("SoundGenericWeaponOffShot", 1, path) != 0;
-            // Creator B's packets by ref; loops kept across a jump.
-            g_config.coreBByRef = replay::identity::DevIniInt("SoundGenericCoreBByRef", 1, path) != 0;
-            g_config.keepLoops = replay::identity::DevIniInt("SoundGenericKeepLoops", 1, path) != 0;
-            // The world packets' cap per sound.
-            g_config.worldCapPerSound = replay::identity::DevIniInt("SoundGenericWorldCap", 1, path) != 0;
-            const int worldCap = static_cast<int>(replay::identity::DevIniInt("SoundGenericWorldCapCount", 6, path));
-            g_config.worldCapCount = static_cast<std::uint32_t>(worldCap < 0 ? 0 : worldCap > 64 ? 64 : worldCap);
-            // The puppet vehicles' own copies refused at the creators.
-            g_config.vehicleBlock = replay::identity::DevIniInt("SoundGenericVehicleBlock", 1, path) != 0;
             g_iniRead = 1;
         }
 
@@ -309,6 +277,7 @@ namespace replay::soundgeneric
         g_life->Skip();
         g_adjust->Skip();
         context.clip.soundGeneric.Clear();
+        g_config.code = replay::audio::GenericWrapperCode();
         g_recorder.Begin(g_config, &context.clip.soundGeneric, now);
         g_lastLogUs = now;
         g_recClock.Reset();
@@ -324,7 +293,6 @@ namespace replay::soundgeneric
         // BeginRecording keeps the recorder on the same track object.
         Drain(context, replay::pose::capture::IsClockPaused());
         // The recording clock against QPC, for the bench's audio capture.
-        if (g_config.clockLog)
         {
             ClockSample samples[2];
             const std::size_t n = g_recClock.Tick(replay::pose::capture::NowMs(), replay::clock::NowUs(),

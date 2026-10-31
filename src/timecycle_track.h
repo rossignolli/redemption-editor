@@ -6,24 +6,12 @@
 // ("WINTER2_mountainWind", "blizzard_winter2") would otherwise be whatever the
 // session has when the clip plays.
 //
-// Engine model (build 1491.50; the engine side is timecycle_state.cpp):
-//   timecycle object T: T+0x2770 modifier index, +0x2774 strength,
-//     +0x2778 transition index, +0x277C transition progress, +0x2780 speed
-//     (progress per second), +0x2784 fade-out byte. The per frame update
-//     (0xF22B60) adds speed * frame time to the progress of a transition and
-//     finishes it (the target becomes the modifier) when progress reaches the
-//     strength; with the fade-out byte it takes speed * frame time off and
-//     clears the modifier at 0.
-//   An index is a position in T's modifier pointer array (T+0x40, count at
-//     T+0x48). SET_TIMECYCLE_MODIFIER finds it from the name hash through a
-//     sorted map of (hash, pointer) at T+0x50 (data at +0x58, count at
-//     +0x60) and the position of that pointer in the array (0x2B2ED78).
-//   Weather type i at W + i * 0x1E0: +0x10 its hash, +0x14 the key of the
-//     active variation (the type's own hash, or 0, when none), the variation
-//     table at +0x1C8 (entries of 0x44 bytes, key first), count at +0x1D0.
-//
 // Keys are stored, never indexes (an index is a session's array position; the
-// index is kept only to compare in the log). Pure data and rules here.
+// index is kept only to compare in the log). The engine side is
+// timecycle_state.cpp. Offline dump, build 1491.50.
+// Research: docs/research/weather-wind-sky-timecycle.md
+//
+// Pure data and rules here.
 
 #include <algorithm>
 #include <cmath>
@@ -68,11 +56,11 @@ namespace replay
         // moves every poll, a held modifier is one sample).
         constexpr std::uint32_t kSampleMs = 100;
         constexpr float kEpsilon = 0.0005f;
-        // CLEAR_TIMECYCLE_MODIFIER's strength (the .rdata 1.0 at 0x330C7A8).
+        // CLEAR_TIMECYCLE_MODIFIER's strength (the 1.0 of the .rdata).
         constexpr float kDefaultStrength = 1.0f;
 
-        // No variation: the key is the type's own hash (the immediate clear,
-        // 0x72C2E8, copies +0x10 to +0x14) or 0 (a type never touched).
+        // No variation: the key is the type's own hash (the immediate clear
+        // copies +0x10 to +0x14) or 0 (a type never touched).
         constexpr bool IsDefaultVariation(std::uint32_t type, std::uint32_t key)
         {
             return key == 0 || key == type;
@@ -299,9 +287,9 @@ namespace replay
             return 0;
         }
 
-        // key -> index, as 0x2B2ED78 after its alias step: the map entry of
-        // that key, then the position of its pointer in the array. -1 when
-        // the key is 0 or unknown to this session.
+        // key -> index, as the engine's index lookup after its alias step:
+        // the map entry of that key, then the position of its pointer in the
+        // array. -1 when the key is 0 or unknown to this session.
         inline std::int32_t IndexOfKey(const std::vector<std::uint64_t>& pointers, const std::vector<MapEntry>& map, std::uint32_t key)
         {
             if (!key)
@@ -322,7 +310,8 @@ namespace replay
         }
 
         // The variation index of a key in a type's table (the keys of its
-        // 0x44-byte entries, in order), as 0x739DB4. -1 when absent.
+        // 0x44-byte entries, in order), as the engine's variation lookup by
+        // key. -1 when absent.
         inline std::int32_t VariationIndex(const std::vector<std::uint32_t>& keys, std::uint32_t key)
         {
             for (std::size_t n = 0; n < keys.size() && n < 0x7FFFFFFF; ++n)
@@ -331,9 +320,9 @@ namespace replay
             return -1;
         }
 
-        // What playback does for one type: nothing, the immediate clear
-        // (0x757BEC with index -1 and the immediate byte: +0x14 = +0x10), or a
-        // set by index.
+        // What playback does for one type: nothing, the immediate clear (the
+        // variation setter with index -1 and the immediate byte: +0x14 =
+        // +0x10), or a set by index.
         enum class VariationStep : std::uint8_t
         {
             None,

@@ -79,45 +79,14 @@ namespace replay::pose::capture
         return calls == 0 || lastCallQpc == 0 || (lastCallQpc <= nowQpc && nowQpc - lastCallQpc >= stallTicks);
     }
 
-    // PoseLateBackoff=1: the longest wait between two clean checks.
-    constexpr std::uint64_t kLateBackoffMaxMs = 8000;
 
     // The wait before a record's next end-of-frame check, after one that
-    // ran: `changed`, it found a change; `lateCapture`, the record is
-    // sampled at the end of the frame after it. Without the backoff:
-    // kLateCheckChangedMs while either holds, else kLateCheckMs (`cleanWaitMs`
-    // untouched). With it, the same 250 ms while either holds (a change also
-    // starts the clean waits over), and a clean check waits `cleanWaitMs`,
-    // which then doubles up to 8 s: 1, 2, 4, 8, 8 s. A record leaves
-    // end-of-frame capture on a clean check after the change that put it
-    // there, so its waits start again at 1 s.
-    inline std::uint64_t NextLateCheckMs(bool backoff, bool changed, bool lateCapture, std::uint64_t& cleanWaitMs)
+    // ran: kLateCheckChangedMs while it found a change (`changed`) or the
+    // record is sampled at the end of the frame after it (`lateCapture`),
+    // else kLateCheckMs.
+    constexpr std::uint64_t NextLateCheckMs(bool changed, bool lateCapture)
     {
-        const bool fast = changed || lateCapture;
-        if (!backoff)
-            return fast ? kLateCheckChangedMs : kLateCheckMs;
-        if (changed)
-            cleanWaitMs = kLateCheckMs;
-        if (fast)
-            return kLateCheckChangedMs;
-        const std::uint64_t wait = cleanWaitMs;
-        cleanWaitMs = wait * 2u < kLateBackoffMaxMs ? wait * 2u : kLateBackoffMaxMs;
-        return wait;
-    }
-
-    // How long after its engine parent table is ready a record's first
-    // end-of-frame check waits, 0 to 999 ms from a hash of its id (murmur3's
-    // 32-bit finalizer), so the records one scan registered do not all check
-    // in the same tick.
-    constexpr std::uint32_t LateFirstCheckDelayMs(std::uint32_t recordId)
-    {
-        std::uint32_t hash = recordId;
-        hash ^= hash >> 16;
-        hash *= 0x85EBCA6Bu;
-        hash ^= hash >> 13;
-        hash *= 0xC2B2AE35u;
-        hash ^= hash >> 16;
-        return hash % 1000u;
+        return changed || lateCapture ? kLateCheckChangedMs : kLateCheckMs;
     }
 
     // The worker's held frames. Frames drained before a record's layout is
@@ -223,11 +192,7 @@ namespace replay::pose::capture
         return gone;
     }
 
-    // RedemptionEditor.ini PoseWorkerPollMs, the worker's wait between two
-    // passes (5 ms unless set; 1 to 100).
-    constexpr std::uint32_t kWorkerPollMsDefault = 5;
-    constexpr std::uint32_t ClampWorkerPollMs(int ms)
-    {
-        return ms < 1 ? 1u : ms > 100 ? 100u : static_cast<std::uint32_t>(ms);
-    }
+    // The worker's wait between two passes (the same frames recorded with any
+    // value, v0.176.0).
+    constexpr std::uint32_t kWorkerPollMs = 5;
 }

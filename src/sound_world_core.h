@@ -9,13 +9,18 @@
 //   id nearby (the anti-double rule) and whose live twin then ends while the
 //   recorded copy still had more than kLostMarginMs to live
 //   (SOUND_GENERIC_YIELD_LOST);
-// - PtfxWatch: the particle audio slots of the engine (manager 0x5C9A660,
-//   128 slots of 0x1A0 from +0x1D0, ticked by 0x320E568): which slot made its
-//   sound and which one the engine marked done without one because the
-//   listener was farther than the settings' distance (PTFX_AUDIO_SLOT);
-// - the horse group audio (manager [0x5BF7EA8], 10 groups of 0x390 from
-//   +0x10, updated by 0x31401A0): members, movers by gait, mean speed and
-//   the group's loop (GROUP_AUDIO), recording against replay.
+// - PtfxWatch: the particle audio slots of the engine (the particle audio
+//   manager, 128 slots of 0x1A0 from +0x1D0, ticked by the slot update): which
+//   slot made its sound and which one the engine marked done without one
+//   because the listener was farther than the settings' distance
+//   (PTFX_AUDIO_SLOT);
+// - the horse group audio (the group manager pointer, 10 groups of 0x390 from
+//   +0x10, updated by the group member update): members, movers by gait, mean
+//   speed and the group's loop (GROUP_AUDIO), recording against replay.
+
+#include "game_listener_core.h" // the listener test, reached from the game listener's ped audio update
+#include "engine_sigs.h"
+#include "game_sig_core.h"
 
 #include <cmath>
 #include <cstdint>
@@ -25,6 +30,9 @@
 
 namespace replay::soundworld
 {
+    namespace sig = replay::sig;
+    using enginesig::kSoundGroupCaller;
+
     constexpr std::uint32_t kNeverMs = 0xFFFFFFFFu;
 
     // ------------------------------------------------------------ steals
@@ -199,19 +207,18 @@ namespace replay::soundworld
 
     // ------------------------------------------------------------ particle audio slots
 
-    // Layout (build 1491.50): the particle audio manager is a global
-    // object at RVA 0x5C9A660 (lea rcx at 0x2F1DABD before the call to the
-    // slot loop 0x32148CC); its slots start at +0x1D0, 0x1A0 bytes each, up
-    // to +0x1D0+0xD000 (128 slots: lea rbx,[rcx+0x1D0]; lea rbp,[rbx+0xD000];
+    // Layout (the code sites below hold it): the particle audio manager is a
+    // global object (lea rcx in the audio update before the call to the slot
+    // loop, ptfx_mgr_lea); its slots start at +0x1D0, 0x1A0 bytes each, up to
+    // +0x1D0+0xD000 (128 slots: lea rbx,[rcx+0x1D0]; lea rbp,[rbx+0xD000];
     // add rbx,0x1A0); the loop passes (byte [mgr+0xD1F8] - 1) & 1 as the
-    // buffer index of the slot's position (slot + index*0x10, 0x320E5D6).
-    // Per slot (0x320E568): +0x175 byte skip (stops the slot instead),
+    // buffer index of the slot's position (slot + index*0x10, ptfx_pos).
+    // Per slot (the slot update): +0x175 byte skip (stops the slot instead),
     // +0x190 byte active, +0x160 settings (max distance float at +0x10;
-    // over 0 the slot is tested), +0x177 byte done (set after the create at
-    // 0x320E73C, or at 0x320E615 when the listener is farther than the max),
-    // +0x180 the sound. A done slot whose settings' mode ([settings+4] & 3)
-    // is not 1 makes no sound again.
-    constexpr std::uint32_t kPtfxManagerRva = 0x5C9A660;
+    // over 0 the slot is tested), +0x177 byte done (set after the create,
+    // ptfx_created_done, or when the listener is farther than the max,
+    // ptfx_far_done), +0x180 the sound. A done slot whose settings' mode
+    // ([settings+4] & 3) is not 1 makes no sound again.
     constexpr std::uint32_t kPtfxSlotsOffset = 0x1D0;
     constexpr std::uint32_t kPtfxSlotStride = 0x1A0;
     constexpr std::uint32_t kPtfxSlotCount = 0xD000 / kPtfxSlotStride; // 128
@@ -238,8 +245,8 @@ namespace replay::soundworld
     {
         Start,   // the slot became active (or took other settings)
         Created, // its sound appeared
-        Far,     // done without a sound: the listener farther than the max (0x320E615; with had_sound=1 the far
-                 // path stopped a sound it had), or the create refused
+        Far,     // done without a sound: the listener farther than the max (ptfx_far_done; with had_sound=1 the
+                 // far path stopped a sound it had), or the create refused
         Ended,   // the slot went inactive
     };
     inline const char* PtfxEventName(PtfxEvent e)
@@ -303,20 +310,20 @@ namespace replay::soundworld
 
     // ------------------------------------------------------------ horse group audio
 
-    // Layout (build 1491.50): the manager pointer is the global at RVA
-    // 0x5BF7EA8 (mov rcx,[rip+...] at 0x2EF20C8, then call 0x3140498); the
-    // update walks 10 groups of 0x390 bytes, group k at manager + 0x10 +
-    // k*0x390 (imul rax,rdx,0x390 at 0x31404AF; lea rdi,[rsi+0x10] at
-    // 0x31404C1; cmp bl,0xA at 0x31404E7), active when +0x1C8 (its metadata)
-    // is set (0x31401C8). Per group (0x31401A0): member pointers from +0x1D8
-    // (add r15,0x3B at 0x314021D), member count dword +0x2F8 (0x314020B),
-    // the movers' count per gait at +0x300 (4 dwords, 0x314032F), the movers'
-    // mean position +0x310 and the members' mean speed +0x320 (0x31402D9,
-    // 0x314033E, divided at 0x31403CB/0x31403DE; both zero when nobody
-    // moves: the update then leaves before making the sound), the leader
-    // +0x1D0 (0x312331E), the group's loop +0x328 (0x314D5F4, created by
-    // 0x314D5B4 through 0x25889A8 with the metadata's +0x47F1).
-    constexpr std::uint32_t kGroupManagerPtrRva = 0x5BF7EA8;
+    // Layout (the code sites below hold it): the manager pointer is a global
+    // (mov rcx,[rip+...], group_mgr_load, then the call of the group update);
+    // the update walks 10 groups of 0x390 bytes, group k at manager + 0x10 +
+    // k*0x390 (imul rax,rdx,0x390, group_stride; lea rdi,[rsi+0x10],
+    // group_first; cmp bl,0xA, group_count), active when +0x1C8 (its
+    // metadata) is set (group_meta). Per group (the group member update):
+    // member pointers from +0x1D8 (add r15,0x3B, group_members), member count
+    // dword +0x2F8 (group_member_count), the movers' count per gait at +0x300
+    // (4 dwords, group_gait_count), the movers' mean position +0x310 and the
+    // members' mean speed +0x320 (summed, then divided at group_pos_mean and
+    // group_speed_mean; both zero when nobody moves: the update then leaves
+    // before making the sound), the leader +0x1D0 (group_leader), the group's
+    // loop +0x328 (group_sound, created by the group loop start with the
+    // metadata's +0x47F1).
     constexpr std::uint32_t kGroupFirst = 0x10;
     constexpr std::uint32_t kGroupStride = 0x390;
     constexpr std::uint32_t kGroupCount = 10;
@@ -380,9 +387,9 @@ namespace replay::soundworld
     // ------------------------------------------------------------ code sites
 
     // The world sound probe (world_sound_probe.cpp) reads the fields above
-    // only after every site of its part matched byte for byte (build 1491.50;
-    // a mismatch turns the part off and logs WORLD_SOUND_PROBE_CHECK,ok=0). The
-    // listener part also needs the game listener's own sites
+    // only after every site of its part was found by signature (game_sig_core.h;
+    // a missing one turns the part off and logs WORLD_SOUND_PROBE_CHECK,ok=0).
+    // The listener part also needs the game listener's own sites
     // (game_listener_core.h).
     enum class ProbePart : std::uint8_t
     {
@@ -401,76 +408,145 @@ namespace replay::soundworld
         return "?";
     }
 
+    // Particle audio slots: the audio update loads the manager and calls the
+    // slot loop, which calls the slot update per slot.
+    inline const sig::Signature kAudioUpdate{"world_sound_audio_update",
+        "48 8B C4 48 89 58 18 48 89 70 20 55 57 41 54 41 56 41 57 48 8D A8 18 FE FF FF", 0x2F1CE4C};
+    inline const sig::Signature kPtfxMgrLeaSite{"ptfx_mgr_lea", kAudioUpdate, sig::Offset{0xC71},
+        "48 8D 0D ?? ?? ?? ??", 0x2F1DABD};
+    inline const sig::Signature kPtfxManager{"world_sound_ptfx_manager", kPtfxMgrLeaSite, sig::Rel32{0x3, 0x7},
+        "", 0x5C9A660};
+    inline const sig::Signature kPtfxSlotCallSite{"ptfx_slot_call", kAudioUpdate, sig::Offset{0xC78},
+        "E8 ?? ?? ?? ??", 0x2F1DAC4};
+    inline const sig::Signature kPtfxSlotLoop{"world_sound_ptfx_slot_loop", kPtfxSlotCallSite, sig::Rel32{0x1, 0x5},
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20", 0x32148CC};
+    inline const sig::Signature kPtfxBufferSite{"ptfx_buffer", kPtfxSlotLoop, sig::Offset{0x14},
+        "40 8A B9 F8 D1 00 00", 0x32148E0};
+    inline const sig::Signature kPtfxSlotsFirstSite{"ptfx_slots_first", kPtfxSlotLoop, sig::Offset{0x1B},
+        "48 8D 99 D0 01 00 00", 0x32148E7};
+    inline const sig::Signature kPtfxSlotsEndSite{"ptfx_slots_end", kPtfxSlotLoop, sig::Offset{0x25},
+        "48 8D AB 00 D0 00 00", 0x32148F1};
+    inline const sig::Signature kPtfxSlotStrideSite{"ptfx_slot_stride", kPtfxSlotLoop, sig::Offset{0x43},
+        "48 81 C3 A0 01 00 00", 0x321490F};
+    inline const sig::Signature kPtfxSlotUpdate{"world_sound_ptfx_slot_update",
+        "48 8B C4 48 89 58 08 48 89 70 18 48 89 78 20 55 41 56 41 57 48 8D A8 28 FF FF FF", 0x320E568};
+    inline const sig::Signature kPtfxSkipSite{"ptfx_skip", kPtfxSlotUpdate, sig::Offset{0x22},
+        "80 BA 75 01 00 00 00", 0x320E58A};
+    inline const sig::Signature kPtfxActiveSite{"ptfx_active", kPtfxSlotUpdate, sig::Offset{0x42},
+        "80 BA 90 01 00 00 00", 0x320E5AA};
+    inline const sig::Signature kPtfxSettingsSite{"ptfx_settings", kPtfxSlotUpdate, sig::Offset{0x4F},
+        "48 8B 82 60 01 00 00", 0x320E5B7};
+    inline const sig::Signature kPtfxMaxSite{"ptfx_max", kPtfxSlotUpdate, sig::Offset{0x60},
+        "F3 0F 10 70 10", 0x320E5C8};
+    inline const sig::Signature kPtfxPosSite{"ptfx_pos", kPtfxSlotUpdate, sig::Offset{0x6E}, "0F 10 04 FA", 0x320E5D6};
+    inline const sig::Signature kPtfxFarSoundSite{"ptfx_far_sound", kPtfxSlotUpdate, sig::Offset{0x9A},
+        "48 8B 8B 80 01 00 00", 0x320E602};
+    inline const sig::Signature kPtfxFarDoneSite{"ptfx_far_done", kPtfxSlotUpdate, sig::Offset{0xAD},
+        "C6 83 77 01 00 00 01", 0x320E615};
+    inline const sig::Signature kPtfxDoneTestSite{"ptfx_done_test", kPtfxSlotUpdate, sig::Offset{0x186},
+        "38 83 77 01 00 00", 0x320E6EE};
+    inline const sig::Signature kPtfxModeSite{"ptfx_mode", kPtfxSlotUpdate, sig::Offset{0x195}, "8B 48 04", 0x320E6FD};
+    inline const sig::Signature kPtfxCreateSite{"ptfx_create", kPtfxSlotUpdate, sig::Offset{0x1CF},
+        "E8 ?? ?? ?? ??", 0x320E737};
+    inline const sig::Signature kPtfxCreatedDoneSite{"ptfx_created_done", kPtfxSlotUpdate, sig::Offset{0x1D4},
+        "C6 83 77 01 00 00 01", 0x320E73C};
+    // Horse group audio: the caller loads the manager pointer and calls the
+    // group update, which calls the member update per group.
+    inline const sig::Signature kGroupMgrLoadSite{"group_mgr_load", kSoundGroupCaller, sig::Offset{0x178},
+        "48 8B 0D ?? ?? ?? ??", 0x2EF20C8};
+    inline const sig::Signature kGroupManagerPtr{"world_sound_group_manager_ptr", kGroupMgrLoadSite,
+        sig::Rel32{0x3, 0x7}, "", 0x5BF7EA8};
+    inline const sig::Signature kGroupUpdateCallSite{"group_update_call", kSoundGroupCaller, sig::Offset{0x17F},
+        "E8 ?? ?? ?? ??", 0x2EF20CF};
+    inline const sig::Signature kGroupUpdate{"world_sound_group_update", kGroupUpdateCallSite, sig::Rel32{0x1, 0x5},
+        "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F1 32 DB", 0x3140498};
+    inline const sig::Signature kGroupStrideSite{"group_stride", kGroupUpdate, sig::Offset{0x17},
+        "48 69 C2 90 03 00 00", 0x31404AF};
+    inline const sig::Signature kGroupFirstSite{"group_first", kGroupUpdate, sig::Offset{0x29},
+        "48 8D 7E 10", 0x31404C1};
+    inline const sig::Signature kGroupCountSite{"group_count", kGroupUpdate, sig::Offset{0x4F}, "80 FB 0A", 0x31404E7};
+    inline const sig::Signature kGroupMemberUpdate{"world_sound_group_member_update",
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 55 41 56 41 57 48 83 EC 50 0F 29 70 D8",
+        0x31401A0};
+    inline const sig::Signature kGroupMetaSite{"group_meta", kGroupMemberUpdate, sig::Offset{0x28},
+        "48 8B 81 C8 01 00 00", 0x31401C8};
+    inline const sig::Signature kGroupMemberCountSite{"group_member_count", kGroupMemberUpdate, sig::Offset{0x6B},
+        "8B B9 F8 02 00 00", 0x314020B};
+    inline const sig::Signature kGroupMembersSite{"group_members", kGroupMemberUpdate, sig::Offset{0x7D},
+        "49 83 C7 3B", 0x314021D};
+    inline const sig::Signature kGroupGaitCountSite{"group_gait_count", kGroupMemberUpdate, sig::Offset{0x18F},
+        "FF 84 83 00 03 00 00", 0x314032F};
+    inline const sig::Signature kGroupPosMeanSite{"group_pos_mean", kGroupMemberUpdate, sig::Offset{0x22B},
+        "0F 11 8B 10 03 00 00", 0x31403CB};
+    inline const sig::Signature kGroupSpeedMeanSite{"group_speed_mean", kGroupMemberUpdate, sig::Offset{0x23E},
+        "F3 0F 11 93 20 03 00 00", 0x31403DE};
+    inline const sig::Signature kGroupLeaderTest{"world_sound_group_leader_test",
+        "48 83 EC 28 4C 8B C2 4C 8B C9 48 39 91 D0 01 00 00", 0x3123314};
+    inline const sig::Signature kGroupLeaderSite{"group_leader", kGroupLeaderTest, sig::Offset{0xA},
+        "48 39 91 D0 01 00 00", 0x312331E};
+    inline const sig::Signature kGroupLoopStart{"world_sound_group_loop_start",
+        "48 8B C4 48 89 58 10 57 48 81 EC 90 01 00 00", 0x314D5B4};
+    inline const sig::Signature kGroupSoundSite{"group_sound", kGroupLoopStart, sig::Offset{0x40},
+        "48 8D B9 28 03 00 00", 0x314D5F4};
+    // The particle slot's listener test: both listener descriptions (lea
+    // rdi,[rcx+0x20]), a description counts while a lane of its +0x2D0
+    // weights is above 1e-5 (cmpltps, listener_weight).
+    inline const sig::Signature kListenerTest{"world_sound_listener_test", gamelistener::kPedEnvUpdate,
+        sig::Rel32{0x4C, 0x50}, "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 48 83 EC 50", 0x31DBE60};
+    inline const sig::Signature kListenerFirstSite{"listener_first", kListenerTest, sig::Offset{0x1B},
+        "48 8D 79 20", 0x31DBE7B};
+    inline const sig::Signature kListenerWeightSite{"listener_weight", kListenerTest, sig::Offset{0x55},
+        "0F C2 81 D0 02 00 00 01", 0x31DBEB5};
+
     struct ProbeSite
     {
-        const char* name;
-        std::uint32_t rva;
-        std::uint8_t size;
-        std::uint8_t bytes[8];
+        const sig::Signature* site;
         ProbePart part;
     };
-    constexpr ProbeSite kProbeSites[] = {
+    inline const ProbeSite kProbeSites[] = {
         // particle audio slots
-        {"ptfx_mgr_lea", 0x2F1DABD, 7, {0x48, 0x8D, 0x0D, 0x9C, 0xCB, 0xD7, 0x02}, ProbePart::Ptfx},
-        {"ptfx_slot_call", 0x2F1DAC4, 5, {0xE8, 0x03, 0x6E, 0x2F, 0x00}, ProbePart::Ptfx},
-        {"ptfx_buffer", 0x32148E0, 7, {0x40, 0x8A, 0xB9, 0xF8, 0xD1, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_slots_first", 0x32148E7, 7, {0x48, 0x8D, 0x99, 0xD0, 0x01, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_slots_end", 0x32148F1, 7, {0x48, 0x8D, 0xAB, 0x00, 0xD0, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_slot_stride", 0x321490F, 7, {0x48, 0x81, 0xC3, 0xA0, 0x01, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_skip", 0x320E58A, 7, {0x80, 0xBA, 0x75, 0x01, 0x00, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_active", 0x320E5AA, 7, {0x80, 0xBA, 0x90, 0x01, 0x00, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_settings", 0x320E5B7, 7, {0x48, 0x8B, 0x82, 0x60, 0x01, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_max", 0x320E5C8, 5, {0xF3, 0x0F, 0x10, 0x70, 0x10}, ProbePart::Ptfx},
-        {"ptfx_pos", 0x320E5D6, 4, {0x0F, 0x10, 0x04, 0xFA}, ProbePart::Ptfx},
-        {"ptfx_far_sound", 0x320E602, 7, {0x48, 0x8B, 0x8B, 0x80, 0x01, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_far_done", 0x320E615, 7, {0xC6, 0x83, 0x77, 0x01, 0x00, 0x00, 0x01}, ProbePart::Ptfx},
-        {"ptfx_done_test", 0x320E6EE, 6, {0x38, 0x83, 0x77, 0x01, 0x00, 0x00}, ProbePart::Ptfx},
-        {"ptfx_mode", 0x320E6FD, 3, {0x8B, 0x48, 0x04}, ProbePart::Ptfx},
-        {"ptfx_create", 0x320E737, 5, {0xE8, 0xF4, 0xA3, 0x37, 0xFF}, ProbePart::Ptfx},
-        {"ptfx_created_done", 0x320E73C, 7, {0xC6, 0x83, 0x77, 0x01, 0x00, 0x00, 0x01}, ProbePart::Ptfx},
+        {&kPtfxMgrLeaSite, ProbePart::Ptfx},
+        {&kPtfxSlotCallSite, ProbePart::Ptfx},
+        {&kPtfxBufferSite, ProbePart::Ptfx},
+        {&kPtfxSlotsFirstSite, ProbePart::Ptfx},
+        {&kPtfxSlotsEndSite, ProbePart::Ptfx},
+        {&kPtfxSlotStrideSite, ProbePart::Ptfx},
+        {&kPtfxSkipSite, ProbePart::Ptfx},
+        {&kPtfxActiveSite, ProbePart::Ptfx},
+        {&kPtfxSettingsSite, ProbePart::Ptfx},
+        {&kPtfxMaxSite, ProbePart::Ptfx},
+        {&kPtfxPosSite, ProbePart::Ptfx},
+        {&kPtfxFarSoundSite, ProbePart::Ptfx},
+        {&kPtfxFarDoneSite, ProbePart::Ptfx},
+        {&kPtfxDoneTestSite, ProbePart::Ptfx},
+        {&kPtfxModeSite, ProbePart::Ptfx},
+        {&kPtfxCreateSite, ProbePart::Ptfx},
+        {&kPtfxCreatedDoneSite, ProbePart::Ptfx},
+        {&kPtfxManager, ProbePart::Ptfx},
+        {&kPtfxSlotLoop, ProbePart::Ptfx},
         // horse group audio
-        {"group_mgr_load", 0x2EF20C8, 7, {0x48, 0x8B, 0x0D, 0xD9, 0x5D, 0xD0, 0x02}, ProbePart::Group},
-        {"group_update_call", 0x2EF20CF, 5, {0xE8, 0xC4, 0xE3, 0x24, 0x00}, ProbePart::Group},
-        {"group_stride", 0x31404AF, 7, {0x48, 0x69, 0xC2, 0x90, 0x03, 0x00, 0x00}, ProbePart::Group},
-        {"group_first", 0x31404C1, 4, {0x48, 0x8D, 0x7E, 0x10}, ProbePart::Group},
-        {"group_count", 0x31404E7, 3, {0x80, 0xFB, 0x0A}, ProbePart::Group},
-        {"group_meta", 0x31401C8, 7, {0x48, 0x8B, 0x81, 0xC8, 0x01, 0x00, 0x00}, ProbePart::Group},
-        {"group_member_count", 0x314020B, 6, {0x8B, 0xB9, 0xF8, 0x02, 0x00, 0x00}, ProbePart::Group},
-        {"group_members", 0x314021D, 4, {0x49, 0x83, 0xC7, 0x3B}, ProbePart::Group},
-        {"group_gait_count", 0x314032F, 7, {0xFF, 0x84, 0x83, 0x00, 0x03, 0x00, 0x00}, ProbePart::Group},
-        {"group_pos_mean", 0x31403CB, 7, {0x0F, 0x11, 0x8B, 0x10, 0x03, 0x00, 0x00}, ProbePart::Group},
-        {"group_speed_mean", 0x31403DE, 8, {0xF3, 0x0F, 0x11, 0x93, 0x20, 0x03, 0x00, 0x00}, ProbePart::Group},
-        {"group_leader", 0x312331E, 7, {0x48, 0x39, 0x91, 0xD0, 0x01, 0x00, 0x00}, ProbePart::Group},
-        {"group_sound", 0x314D5F4, 7, {0x48, 0x8D, 0xB9, 0x28, 0x03, 0x00, 0x00}, ProbePart::Group},
-        // the particle slot's listener test 0x31DBE60: both listener
-        // descriptions (lea rdi,[rcx+0x20]), a description counts while a
-        // lane of its +0x2D0 weights is above 1e-5 (cmpltps at 0x31DBEB5)
-        {"listener_first", 0x31DBE7B, 4, {0x48, 0x8D, 0x79, 0x20}, ProbePart::Listener},
-        {"listener_weight", 0x31DBEB5, 8, {0x0F, 0xC2, 0x81, 0xD0, 0x02, 0x00, 0x00, 0x01}, ProbePart::Listener},
+        {&kGroupMgrLoadSite, ProbePart::Group},
+        {&kGroupUpdateCallSite, ProbePart::Group},
+        {&kGroupStrideSite, ProbePart::Group},
+        {&kGroupFirstSite, ProbePart::Group},
+        {&kGroupCountSite, ProbePart::Group},
+        {&kGroupMetaSite, ProbePart::Group},
+        {&kGroupMemberCountSite, ProbePart::Group},
+        {&kGroupMembersSite, ProbePart::Group},
+        {&kGroupGaitCountSite, ProbePart::Group},
+        {&kGroupPosMeanSite, ProbePart::Group},
+        {&kGroupSpeedMeanSite, ProbePart::Group},
+        {&kGroupLeaderSite, ProbePart::Group},
+        {&kGroupSoundSite, ProbePart::Group},
+        {&kGroupManagerPtr, ProbePart::Group},
+        {&kGroupUpdate, ProbePart::Group},
+        // the particle slot's listener test
+        {&kListenerFirstSite, ProbePart::Listener},
+        {&kListenerWeightSite, ProbePart::Listener},
     };
     constexpr std::size_t kProbeSiteCount = sizeof(kProbeSites) / sizeof(kProbeSites[0]);
     constexpr std::uint32_t kListenerWeight = 0x2D0;
     constexpr float kListenerWeightMin = 1e-5f;
-
-    // The target of a rip-relative lea/mov of 7 bytes (rip = the next instruction).
-    constexpr std::uint32_t RipTarget7(const ProbeSite& site)
-    {
-        return site.rva + 7u +
-            (static_cast<std::uint32_t>(site.bytes[3]) | (static_cast<std::uint32_t>(site.bytes[4]) << 8) |
-                (static_cast<std::uint32_t>(site.bytes[5]) << 16) | (static_cast<std::uint32_t>(site.bytes[6]) << 24));
-    }
-    static_assert(RipTarget7(kProbeSites[0]) == kPtfxManagerRva, "ptfx_mgr_lea must point at the particle audio manager");
-    static_assert(RipTarget7(kProbeSites[17]) == kGroupManagerPtrRva, "group_mgr_load must read the group manager pointer");
-
-    inline bool ProbeSiteMatches(const ProbeSite& site, const std::uint8_t* code)
-    {
-        if (!code)
-            return false;
-        for (std::uint8_t n = 0; n < site.size; ++n)
-            if (code[n] != site.bytes[n])
-                return false;
-        return true;
-    }
 
     // The nearest of the listener points to `pos` (-1: none).
     inline float NearestListener(const float (*points)[3], std::size_t count, const float pos[3])

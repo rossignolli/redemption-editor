@@ -20,7 +20,6 @@ namespace replay::pose::fidelity
     namespace
     {
         std::uint32_t g_hz = kDefaultHz;
-        bool g_async = true; // PoseFidelityAsync
         Store g_store;
         // A record's first read copies its whole objects block once, for the
         // key bone choice (script thread only).
@@ -79,19 +78,6 @@ namespace replay::pose::fidelity
             }
         }
 
-        // The recorded tracks, as the playback samples them (after StopAll).
-        class CaptureTracks final : public TrackSource
-        {
-        public:
-            bool Span(std::uint32_t recordId, std::uint32_t& firstMs, std::uint32_t& lastMs) override
-            {
-                return capture::TrackSpan(recordId, firstMs, lastMs);
-            }
-            bool Sample(std::uint32_t recordId, std::uint32_t timeMs, PoseSample& sample) override
-            {
-                return capture::SampleTrack(recordId, timeMs, sample);
-            }
-        };
     }
 
     void Configure(bool enabled, std::uint32_t hz)
@@ -189,16 +175,6 @@ namespace replay::pose::fidelity
         g_store.Append(record, truth);
     }
 
-    void SetAsync(bool async)
-    {
-        g_async = async;
-    }
-
-    bool Async()
-    {
-        return g_async;
-    }
-
     namespace
     {
         double ElapsedMs(const LARGE_INTEGER& started)
@@ -213,66 +189,36 @@ namespace replay::pose::fidelity
         }
     }
 
-    void Evaluate(std::ostream& log)
+    void Evaluate(std::ostream&)
     {
         if (!Enabled())
             return;
-        if (g_async)
-        {
-            // A long clip can spend seconds of its stop tick here, the game
-            // frozen (about 2.8 s for 108k reads). The worker gets the reads (moved: the next
-            // recording starts with an empty store) and the tracks' export
-            // (ExportedTracks: copies of its own, so a recording or a
-            // playback that starts meanwhile shares nothing with it). It
-            // reads no engine memory, calls no native and writes no log;
-            // its text is written by the script thread (deferred_log.h),
-            // after the stop's own deferred lines.
-            auto store = std::make_shared<Store>(std::move(g_store));
-            Reset(); // the moved-from store and the key bone scratch, empty
-            g_store.SetBufferMode(store->BufferMode());
-            auto records = std::make_shared<std::vector<PoseRecordExport>>(capture::ExportRecords());
-            const std::uint32_t hz = g_hz;
-            const bool perRecord = replay::log::Verbose(); // per record: Debug only (evidence)
-            replay::deferredlog::Log().Submit([store, records, hz, perRecord]() {
-                LARGE_INTEGER started{};
-                QueryPerformanceCounter(&started);
-                Report report;
-                ExportedTracks tracks(std::move(*records));
-                EvaluateStore(*store, tracks, report);
-                const double evalMs = ElapsedMs(started);
-                std::string text = ReportText(report, hz, evalMs, perRecord);
-                if (tracks.ImportFailures() != 0)
-                    text += "POSE_FIDELITY_IMPORT,failed=" + std::to_string(tracks.ImportFailures()) +
-                        ",last_error=" + tracks.LastImportError() + "\n";
-                return text;
-            });
-            return;
-        }
-        LARGE_INTEGER frequency{};
-        LARGE_INTEGER started{};
-        LARGE_INTEGER ended{};
-        QueryPerformanceFrequency(&frequency);
-        QueryPerformanceCounter(&started);
-        Report report;
-        CaptureTracks tracks;
-        EvaluateStore(g_store, tracks, report);
-        QueryPerformanceCounter(&ended);
-        const double evalMs = frequency.QuadPart > 0
-            ? 1000.0 * static_cast<double>(ended.QuadPart - started.QuadPart) / static_cast<double>(frequency.QuadPart)
-            : 0.0;
-        // Per record: Debug only (evidence); the summaries always.
-        if (replay::log::Verbose())
-        {
-            for (const RecordResult& record : report.records)
-                log << RecordLine(record) << '\n';
-        }
-        log << SummaryLine("all", report.all, g_hz, evalMs) << '\n';
-        for (std::size_t kind = 0; kind < kKindCount; ++kind)
-        {
-            if (report.kinds[kind].records != 0)
-                log << SummaryLine(KindText(static_cast<Kind>(kind)), report.kinds[kind], g_hz, evalMs) << '\n';
-        }
-        log.flush();
-        Reset(); // the reads are done with; the next recording starts empty
+        // A long clip can spend seconds of its stop tick here, the game
+        // frozen (about 2.8 s for 108k reads). The worker gets the reads (moved: the next
+        // recording starts with an empty store) and the tracks' export
+        // (ExportedTracks: copies of its own, so a recording or a
+        // playback that starts meanwhile shares nothing with it). It
+        // reads no engine memory, calls no native and writes no log;
+        // its text is written by the script thread (deferred_log.h),
+        // after the stop's own deferred lines.
+        auto store = std::make_shared<Store>(std::move(g_store));
+        Reset(); // the moved-from store and the key bone scratch, empty
+        g_store.SetBufferMode(store->BufferMode());
+        auto records = std::make_shared<std::vector<PoseRecordExport>>(capture::ExportRecords());
+        const std::uint32_t hz = g_hz;
+        const bool perRecord = replay::log::Verbose(); // per record: Debug only (evidence)
+        replay::deferredlog::Log().Submit([store, records, hz, perRecord]() {
+            LARGE_INTEGER started{};
+            QueryPerformanceCounter(&started);
+            Report report;
+            ExportedTracks tracks(std::move(*records));
+            EvaluateStore(*store, tracks, report);
+            const double evalMs = ElapsedMs(started);
+            std::string text = ReportText(report, hz, evalMs, perRecord);
+            if (tracks.ImportFailures() != 0)
+                text += "POSE_FIDELITY_IMPORT,failed=" + std::to_string(tracks.ImportFailures()) +
+                    ",last_error=" + tracks.LastImportError() + "\n";
+            return text;
+        });
     }
 }

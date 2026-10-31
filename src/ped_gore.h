@@ -1,13 +1,12 @@
 #pragma once
 
 // Ped gore (dismemberment). The engine keeps, per ped, a gore entry with a limb
-// bit mask (entry +0x18, table at 0x497CB80, getter 0xB4498C; the native
-// _HAS_PED_TAKEN_GORE_DAMAGE reads bit `limb`) and applies a limb through
-// 0xB5203C(limb, context*, hash*, u8): it walks the limb's bones and calls the
-// gore setter 0xB50A3C for each. The engine's own mask replay (0xEAC808) calls
-// it for every set bit 0..14 with a context holding only the ped and the hash
-// 0xE4DF46D5; playback does the same on the puppet. Build 1491.50,
-// signature-checked, SEH-guarded.
+// bit mask (entry +0x18, in the table the mask getter walks; the native
+// _HAS_PED_TAKEN_GORE_DAMAGE reads bit `limb`) and applies a limb through the
+// limb apply (limb, context*, hash*, u8): it walks the limb's bones and calls
+// the gore setter for each. The engine's own mask replay calls it for every set
+// bit 0..14 with a context holding only the ped and the hash 0xE4DF46D5;
+// playback does the same on the puppet. Signature-checked, SEH-guarded.
 
 #include <cstdint>
 #include <string>
@@ -24,14 +23,14 @@ namespace replay::gore
     bool ApplyLimb(void* ped, int limb, std::string& error);
 
     // The engine's gore mask of a ped (bit n = limb n lost, bit 0 the head, which
-    // the native never reports): guarded read of the gore table (pointer at
-    // module+0x497CB80, u16 count at +0x497CB88, entries of 0x20: +0x00 ped, +0x18
-    // mask), as the getter 0xB4498C walks it.
+    // the native never reports): guarded read of the gore table (a pointer and a
+    // u16 count, entries of 0x20: +0x00 ped, +0x18 mask), as the mask getter
+    // walks it.
     bool ReadGoreMask(const void* ped, std::uint32_t& mask);
 
     // The gameplay gore event. Every dismemberment the game does goes through the
-    // handler 0xB4EB3C(event*) (called by the damage path 0x2BEB48 and three
-    // others). The event is 0x50 bytes: +0x00 ped, +0x08 inflictor entity (may be
+    // gore event handler (event*) (called by the damage path and three others).
+    // The event is 0x50 bytes: +0x00 ped, +0x08 inflictor entity (may be
     // null), +0x10/+0x20/+0x30 vectors (hit point and directions), +0x40 hash,
     // +0x44 bone tag, +0x48 u16 limb mask, +0x4A u8. With the hit data the handler
     // builds the stump, the exposed bone and the wounds; the mask replay above only

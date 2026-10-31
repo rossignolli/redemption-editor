@@ -1,7 +1,7 @@
 // The log policy (what Debug=0 keeps, the shared LogLimit with a session reset),
 // the one microsecond clock (no 21-day overflow), the guarded memory copy,
 // the VirtualQuery region cache of the clip pointer audit and the rejected
-// ropes of the rope recorder.
+// ropes of the rope recorder, and the SHA-256 of the build and file hashes.
 #include "guarded_memory.h"
 #include "log_policy.h"
 #include "mod_clock.h"
@@ -9,6 +9,7 @@
 #include "qa_report.h"
 #include "region_cache.h"
 #include "rope_track.h"
+#include "sha256.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -25,6 +26,56 @@ namespace
             return;
         std::fprintf(stderr, "FAIL: %s\n", message);
         ++g_hygieneFailures;
+    }
+
+    void TestSha256()
+    {
+        using replay::sha256::Hex;
+        // FIPS 180-4 test vectors.
+        Check(Hex("", 0) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 of nothing");
+        Check(Hex("abc", 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 of abc");
+        const std::string two = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+        Check(Hex(two.data(), two.size()) == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+            "sha256 of the two-block message");
+        const std::string million(1000000, 'a');
+        Check(Hex(million.data(), million.size()) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+            "sha256 of a million a");
+
+        // Fed in uneven pieces, across block edges, the digest is the same.
+        replay::sha256::Hasher hasher;
+        std::size_t at = 0;
+        for (std::size_t piece = 1; at < million.size(); piece = piece % 131 + 7)
+        {
+            const std::size_t take = piece < million.size() - at ? piece : million.size() - at;
+            hasher.Update(million.data() + at, take);
+            at += take;
+        }
+        std::uint8_t digest[32];
+        hasher.Final(digest);
+        Check(Hex(digest) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0", "sha256 in uneven pieces");
+
+        // A file read through HashOpenFile: the digest of its bytes and their count.
+        wchar_t folder[MAX_PATH]{};
+        wchar_t path[MAX_PATH]{};
+        if (GetTempPathW(MAX_PATH, folder) && GetTempFileNameW(folder, L"sha", 0, path))
+        {
+            HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+            DWORD wrote = 0;
+            const bool written = file != INVALID_HANDLE_VALUE &&
+                WriteFile(file, million.data(), static_cast<DWORD>(million.size()), &wrote, nullptr) && wrote == million.size();
+            if (file != INVALID_HANDLE_VALUE)
+                CloseHandle(file);
+            file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            std::uint64_t bytes = 0;
+            const std::string text = file != INVALID_HANDLE_VALUE ? replay::sha256::HashOpenFile(file, bytes, 1 << 16) : "";
+            if (file != INVALID_HANDLE_VALUE)
+                CloseHandle(file);
+            DeleteFileW(path);
+            Check(written && text == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0" && bytes == million.size(),
+                "sha256 of a file and its byte count");
+        }
+        else
+            Check(false, "sha256 test file");
     }
 
     void TestEssentialLines()
@@ -363,6 +414,7 @@ int RunModHygieneTests()
     TestGuardedCopy();
     TestRegionCache();
     TestRejectedRopes();
+    TestSha256();
     if (g_hygieneFailures == 0)
         std::printf("Mod hygiene tests passed.\n");
     return g_hygieneFailures;

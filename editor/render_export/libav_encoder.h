@@ -118,9 +118,21 @@ namespace render_export
     // video's frame count (the cut of the audio).
     bool LibavFinalize(const EncodeJob& job, const std::wstring& videoPath, double audioStartS, const std::vector<Chapter>& chapters,
         std::uint64_t durationMs, std::uint64_t frames, std::string& error);
+    // What a finalize copied (a segmented export checks its join with it).
+    struct FinalizeCounts
+    {
+        std::vector<std::uint64_t> partPackets; // video packets copied from each part
+        std::uint64_t videoPackets = 0;
+        std::uint64_t audioSamples = 0;         // encoded from the WAV
+        std::uint64_t audioLimit = 0;           // the video's length in samples (0: no audio)
+    };
+
     // A whole project: the pieces' video passes copied one after the other
     // (piece k from the frame after piece k-1's last, by their frame counts),
     // all encoded alike (the same settings); `frames` their sum.
     bool LibavFinalizeParts(const EncodeJob& job, const std::vector<VideoPart>& parts, double audioStartS, const std::vector<Chapter>& chapters,
-        std::uint64_t durationMs, std::uint64_t frames, std::string& error);
+        std::uint64_t durationMs, std::uint64_t frames, std::string& error, FinalizeCounts* counts = nullptr);
+    // A finished file read back: its video stream's frame count (0 when the
+    // container keeps none, as Matroska) and its duration.
+    bool LibavVideoInfo(const std::wstring& path, std::uint64_t& frames, std::int64_t& durationUs, std::string& error);
 }

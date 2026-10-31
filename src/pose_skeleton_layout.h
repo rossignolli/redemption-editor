@@ -200,24 +200,11 @@ namespace replay::pose
     // the ASI builds with /fp:fast, where the compiler may reorder the float
     // operations of either: the two expected objects can then differ by a few ulps,
     // and a bone right at a tolerance could be decided either way. The band moves
-    // both thresholds away by more than that difference:
-    // - translation: with u = 2^-24, either computation of the expected
-    //   translation is within u (|parent t| + |offset|) + 14 u |offset| of
-    //   the exact composition per axis for any order of its four-term sums
-    //   (offset: the local translation rotated by the parent), so the two
-    //   are less than 51 u (3.0e-6) of the extent apart, the extent being
-    //   |parent t| + |offset| in L1 norms (the bound of a fully expanded
-    //   rotation is 7.2e-6). The margin is kBandTranslationRelative times
-    //   the extent plus kBandTranslationAbsolute, which also covers the
-    //   rounding of the baseline's and the band's squared distances (a few
-    //   ulps of 2 mm);
-    // - rotation: either normalized product is within 18 u (rad) of the
-    //   exact rotation (16 u from the four-term sums of the product, 2 u
-    //   from the normalization's roundings), so the two are less than 36 u
-    //   (2.1e-6 rad) apart, and AngleBetween's own error is about 18 u
-    //   (1.1e-6 rad) more: the margin kBandAngle is 6 times their sum. Both
-    //   moved thresholds are tested with the cheap angle test (AngleExceeds'
-    //   band covers its own rounding).
+    // both thresholds away by more than that difference: the translation margin is
+    // kBandTranslationRelative times the extent (|parent t| + |offset|, L1) plus
+    // kBandTranslationAbsolute, the rotation margin kBandAngle is 6 times the
+    // worst case angle difference; both are tested with the cheap angle test.
+    // Error bounds: docs/research/pose-bind-and-finalizer.md
     // The band leaves a test undecided when its inputs hold NaN or infinity,
     // a quaternion's squared norm is outside (0.5, 2) or the extent is
     // kBandExtentCap or more; the bone still fails when the other test

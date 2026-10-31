@@ -46,10 +46,6 @@ namespace replay::objects
     // as a prop owned by the ped. False when known or full.
     bool RegisterGorePiece(Object object, Entity ownerHandle);
     void RetireWeaponsOf(Entity parent, const char* reason);
-    // Capture places for posed objects (ini ObjectPosePlaces, 0..8), and how many
-    // of them the ped class gives up now (the posed objects and those waiting for
-    // a place). See object_pose.h.
-    void SetObjectPosePlaces(std::uint32_t places);
     // Ini WeaponBonePose (default 1) and WeaponBonePlaces (default 4, 0..8): a real
     // weapon in a hand gets a pose record of its own bones (the reload's lever,
     // pump, cylinder, gate, hammer) from the moment it is in the hand, in every
@@ -59,7 +55,7 @@ namespace replay::objects
     void WeaponBonesPlayed(std::uint32_t& seen, std::uint32_t& armed);
     // The drawn check of the armed weapon poses (WEAPON_BONES_DRAWN lines and
     // _TOTAL, written here) and the ini key WeaponPassPose (default 1: the pose
-    // written again after the weapon system's per-frame pass, detour 0x117D49C).
+    // written again after the weapon system's per-frame pass, by its detour).
     void WeaponBonesDrawn(std::uint32_t& overwritten, std::uint32_t& mixed, std::uint32_t& shown, std::uint32_t& none);
     void SetWeaponPassPose(bool on);
     // Weapons with a bone the record turns and the drawing does not (frozen_bones
@@ -78,44 +74,30 @@ namespace replay::objects
     // objects new in the pool since the last tick are asked for their parent every
     // tick, so the cartridge taken into the hand enters the clip at the start of its life.
     void SetAmmoScanEveryTick(bool on);
-    // Ini HatLook (default 1): a hat object records the layer it draws and playback
-    // rebuilds it with that look (owner knock after the layer lands, else the hat
-    // dresser); a hat model without a look is not drawn. 0: the bare model.
-    void SetHatLook(bool on);
-    std::uint32_t ObjectPoseReservedPlaces();
-    // Free objects the engine creates next to a recorded ped during the recording
-    // are recorded once they move or animate (ini SpawnedObjects, 1 by default; 0:
-    // watched and logged only, status=would_record). See object_pose.h.
-    void SetSpawnedObjects(bool enabled);
-    bool SpawnedObjects();
+    // A hat object records the layer it draws and playback rebuilds it with that
+    // look (owner knock after the layer lands, else the hat dresser); a hat model
+    // without a look is not drawn. Free objects the engine creates next to a
+    // recorded ped during the recording are recorded once they move or animate
+    // (object_pose.h).
     // The burn level of the recorded weapon objects, props and scenery objects
     // (BurnLevelTrack: recorded, and written on their puppets and stand-ins in
     // playback; ini ObjectBurnLevel, 1 by default; 0: neither, BLVL tracks of
     // vehicles, peds and horses still play).
     void SetObjectBurnLevel(bool enabled);
     bool ObjectBurnLevel();
-    // StillPoseEngine (1 by default): an attached object whose pose record never
-    // changed is not pose-armed; the engine poses it by its attach as live.
+    // An attached object whose pose record never changed is not pose-armed; the
+    // engine poses it by its attach as live (still_pose_core.h).
     // ObjectDrawnCheck (0 by default): each tick, the pose the last frame drew on a
     // posed or still object against the expected one and the bind pose
     // (POSE_V2_OBJECT_DRAWN, POSE_V2_OBJECT_DRAWN_SUMMARY, write_checks).
-    // See still_pose_core.h.
-    void SetStillPose(bool engineRule, bool drawnCheck);
-    bool StillPoseEngine();
+    void SetObjectDrawnCheck(bool drawnCheck);
     bool ObjectDrawnCheck();
-    // Ini SceneryHandoffTicks (0..8, default 1): a scenery or world object
-    // stand-in stays shown until the prop puppet that takes it over has been posed
-    // for more than this many ticks (one frame of overlap, no frame without
-    // either); 0: hidden in the tick the prop is Ready (objcheck::HandoffPropReady).
-    void SetSceneryHandoffTicks(std::uint32_t ticks);
-    std::uint32_t SceneryHandoffTicks();
-    // Such an object that stands still for a second becomes a late scenery entry
-    // (ini SpawnedStaticScenery, objcheck::SpawnSceneryOwner): 1 (default) when its
-    // owner is a proven scenery owner (script, temporary, prop set: a camp's tent
-    // and grate) or it is a pickup; 2 also any other owner that is not the map's;
-    // 0 dropped as static. Clamped to 0..2.
-    void SetSpawnedStaticScenery(int mode);
-    int SpawnedStaticScenery();
+    // A scenery or world object stand-in stays shown until the prop puppet that
+    // takes it over has been posed for more than kSceneryHandoffTicks ticks
+    // (objcheck::HandoffPropReady). A spawned object that stands still for a
+    // second becomes a late scenery entry when its owner is a proven scenery
+    // owner (script, temporary, prop set: a camp's tent and grate) or it is a
+    // pickup (objcheck::SpawnSceneryOwner).
     // The object at an engine address on an end of a recorded rope (the fishing
     // bobber) becomes a prop with a world track, owned by the recorded ped `owner`
     // or by the holder of the recorded weapon `owner`. Invalid id when it is no

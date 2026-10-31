@@ -2,32 +2,21 @@
 
 // The replay's own management of the engine's speech wave slots.
 //
-// Offline (build 1491.50):
-//   - the line's voice source (params +0xF8 -> line +0x218 at 0x2FABD75)
-//     comes from the context metadata byte +0xD (0x2F965D0, written only
-//     when +0xF8 is still 0, 0x2F9665E); the camp chatter says 3 ("bank");
-//   - a source 3 line asks 0x2FBD044 through 0x2FBCE38 with an EMPTY class
-//     mask (0x619B04(mask, 3) zeroes it): it only reuses a bank slot that
-//     already holds the bank of (voice, context) with a live reference
-//     (+0x10 != 0, +0x2C == bank). Nothing is loaded for it; the AI path
-//     preloads the bank before it says the line, the replay's direct path
-//     does not. No slot: 0x2FB6298 kills the line in the same frame (state 2,
-//     stop reason 4, line +0xD0 = 0);
-//   - a source 4 line ("ambient") asks the ambient slot getter 0x2FBD440: a
-//     free ambient slot (+0x10 == 0, +0x18 != 0: 0x2C32CE0) is loaded for the
-//     line's own wave (0x2C2D788), or the slot of the lowest real priority
-//     (priority x curve of the distance to the listener, 0x2FBDE48) is taken
-//     when the request's is higher. 0x2F986B8 turns a source 4 into 3 when
-//     the bank is already resident (0x2FA1CF8), so the reuse then happens in
-//     the same call.
+// A camp chatter line asks the engine for a bank slot (voice source 3) that
+// only reuses a bank already resident; the AI path preloads it, the replay's
+// direct path does not, so the engine kills the line in the same frame. An
+// ambient line (source 4) gets a free ambient slot loaded for its own wave.
 // So the replay writes 4 into params +0xF8 before the direct entry (the
 // metadata then leaves it), and manages the ambient slots itself: before a
 // line is asked there must be a free slot; with none, the line waits or takes
 // the slot of the replay's own weakest line (farther from the replay camera,
 // off screen); a line nobody would hear is not asked while slots are short;
 // the slots a puppet still holds with no line of the replay playing are given
-// back through the engine's per-owner release 0x2FB1E94 (what the speech
+// back through the engine's per-owner release (what the speech
 // entity's destructor calls).
+//
+// Evidence: offline dump of build 1491.50.
+// Research: docs/research/speech-duck-and-slots.md
 //
 // Pure: unit tested in ReplayCoreTests (speech_slots_tests.cpp).
 
@@ -42,7 +31,7 @@ namespace replay::speech::slots
     constexpr std::int32_t kSourceBank = 3;
     constexpr std::int32_t kSourceAmbient = 4;
 
-    // Ambient slot layout (0x2FBD440, 0x2FB1E94, 0x2C32CE0): 0x38 bytes,
+    // Ambient slot layout (as the getter and the release read it): 0x38 bytes,
     // +0x10 the live reference (0 when free), +0x18 the wave slot, +0x28 the
     // owner (speech entity), +0x30 the owner's priority.
     constexpr std::uint32_t kAmbientRef = 0x10;
@@ -184,7 +173,7 @@ namespace replay::speech::slots
     }
 
     // A slot a puppet holds while none of the replay's lines plays on it is
-    // given back (0x2FB1E94), only when slots are short.
+    // given back (the per-owner release), only when slots are short.
     inline bool ReleaseIdle(int freeSlots, bool ownerIsPuppet, bool ownerHasReplayLine)
     {
         return freeSlots >= 0 && freeSlots < kReserveForAudible && ownerIsPuppet && !ownerHasReplayLine;

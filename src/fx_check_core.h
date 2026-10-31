@@ -72,8 +72,8 @@ namespace replay::fxcheck
         std::uint32_t playMoved = 0;
         // The playback samples taken while the owner moved (published speed
         // above kMovingOwnerMps) and how many of them had the moved bit 0x10.
-        // That bit is the engine's own verdict of the frame (0x29F416C: set
-        // when the matrix changed, after the relocate handler 0x29E0A1C copied
+        // That bit is the engine's own verdict of the frame (set
+        // when the matrix changed, after the relocate handler copied
         // it into the previous one), so it is the honest motion signal; bit
         // 0x2 sampled after our own clear only shows what the replay left
         // (relocate_every_frame).
@@ -83,7 +83,7 @@ namespace replay::fxcheck
         std::vector<float> playVeladd;
         std::vector<float> playOwnerSpeed;
         // Stops and restarts of the registry: stretches without a call
-        // and restarts from 0x2C5268F, calls against the ticks in force.
+        // and restarts from its restart call, calls against the ticks in force.
         std::uint32_t recGaps = 0;
         std::uint32_t recRestarts = 0;
         std::uint32_t playGaps = 0;
@@ -103,7 +103,7 @@ namespace replay::fxcheck
         std::uint32_t Play() const { return playOurs + playEnginePuppet + playEngineOther; }
     };
 
-    // The weapon sites (muzzle 0x1452671, impact 0x144D33A, body 0x144C076, the
+    // The weapon sites (muzzle, impact, body, the
     // others of the weapon vfx) by phase.
     struct WeaponRow
     {

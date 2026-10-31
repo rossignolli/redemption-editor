@@ -36,24 +36,13 @@ namespace replay::object_pose
         return bodies + posed + kBodyReserve < maxTargets;
     }
 
-    // Capture places of their own for posed objects. The rule above can never
-    // pass in a crowded scene: the ped class (56) and the vehicle class (8)
-    // alone fill the 64 places. The object places are taken from the ped class
-    // only while an object is posed or waits for a place (ReservedPlaces), so a
-    // scene without one keeps all 56 ped places; the farthest unpinned ped
-    // leaves for the object (entity_selection.h, capacity below the recorded
-    // count). `places` is the ini key ObjectPosePlaces (dev builds, for A/B
-    // only; 0, the default: the shared places below).
-    constexpr std::uint32_t kDefaultPlaces = 4;
-    constexpr std::uint32_t kMaxPlaces = 8;
-
     // The shared places. The capture slots are sized to both
     // pools (capture_capacity.h kLiveTargetSlots); the ped and vehicle classes
     // hold theirs, the train cars a few, and every slot left is shared by the
     // weapons in a hand and the posed objects (the pelt, a carried bag, a
     // drawer or a lid the player opens): an object starts while one is free,
-    // and no body ever leaves for it. The four places taken from the ped class
-    // (ObjectPosePlaces) were a cap with no ground in the data: the bags of a
+    // and no body ever leaves for it. The four places the old rule took from the
+    // ped class were a cap with no ground in the data: the bags of a
     // town's NPCs held them from the start of 1211-Blackwater (places=4/4,
     // no_place_tries=854) and the drawer the player opened had none.
     // `sharedPlaces` is WeaponPlaces less the train cars' places.
@@ -61,42 +50,6 @@ namespace replay::object_pose
         std::uint32_t sharedPlaces)
     {
         return !weaponObject && bones >= kMinBones && posedObjects + posedWeapons < sharedPlaces;
-    }
-
-    inline std::uint32_t ClampPlaces(std::uint32_t places)
-    {
-        return places > kMaxPlaces ? kMaxPlaces : places;
-    }
-
-    // Object places held now: the posed objects and those refused for a
-    // place, at most `places`.
-    inline std::uint32_t ReservedPlaces(std::uint32_t places, std::size_t posed, std::size_t waiting)
-    {
-        const std::size_t wanted = posed + waiting;
-        const std::uint32_t limit = ClampPlaces(places);
-        return wanted < limit ? static_cast<std::uint32_t>(wanted) : limit;
-    }
-
-    // The ped class capacity with `reserved` object places taken from it.
-    inline std::uint32_t PedPlaces(std::uint32_t pedCapacity, std::uint32_t reserved)
-    {
-        const std::uint32_t taken = ClampPlaces(reserved);
-        return taken < pedCapacity ? pedCapacity - taken : 0;
-    }
-
-    // `pedBodies` are the recorded peds and horses (the ped class),
-    // `pedCapacity` the class's full capacity (replay::recorder::kPedCapacity).
-    // An object starts only while the ped class leaves it a place, so the
-    // classes never hold more than the 64 capture places and a body's Start
-    // never fails for an object.
-    inline bool ShouldPose(bool weaponObject, std::uint32_t bones, std::size_t pedBodies, std::size_t posed,
-        std::uint32_t places, std::uint32_t pedCapacity, std::size_t bodies, std::size_t maxTargets)
-    {
-        if (places == 0)
-            return ShouldPose(weaponObject, bones, bodies, posed, maxTargets);
-        if (weaponObject || bones < kMinBones || posed >= ClampPlaces(places))
-            return false;
-        return pedBodies + posed < pedCapacity && bodies + posed < maxTargets;
     }
 
     // The object that leaves the hand (the pelt dropped or rolled onto the
@@ -116,8 +69,7 @@ namespace replay::object_pose
     // held weapon) records its own bones from the moment it is in the hand, as
     // long as it is there, in the capture slots the bodies and vehicles do not
     // use (WeaponPlaces: kLiveTargetSlots less the live targets; pose_capture
-    // SetExtraPlaces), never taken from the bodies or from the ObjectPosePlaces
-    // of the pelt and the props. A body never loses a place to a weapon (the
+    // SetExtraPlaces), never taken from the bodies. A body never loses a place to a weapon (the
     // weapons stop at that count, the bodies at theirs). The pose track's
     // encoder compresses it as a body's.
     constexpr std::uint32_t kDefaultWeaponPlaces = 4; // used by the tests only
@@ -149,7 +101,7 @@ namespace replay::object_pose
     }
 
     // An object builds its skeleton only when something first needs one
-    // (CreateSkeleton, 0xE34A18, called by PLAY_ENTITY_ANIM, the attach natives
+    // (CreateSkeleton, called by PLAY_ENTITY_ANIM, the attach natives
     // and the animation system), so the pelt can enter the recording before it
     // has one. A candidate (attached, not a weapon, not posed, never ended by a
     // skeleton change) is resolved again at this interval while it stays
@@ -172,7 +124,7 @@ namespace replay::object_pose
 
     // Playback: the replay object is a fresh CREATE_OBJECT, which has no
     // skeleton until something asks for one. The object skeleton native
-    // (0x491439AEF410A2FC, handler 0x10C0A54 -> 0x10CE198 -> 0xE52368 ->
+    // (0x491439AEF410A2FC, handler -> core -> the null skeleton test ->
     // CreateSkeleton) is asked once per replay object whose recorded pose
     // has bones and whose skeleton did not resolve.
     inline bool ShouldAskSkeleton(std::uint32_t recordedBones, bool resolved, bool asked)

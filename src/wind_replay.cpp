@@ -2,6 +2,8 @@
 
 #include "wind_replay.h"
 
+#include "engine_sigs.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "hook_batch.h"
 #include "module_lifetime.h"
@@ -17,14 +19,18 @@
 #pragma intrinsic(_ReturnAddress)
 
 // Every read goes through replay::mem (SEH, range filtered) after the code
-// sites of wind_replay_core.h matched once and the weather entity's vtable
-// is the constructor's; the detour is installed only after the gate's
-// prologue and the same sites matched.
+// sites of wind_replay_core.h were found once, every reference to a global
+// agrees, and the weather entity's vtable is its initializer's; the detour is
+// installed only after the gate's prologue and the same sites were found.
 
 namespace replay::windreplay
 {
+    using enginesig::kWeatherEntityVtable;
+
     namespace
     {
+        namespace sig = replay::sig;
+
         Config g_cfg;
 
         enum class Proof : std::uint8_t { Unknown, Proven, Failed };
@@ -32,7 +38,11 @@ namespace replay::windreplay
         const char* g_failedSite = nullptr;
         std::uint32_t g_failedRva = 0;
         bool g_proofLogged = false;
-        std::uintptr_t g_base = 0;
+        // Where the proof found them.
+        std::uintptr_t g_weather = 0;      // W
+        std::uintptr_t g_weatherTable = 0;
+        std::uintptr_t g_weatherPrev = 0;
+        std::uintptr_t g_weatherNext = 0;
 
         // ---------------------------------------------------------- detour
 
@@ -40,7 +50,8 @@ namespace replay::windreplay
         std::atomic<GateFn> g_original{nullptr};
         void* g_target = nullptr;
         std::atomic<int> g_inFlight{0};
-        std::atomic<std::uintptr_t> g_detourBase{0};
+        // The weather pre-update's return address from the gate (kGateCall + 5).
+        std::atomic<std::uintptr_t> g_weatherReturn{0};
 
         // Published by the script thread, read by the detour: the position
         // first, the time last (release); a read between two publishes may
@@ -64,12 +75,10 @@ namespace replay::windreplay
             if (original)
             {
                 const std::uintptr_t ret = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-                const std::uintptr_t base = g_detourBase.load(std::memory_order_relaxed);
-                const std::uint32_t retRva =
-                    base && ret > base && ret - base < 0x80000000ull ? static_cast<std::uint32_t>(ret - base) : 0;
-                if (retRva != kWeatherGateReturnRva)
+                const std::uintptr_t weatherReturn = g_weatherReturn.load(std::memory_order_relaxed);
+                if (!weatherReturn || ret != weatherReturn)
                     result = original(streamer, pos, mask);
-                else if (AskScene(retRva, g_sceneAtMs.load(std::memory_order_acquire), GetTickCount64()))
+                else if (AskScene(ret, weatherReturn, g_sceneAtMs.load(std::memory_order_acquire), GetTickCount64()))
                 {
                     alignas(16) float scene[4] = {g_sceneX.load(std::memory_order_relaxed),
                         g_sceneY.load(std::memory_order_relaxed), g_sceneZ.load(std::memory_order_relaxed), 0.0f};
@@ -102,40 +111,71 @@ namespace replay::windreplay
 
         // ---------------------------------------------------------- proof
 
-        // The first site that does not match, null when all do (and the
-        // weather entity holds its vtable).
+        // The RVA of an address the proof found, for the log.
+        std::uint32_t Rva(std::uintptr_t address)
+        {
+            const std::uintptr_t base = sig::ImageBase();
+            if (!base || address <= base || address - base >= 0x80000000ull)
+                return 0;
+            return static_cast<std::uint32_t>(address - base);
+        }
+
+        // The first site that is not found, null when all are (and every
+        // reference to a global agrees, and the weather entity holds its
+        // vtable). `failedRva`: the failed site's declared rva.
         const char* CheckSites(std::uint32_t& failedRva)
         {
-            if (!g_base)
-                g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-            if (!g_base)
-            {
-                failedRva = 0;
-                return "module";
-            }
             for (const Site& site : kSites)
             {
-                std::uint8_t code[sizeof(site.bytes)]{};
-                if (!mem::Copy(code, g_base + site.rva, site.size) || !SiteMatches(site, code))
+                if (!sig::Find(*site.signature))
                 {
-                    failedRva = site.rva;
+                    failedRva = site.signature->rva;
                     return site.name;
                 }
             }
-            std::uint64_t vt = 0;
-            if (!mem::Read(g_base + kWeatherRva, vt) || vt != g_base + kWeatherVtableRva)
+            // The wind rows' indices are W's, and the weather indices the
+            // pre-update reads.
+            const std::uintptr_t w = sig::Find(kWeather);
+            const std::uintptr_t next = sig::Find(kWeatherNext);
+            const std::uintptr_t prev = sig::Find(kWeatherPrev);
+            const struct
             {
-                failedRva = kWeatherRva;
+                const char* name;
+                const sig::Signature* signature;
+                std::uintptr_t at;
+            } agree[] = {
+                {"line_next", &kLineNext, w + kWindLineNext},
+                {"line_prev", &kLinePrev, w + kWindLinePrev},
+                {"line_next_index", &kLineNextIndex, next},
+                {"line_prev_index", &kLinePrevIndex, prev},
+            };
+            for (const auto& a : agree)
+            {
+                if (sig::Find(*a.signature) != a.at)
+                {
+                    failedRva = a.signature->rva;
+                    return a.name;
+                }
+            }
+            const std::uintptr_t vtable = sig::Find(kWeatherEntityVtable);
+            std::uint64_t vt = 0;
+            if (!mem::Read(w, vt) || vt != vtable)
+            {
+                failedRva = kWeather.rva;
                 return "weather_entity_vtable";
             }
             // The pre-update is the entity's vtable slot +0x28: the call site belongs
             // to the weather entity.
             std::uint64_t preUpdate = 0;
-            if (!mem::Read(g_base + kWeatherVtableRva + 0x28, preUpdate) || preUpdate != g_base + kPreUpdateRva)
+            if (!mem::Read(vtable + kPreUpdateSlot, preUpdate) || preUpdate != sig::Find(kPreUpdate))
             {
-                failedRva = kWeatherVtableRva + 0x28;
+                failedRva = kWeatherEntityVtable.rva + kPreUpdateSlot;
                 return "weather_preupdate_slot";
             }
+            g_weather = w;
+            g_weatherTable = sig::Find(kWeatherTable);
+            g_weatherPrev = prev;
+            g_weatherNext = next;
             return nullptr;
         }
 
@@ -150,9 +190,10 @@ namespace replay::windreplay
             {
                 g_proofLogged = true;
                 if (g_proof == Proof::Proven)
-                    *log << "WIND_REPLAY,phase=proven,sites=" << kSiteCount << ",weather=0x" << std::hex << kWeatherRva
-                         << ",gate=0x" << kGateRva << ",streamer=0x" << kMapStreamerRva << std::dec << ",mask=" << kGateMask
-                         << ",fix=" << (g_cfg.fix ? 1 : 0) << ",detour=" << (g_target ? 1 : 0) << '\n';
+                    *log << "WIND_REPLAY,phase=proven,sites=" << kSiteCount << ",weather=0x" << std::hex
+                         << Rva(g_weather) << ",gate=0x" << Rva(sig::Find(kGate)) << ",streamer=0x"
+                         << Rva(sig::Find(kMapStreamer)) << std::dec << ",mask=" << kGateMask << ",fix=" << (g_cfg.fix ? 1 : 0)
+                         << ",detour=" << (g_target ? 1 : 0) << '\n';
                 else
                     *log << "WIND_REPLAY,phase=unproven,site=" << (g_failedSite ? g_failedSite : "?") << ",rva=0x" << std::hex
                          << g_failedRva << std::dec << ",note=disabled\n";
@@ -176,14 +217,14 @@ namespace replay::windreplay
         bool WeatherHashOf(std::uint32_t index, std::uint32_t& hash)
         {
             hash = 0;
-            return index < kMaxWeatherTypes &&
-                mem::Read(g_base + kWeatherTableRva + index * kWeatherTypeStride + kWeatherTypeHash, hash);
+            return index < kMaxWeatherTypes && g_weatherTable &&
+                mem::Read(g_weatherTable + index * kWeatherTypeStride + kWeatherTypeHash, hash);
         }
 
         Reading ReadNow()
         {
             Reading r;
-            const std::uintptr_t w = g_base + kWeatherRva;
+            const std::uintptr_t w = g_weather;
             r.ok = mem::Read(w + kWindStrength, r.strength) && std::isfinite(r.strength);
             if (!r.ok)
                 return r;
@@ -194,9 +235,9 @@ namespace replay::windreplay
                 r.lines[0] = r.lines[1] = 0;
             r.stampOk = mem::Read(w + kSimpleStamp, r.stamp);
             std::uint32_t p = 0, n = 0;
-            if (mem::Read(g_base + kWeatherPrevRva, p))
+            if (mem::Read(g_weatherPrev, p))
                 WeatherHashOf(p, r.wx[0]);
-            if (mem::Read(g_base + kWeatherNextRva, n))
+            if (mem::Read(g_weatherNext, n))
                 WeatherHashOf(n, r.wx[1]);
             return r;
         }
@@ -275,9 +316,8 @@ namespace replay::windreplay
             error = "off";
             return false;
         }
-        g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        void* target = reinterpret_cast<std::uint8_t*>(g_base) + kGateRva;
-        if (!mem::Matches(target, kGateSignature, sizeof(kGateSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kGate));
+        if (!target)
         {
             error = "gate_signature_mismatch";
             return false;
@@ -300,7 +340,7 @@ namespace replay::windreplay
             error = std::string("mh_create_") + MH_StatusToString(status);
             return false;
         }
-        g_detourBase.store(g_base, std::memory_order_relaxed);
+        g_weatherReturn.store(sig::Find(kGateCall) + kGateCallLength, std::memory_order_relaxed);
         g_original.store(reinterpret_cast<GateFn>(trampoline), std::memory_order_release);
         status = replay::hooks::Enable(target);
         if (status != MH_OK)
@@ -362,7 +402,7 @@ namespace replay::windreplay
 
     void Record(Recording& clip, std::uint32_t timeMs, bool clockRunning, std::ostream& log)
     {
-        if (!g_cfg.log || !clockRunning)
+        if (!clockRunning)
             return;
         if (!Prove(&log))
             return;
@@ -407,13 +447,13 @@ namespace replay::windreplay
         TakeGate(); // what came before belongs to the recording or the game
         const bool proven = Prove(&log);
         log << "WIND_REPLAY,phase=begin,fix=" << (g_cfg.fix ? 1 : 0) << ",detour=" << (g_target ? 1 : 0)
-            << ",log=" << (g_cfg.log ? 1 : 0) << ",proven=" << (proven ? 1 : 0)
+            << ",proven=" << (proven ? 1 : 0)
             << ",section=" << (g_recorded ? "WNDA" : "none") << ",rec_samples=" << clip.windAudio.samples.size() << '\n';
     }
 
     void Play(const Recording& clip, std::uint32_t timeMs, bool normal, std::ostream& log)
     {
-        if (!g_playing || !g_cfg.log || !normal)
+        if (!g_playing || !normal)
             return;
         if (!Prove(&log))
             return;

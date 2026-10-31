@@ -17,8 +17,8 @@ The log header says which one runs on the `CONFIG_BUILD` line: `CONFIG_BUILD,fla
 | Keys the public build reads | 129 | `src/ini_public.h` `kPublicReadKeys` |
 | ... player settings of `[RedemptionEditor]`, `[Export]` and `[Keys]` | 52 | active lines of the shipped ini |
 | ... editor preferences | 26 | commented lines of the shipped ini; the editor writes them (`FreeCam*`, `Spline*`, `CameraOverlay*`) |
-| ... engine safety switches (support switches) | 51 | not in the shipped ini, all on; `kSupportSwitches`, listed for support in [troubleshooting-keys.md](troubleshooting-keys.md) |
-| Developer keys | 213 | table in section 6 |
+| ... engine safety switches (support switches) | 52 | not in the shipped ini, all on; `kSupportSwitches`, listed for support in [troubleshooting-keys.md](troubleshooting-keys.md) |
+| Developer keys | 26 | table in section 6 |
 
 The shipped ini is `dist/RedemptionEditor.ini`, written from `kShippedIni` by `py tools/check_public_build.py
 --write-ini`. The mod writes the same text on its first run when the game folder has no `RedemptionEditor.ini` (and
@@ -34,9 +34,8 @@ when a player adds its line by hand, as support asks.
   for a missing key, without opening the file; in the developer build they are `IniInt`/`IniString`.
 - Every read of a key that is not public goes through them (`script.cpp`, `src/replay_events.cpp`,
   `src/sound_generic.cpp`, `src/sound_census.cpp`, `src/soundfx_probe.cpp`, and the `devKey`
-  lambdas of `WriteLogHeader`). The editor side keeps its developer keys under `#if defined(REDEMPTION_DEV)`
-  (`editor/render_export/render_export.cpp`: `AssumeLatency`, `Slots`, `Ffmpeg`, `Backend`, `FfmpegDlls`;
-  `src/export_probe.cpp`: `TimerLead`; `editor/editor_loader.cpp`: `EditorGpuEvents`).
+  lambdas of `WriteLogHeader`). The editor side has no developer keys left (the ini keys
+  review).
 - `SectionFor` (and `SectionForW`) look in `[RedemptionEditor]`, then the old `[ReplayPoC]`, then `[Troubleshooting]`:
   a switch added under `[Troubleshooting]` (the section older shipped inis had) is read, and one under
   `[RedemptionEditor]` wins.
@@ -105,210 +104,25 @@ off in the public one), "Dev probe (compiled out)" (a probe compiled only in the
 | `MixProbe` | RedemptionEditor | Dev probe (compiled out) | `0` |  |
 | `SpeechLevelProbe` | RedemptionEditor | Dev probe (compiled out) | `0` |  |
 | `VolumeProbe` | RedemptionEditor | Dev probe (compiled out) | `0` |  |
-| `VolumeProbeCategories` | RedemptionEditor | Dev probe (compiled out) | `6` |  |
-| `VolumeProbeEnv` | RedemptionEditor | Dev probe (compiled out) | `1` |  |
-| `VolumeProbeSampleMs` | RedemptionEditor | Dev probe (compiled out) | `100` |  |
-| `VolumeProbeTop` | RedemptionEditor | Dev probe (compiled out) | `1` |  |
-| `VolumeProbeWindowMs` | RedemptionEditor | Dev probe (compiled out) | `500` |  |
-| `VolumeProbeWorld` | RedemptionEditor | Dev probe (compiled out) | `8` |  |
-| `WaterGridProbe` | RedemptionEditor | Dev probe (compiled out) | `0` |  |
-| `WaterProbeAt` | RedemptionEditor | Dev probe (compiled out) |  |  |
-| `WorldSoundProbe` | RedemptionEditor | Dev probe (compiled out) | `0 (VolumeProbe)` |  |
-| `WorldSoundProbeGroupMs` | RedemptionEditor | Dev probe (compiled out) | `1000` |  |
 | `CategoryStateLog` | RedemptionEditor | Dev probe (pinned) | `0` | CATEGORY_CTL lines |
-| `CategoryStateWatch` | RedemptionEditor | Dev probe (pinned) | `kDefaultWatchText` | categories for CATEGORY_CTL |
 | `ClipSaveFailTest` | RedemptionEditor | Dev probe (pinned) | `0` | forces a clip save failure (test) |
 | `Debug` | RedemptionEditor | Dev probe (pinned) | `0` | developer mode: text HUD, direct keys, full log |
-| `EditorGpuEvents` | RedemptionEditor | Dev probe (pinned) | `0` | GPU event markers (editor loader) |
-| `FxMotionProbe` | RedemptionEditor | Dev probe (pinned) | `1` | FX_RELOCATE_PROBE / FX_REG_RECREATE evidence (on, capped) |
 | `GameListenerLog` | RedemptionEditor | Dev probe (pinned) | `0 (MixProbe)` | LISTENER lines (default follows MixProbe) |
 | `HorseAudioEvidence` | RedemptionEditor | Dev probe (pinned) | `0` | horse audio evidence lines |
 | `ObjectDrawnCheck` | RedemptionEditor | Dev probe (pinned) | `0` | drawn check of posed objects (read only) |
-| `ObjectLookEvidence` | RedemptionEditor | Dev probe (pinned) | `0` | object look evidence path |
-| `PedVariablesReadProbe` | RedemptionEditor | Dev probe (pinned) | `0` | sound variable lookup probe |
 | `PoseFidelity` | RedemptionEditor | Dev probe (pinned) | `0` | pose fidelity judge |
-| `PoseFidelityAsync` | RedemptionEditor | Dev probe (pinned) | `1` | pose fidelity judge thread |
-| `PoseFidelityHz` | RedemptionEditor | Dev probe (pinned) | `10` | pose fidelity judge rate |
 | `ProfileSlowTickMs` | RedemptionEditor | Dev probe (pinned) | `50` | profiler slow tick threshold |
+| `SigDumpCode` | RedemptionEditor | Dev probe (pinned) | `0` | writes the exe's code and data to %LOCALAPPDATA%\RedemptionEditor\code for sigtool (SIG_DUMP) |
+| `SigForceScan` | RedemptionEditor | Dev probe (pinned) | `0` | searches every game signature even on the 1491.50 exe (SIG lines) |
 | `SoundCensus` | RedemptionEditor | Dev probe (pinned) | `0` | sound_census.cpp also runs SoundCapture (on) |
 | `SoundCheck` | RedemptionEditor | Dev probe (pinned) | `-1` | sound check report (Debug=1) |
-| `SoundCheckNotice` | RedemptionEditor | Dev probe (pinned) | `3` | sound check notice threshold |
-| `SoundClock` | RedemptionEditor | Dev probe (pinned) | `1` | sound clock lines (on) |
 | `SoundFxProbe` | RedemptionEditor | Dev probe (pinned) | `0` | soundfx_probe.cpp also holds the speech-only scope the generic sound uses |
 | `SoundGenericMute` | RedemptionEditor | Dev probe (pinned) |  | generic sound mute window (measurement) |
 | `SoundGenericTrace` | RedemptionEditor | Dev probe (pinned) |  | generic sound trace window |
-| `WaterShapeLog` | RedemptionEditor | Dev probe (pinned) | `0` | water shape lines (F8) |
-| `ClipWorldLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `EntityQueryLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `FootEventLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `MixScenePoolLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `MotionStateLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `PedAudioStateLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `PedSpeedReplayLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `SpeechDuckLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `TheatreLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `WindReplayLog` | RedemptionEditor | Dev log (pinned on) | `1` |  |
-| `AssumeLatency` | Export | Dev | `-1` |  |
-| `Backend` | Export | Dev | `libav` |  |
-| `Ffmpeg` | Export | Dev |  |  |
-| `FfmpegDlls` | Export | Dev |  |  |
-| `Slots` | Export | Dev | `6` |  |
-| `TimerLead` | Export | Dev | `1` |  |
-| `AnimalBankHold` | RedemptionEditor | Dev | `1` |  |
-| `AnimalBankLeadMs` | RedemptionEditor | Dev | `4000` |  |
-| `AnimalVocalNative` | RedemptionEditor | Dev | `1` |  |
-| `AnimalVocalRetry` | RedemptionEditor | Dev | `1` |  |
-| `CategoryStateFields` | RedemptionEditor | Dev | `volume` |  |
-| `CategoryStateKeepLive` | RedemptionEditor | Dev | `kDefaultKeepLiveText` |  |
-| `CategoryStateRecord` | RedemptionEditor | Dev | `1` |  |
-| `ClipStartBatch` | RedemptionEditor | Dev | `2` |  |
-| `ClipStartSettleMs` | RedemptionEditor | Dev | `500` |  |
-| `ClipStartStagger` | RedemptionEditor | Dev | `0` |  |
-| `ClipStartStreamingMax` | RedemptionEditor | Dev | `8` |  |
 | `ClipWorldWait` | RedemptionEditor | Dev | `0` |  |
 | `ClipWorldWaitMs` | RedemptionEditor | Dev | `20000` |  |
-| `DoorKeepOpenRatio` | RedemptionEditor | Dev | `1` |  |
-| `DoorRebindMs` | RedemptionEditor | Dev | `250` |  |
-| `EngineFeetInReplay` | RedemptionEditor | Dev | `0` |  |
-| `EntityPoolReader` | RedemptionEditor | Dev | `1` |  |
-| `FireAdoptLive` | RedemptionEditor | Dev | `0` |  |
-| `FireUntrackedInitial` | RedemptionEditor | Dev | `0` |  |
-| `FootBaseVolumeReplay` | RedemptionEditor | Dev | `1` |  |
-| `FootEventRecord` | RedemptionEditor | Dev | `1` |  |
-| `FootMaterialReplay` | RedemptionEditor | Dev | `1` |  |
-| `FootMixReplay` | RedemptionEditor | Dev | `1` |  |
-| `FootMovementRecord` | RedemptionEditor | Dev | `1` |  |
-| `FxApplyRecordedFlags` | RedemptionEditor | Dev | `1` |  |
-| `FxCheckMotion` | RedemptionEditor | Dev | `1` |  |
-| `FxOwnerListImmediate` | RedemptionEditor | Dev | `1` |  |
-| `FxOwnerRule` | RedemptionEditor | Dev | `1` |  |
-| `FxRecordSettings` | RedemptionEditor | Dev | `1` |  |
-| `FxRegisteredCallGaps` | RedemptionEditor | Dev | `1` |  |
-| `FxRegisteredOwnerReady` | RedemptionEditor | Dev | `1` |  |
-| `FxRegisteredParentOnce` | RedemptionEditor | Dev | `1` |  |
-| `FxRegisteredRecreateBackoffMs` | RedemptionEditor | Dev | `250` |  |
-| `FxRegisteredSplit` | RedemptionEditor | Dev | `1` |  |
-| `FxWorldOwnerRule` | RedemptionEditor | Dev | `1` |  |
-| `FxWorldSiteRule` | RedemptionEditor | Dev | `1` |  |
-| `HatFix` | RedemptionEditor | Dev | `1` |  |
-| `HatLook` | RedemptionEditor | Dev | `1` |  |
-| `HideNeverAnimated` | RedemptionEditor | Dev | `1` |  |
-| `HumanOwnVoiceFallback` | RedemptionEditor | Dev | `1` |  |
-| `JitterFix` | RedemptionEditor | Dev | `1` |  |
-| `ListenerCamMatchM` | RedemptionEditor | Dev | `1.0` |  |
-| `ListenerMicFallbackHash` | RedemptionEditor | Dev | `0` |  |
-| `ListenerRecord` | RedemptionEditor | Dev | `1` |  |
 | `MapObjectsWaitMs` | RedemptionEditor | Dev | `3000` |  |
-| `MetapedApply` | RedemptionEditor | Dev | `1` |  |
-| `MetapedRecord` | RedemptionEditor | Dev | `1` |  |
-| `MixSceneCodeSkip` | RedemptionEditor | Dev |  |  |
-| `MixSceneEngineOpenFromPool` | RedemptionEditor | Dev | `1` |  |
-| `MixSceneOwnPlayerState` | RedemptionEditor | Dev | `1` |  |
-| `MixSceneRecord` | RedemptionEditor | Dev | `1` |  |
-| `MixSceneRecordDirect` | RedemptionEditor | Dev | `1` |  |
-| `MixSceneReplay` | RedemptionEditor | Dev | `0` |  |
-| `MixSceneReplayCode` | RedemptionEditor | Dev | `0` |  |
-| `MixSceneReplayConversation` | RedemptionEditor | Dev | `1` |  |
-| `MixSceneReplayScript` | RedemptionEditor | Dev | `1` |  |
-| `MixSceneVars` | RedemptionEditor | Dev | `1` |  |
-| `MoonRecord` | RedemptionEditor | Dev | `1` |  |
-| `MountPreRender` | RedemptionEditor | Dev | `0` |  |
-| `MovementVolumeReplay` | RedemptionEditor | Dev | `1` |  |
-| `MusicStop` | RedemptionEditor | Dev | `1` |  |
-| `NoRecordAltAppearance` | RedemptionEditor | Dev | `0` |  |
-| `NoRecordMapNow` | RedemptionEditor | Dev | `1` |  |
-| `ObjectPosePlaces` | RedemptionEditor | Dev | `4` |  |
-| `PedAudioKeepRecordedLength` | RedemptionEditor | Dev | `1` |  |
-| `PedAudioLoopFollowsPuppet` | RedemptionEditor | Dev | `1` |  |
-| `PedCapacity` | RedemptionEditor | Dev | `148 (WorldModel=gta), 56` |  |
-| `PedSpeedRecord` | RedemptionEditor | Dev | `1` |  |
-| `PlayerWeaponBank` | RedemptionEditor | Dev | `1` |  |
-| `PoseLateBackoff` | RedemptionEditor | Dev | `0` |  |
-| `PoseStallPollMs` | RedemptionEditor | Dev | `250` |  |
-| `PoseWorkerPollMs` | RedemptionEditor | Dev | `5` |  |
-| `PuppetAlwaysPrerender` | RedemptionEditor | Dev | `1` |  |
-| `PuppetFoleyVariants` | RedemptionEditor | Dev | `0` |  |
-| `PuppetFootLod` | RedemptionEditor | Dev | `1` |  |
-| `PuppetForceAnimUpdate` | RedemptionEditor | Dev | `1` |  |
-| `PuppetIncludeKeep` | RedemptionEditor | Dev |  |  |
-| `PuppetLodMultiplier` | RedemptionEditor | Dev | `10` |  |
-| `PuppetPersistentByEntry` | RedemptionEditor | Dev | `1` |  |
-| `PuppetUnrecordedPersistent` | RedemptionEditor | Dev | `1` |  |
-| `RecordPedAnimRadiusM` | RedemptionEditor | Dev | `40` |  |
-| `RecordPedForceAnim` | RedemptionEditor | Dev | `0` |  |
-| `RecordPedLodMultiplier` | RedemptionEditor | Dev | `0` |  |
-| `RecordPedPrerender` | RedemptionEditor | Dev | `0` |  |
-| `RegisteredFxOwnerCheck` | RedemptionEditor | Dev | `1` |  |
-| `RenderTargetUiAppBlockInput` | RedemptionEditor | Dev | `1` |  |
-| `RenderTargetUiApps` | RedemptionEditor | Dev | `SHOP_BROWSING` |  |
-| `ReplayBufferAdaptive` | RedemptionEditor | Dev | `0` |  |
-| `ReplayBufferMaxMB` | RedemptionEditor | Dev | `512` |  |
-| `ReplayBufferReserveMB` | RedemptionEditor | Dev | `2048` |  |
-| `ReplayCamDofBlend` | RedemptionEditor | Dev | `1` |  |
-| `ReplayCamDofRecreate` | RedemptionEditor | Dev | `0` |  |
-| `ReplayCameraCutMode` | RedemptionEditor | Dev | `bits` |  |
-| `ReplayCameraRelease` | RedemptionEditor | Dev | `paused` |  |
-| `ReplayCamFocusHysteresis` | RedemptionEditor | Dev | `1` |  |
-| `ReplayCamFocusSmooth` | RedemptionEditor | Dev | `1` |  |
-| `ReplayCamPrefetch` | RedemptionEditor | Dev | `1` |  |
-| `ReplayCamPrefetchLeadMs` | RedemptionEditor | Dev | `1500` |  |
-| `ReplayCamPrefetchMeters` | RedemptionEditor | Dev | `30` |  |
-| `ReplayCamSmoothReframe` | RedemptionEditor | Dev | `1` |  |
-| `ReplayCamTargetRecorded` | RedemptionEditor | Dev | `1` |  |
-| `ReplayGameListener` | RedemptionEditor | Dev | `0` |  |
-| `SceneryHandoffTicks` | RedemptionEditor | Dev | `1` |  |
-| `SegmentSwitchInTick` | RedemptionEditor | Dev | `1` |  |
-| `ShotAudioDelay` | RedemptionEditor | Dev | `1` |  |
-| `ShotFxLegacyDedupe` | RedemptionEditor | Dev | `1` |  |
-| `SoundCapture` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericCoreBByRef` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericDirectParams` | RedemptionEditor | Dev | `0` |  |
 | `SoundGenericEntityDrivenSkip` | RedemptionEditor | Dev | `kEntityDrivenSkipDefault` |  |
-| `SoundGenericEntityMode` | RedemptionEditor | Dev | `c` |  |
-| `SoundGenericEnvGroup` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericExport` | RedemptionEditor | Dev | `0` |  |
-| `SoundGenericHoldMs` | RedemptionEditor | Dev | `150` |  |
-| `SoundGenericKeepLoops` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericMaxMBPerMin` | RedemptionEditor | Dev | `8` |  |
-| `SoundGenericOriginSkip` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericPlay` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericPlayerRoute` | RedemptionEditor | Dev | `0` |  |
-| `SoundGenericPreloadDelayMs` | RedemptionEditor | Dev | `100` |  |
-| `SoundGenericPreloadMs` | RedemptionEditor | Dev | `500` |  |
 | `SoundGenericSkip` | RedemptionEditor | Dev | `release` |  |
 | `SoundGenericSlots` | RedemptionEditor | Dev | `64` |  |
 | `SoundGenericTake` | RedemptionEditor | Dev |  |  |
-| `SoundGenericUpdateHz` | RedemptionEditor | Dev | `20` |  |
-| `SoundGenericVehicleBlock` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericWeaponOffShot` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericWorldCap` | RedemptionEditor | Dev | `1` |  |
-| `SoundGenericWorldCapCount` | RedemptionEditor | Dev | `6` |  |
-| `SoundQueueEnvGroup` | RedemptionEditor | Dev | `1` |  |
-| `SoundStepSetGate` | RedemptionEditor | Dev | `1` |  |
-| `SpawnedObjects` | RedemptionEditor | Dev | `1` |  |
-| `SpawnedStaticScenery` | RedemptionEditor | Dev | `1` |  |
-| `SpeechAudibleM` | RedemptionEditor | Dev | `60` |  |
-| `SpeechDuckDerivedFlags` | RedemptionEditor | Dev | `kFlagEde` |  |
-| `SpeechLineType` | RedemptionEditor | Dev | `1` |  |
-| `SpeechPlayerOnPlayer` | RedemptionEditor | Dev | `1` |  |
-| `SpeechPlayerScriptNear` | RedemptionEditor | Dev | `0` |  |
-| `SpeechQueueAnyContext` | RedemptionEditor | Dev | `1` |  |
-| `SpeechResumeWaitOld` | RedemptionEditor | Dev | `1` |  |
-| `SpeechScriptPath` | RedemptionEditor | Dev | `0` |  |
-| `StillPoseEngine` | RedemptionEditor | Dev | `1` |  |
-| `TheatrePauseScriptHook` | RedemptionEditor | Dev | `0` |  |
-| `TheatreReloadDelayMs` | RedemptionEditor | Dev | `0` |  |
-| `TimecycleRecord` | RedemptionEditor | Dev | `1` |  |
-| `TimecycleReplay` | RedemptionEditor | Dev | `1` |  |
-| `TPoseOnScreenOnly` | RedemptionEditor | Dev | `1` |  |
-| `TPoseSettleMs` | RedemptionEditor | Dev | `1500` |  |
-| `TPoseWatch` | RedemptionEditor | Dev | `1` |  |
-| `TrailPlayerFollow` | RedemptionEditor | Dev | `1` |  |
-| `TrainPuppet` | RedemptionEditor | Dev | `0` |  |
-| `TrainWorldClear` | RedemptionEditor | Dev | `0` |  |
-| `WeaponFxEvents` | RedemptionEditor | Dev | `1` |  |
-| `WorldClearFlags` | RedemptionEditor | Dev |  |  |
-| `WorldFocus` | RedemptionEditor | Dev | `1` |  |
-| `WorldModelStep` | RedemptionEditor | Dev | `3` |  |
-| `WorldReloadPath` | RedemptionEditor | Dev | `slot` |  |
-| `WorldScriptsCleanup` | RedemptionEditor | Dev | `1` |  |

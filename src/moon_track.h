@@ -3,45 +3,22 @@
 // The moon of the clip. The clock alone (environment_track.h) does not give
 // it: the moon is not a function of the clock.
 //
-// Engine model (build 1491.50, offline dump; the sky object at 0x4F3E4A0, its
-// update 0x145781C, sun_control.cpp):
-//   delta    the integer at 0x456E39C, written by 0x75C820 every frame: the
-//            game clock in seconds ((days since 1898 * 24 + hour) * 60 +
-//            minute) * 60 + second, minus the previous frame's. A jump of the
-//            clock (SET_CLOCK_TIME, a trainer, the replay itself) or of the
-//            date is one frame with a large delta; a paused clock is 0.
-//   +0xA80   double, the moon's turn angle. Only when the sun (+0x50) and the
-//            moon (+0x260) of the previous frame are both below +0x8CC
-//            (-0.15, z) the update adds 2pi * delta / (+0x8D0 (2.5) * 3600)
-//            and wraps with fmod by 2pi (0x1457AC0 to 0x1457AFD); otherwise it
-//            only reads it (0x1457B05). It enters the moon's daily rotation
-//            matrix +0xA40 next to the clock's own term.
-//   +0x8E8   double, the moon's orbit angle. Every frame (no condition) the
-//            update adds delta * 2pi / 86400 / +0x8C0 (27.322, the sidereal
-//            month in days) and wraps it the same way (0x1457D6F to
-//            0x1457DA3); with the tilt +0x8C4 (28.58 degrees) it builds the
-//            matrix +0x940. The drawn moon +0xAA0 is a constant vector times
-//            +0x940, +0xA40 and +0xA00; the sun +0xA90 uses none of them.
-//   The constructor (0x1408460 region) zeroes both; no other reader or writer
-//   of the two fields was found (no rip-relative reference to them, none in
-//   the functions handed the object). So both are the integral of the game
-//   time the session has run (the date included), not saved anywhere: the
-//   moon's place and its angle to the sun (its phase, if the renderer lights
-//   it from the two directions: not proven) are session state.
+// The sky object keeps two double angles (moon turn and moon orbit) that the
+// engine integrates from the game clock's per-frame delta and never saves, so
+// the moon's place is session state. A clock jump (including the replay's own)
+// moves them.
 //
-// What the replay does with it (script.cpp):
-//   1. A clip that sets the clock (environment recorded) saves both angles
-//      when it opens and writes them back for a few frames after the clock is
-//      given back (the jump back consumed), so the replay's own clock jumps
-//      never move the session's moon. Also after a script reload (the
-//      world-restore file) and at unload.
-//   2. The recording keeps both angles (4 Hz, on change), with the drawn sun
-//      and moon and the clock date as evidence (section MOON). Playback with
-//      the Moon phase row Recorded writes the angles at the playhead every
-//      tick from the script fiber: with the clock paused (delta 0) the write
-//      holds, and the update itself computes the moon, the shadows and the sky
-//      from the recorded angles and the clip's clock. A clock jump (scrub)
-//      costs at most a frame before the next write.
+// What the replay does (script.cpp): a clip that sets the clock saves both
+// angles when it opens and writes them back for a few frames after the clock
+// is given back (also after a script reload and at unload). The recording
+// keeps both angles (section MOON, 4 Hz, on change); with the Moon phase row
+// Recorded, playback writes them at the playhead every tick and the engine
+// computes the moon, shadows and sky from them.
+//
+// Evidence: offline dump, build 1491.50. No other reader or writer of the two
+// fields was found.
+// Research: docs/research/weather-wind-sky-timecycle.md
+//
 // Pure data and rules here.
 
 #include <algorithm>
@@ -72,7 +49,7 @@ namespace replay
         // moved (at night the turn angle moves every poll, by day only the
         // orbit, slowly).
         constexpr std::uint32_t kSampleMs = 250;
-        // The update's fmod divisor: the double at 0x3482A90 (2pi rounded to
+        // The update's fmod divisor: a double constant (2pi rounded to
         // a float, then widened).
         constexpr double kTurn = 6.2831854820251465;
         constexpr double kEpsilon = 1e-4;
@@ -282,7 +259,7 @@ namespace replay
 
         // The session's angles back after the clip. The clock goes back in
         // the same tick (SET_CLOCK_TIME); the jump is a delta of the next
-        // run of 0x75C820 and moves the angles in the next update when it is
+        // clock step and moves the angles in the next update when it is
         // dark. So the saved values are written every tick until kFrames game
         // frames have passed since the clock went back (at least twice), with
         // a cap in ticks. The clock runs again meanwhile: the natural move
@@ -324,8 +301,8 @@ namespace replay
 
         // The game's own steps per game second (the after-clip check in the
         // log): the turn angle only while sun and moon are below the limit
-        // (2pi / (2.5 * 3600)), the orbit always (the double 2pi / 86400 at
-        // 0x3482A78 over the float 27.322 at +0x8C0).
+        // (2pi / (2.5 * 3600)), the orbit always (the double 2pi / 86400
+        // over the float 27.322 at +0x8C0).
         constexpr double kTurnPerDarkSecond = kTurn / 9000.0;
         constexpr double kOrbitPerSecond = 7.272205419010585e-05 / 27.322000503540039;
 

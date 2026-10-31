@@ -421,6 +421,8 @@ namespace
     player::Config PacketsConfig()
     {
         player::Config c;
+        c.code = KnownWrapperCode();
+        c.callers = owner::KnownCallerRanges();
         c.packets = true;
         c.enabled = true;
         return c;
@@ -1047,7 +1049,7 @@ namespace
         Check(tally.ByVerdict(LifeVerdict::Unmade) == 2 && tally.WithoutPacket() == 1 && tally.RunsWithoutPacket() == 1,
             "unmade: tally");
         const std::string section = FormatBlockedSection(tally, true);
-        Check(Has(section, "a set the owner never made in the clip (refused, SoundStepSetGate) 2."), "unmade: section count");
+        Check(Has(section, "a set the owner never made in the clip (refused) 2."), "unmade: section count");
         Check(Has(section, "STEP UNMADE  owner 6:716  sound 0x1000d167c  attempts 2 in 1 runs, refused 2  (S03"),
             "unmade: section row");
         Check(section.find("NO PACKET") < section.find("STEP UNMADE"), "unmade: after the rows without a packet");

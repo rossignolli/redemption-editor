@@ -1,5 +1,8 @@
 #include "decal_observer.h"
+#include "clip_sites.h" // kDecalWrapper, kDecalGenericCall
 #include "decal_producer_gate.h"
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "mod_clock.h"
 #include "mod_identity.h"
@@ -22,36 +25,101 @@ namespace replay::decal
 {
     namespace
     {
-        constexpr std::uintptr_t kCoreRva = 0x2C2EF08;
-        constexpr std::uint8_t kCoreSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
-            0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20};
-        constexpr std::uintptr_t kWrapperRva = 0x2C2F054;
-        constexpr std::uint8_t kWrapperSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48,
-            0x89, 0x78, 0x20, 0x41, 0x56, 0x48, 0x83, 0xEC};
-        constexpr std::uintptr_t kManagerRva = 0x5B1F940; // pointer to the rage decal manager
-        constexpr std::uintptr_t kRemoveRva = 0x2C49FCC; // (manager, id)
-        constexpr std::uint8_t kRemoveSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48,
-            0x89, 0x78, 0x20, 0x41, 0x56, 0x48, 0x83, 0xEC};
+        namespace sig = replay::sig;
+
+        // The rage decal core (manager, entity, settings, id, flag) -> id or 0.
+        const sig::Signature kDecalCore{"decal_core",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 57 41 56 41 57 48 83 EC 20 4C 8B F2 41 8B F1 33 D2 49 8B E8 "
+            "38 15 ?? ?? ?? ?? 48 8B F9 75 20 38 15 ?? ?? ?? ?? 74 08 38 15 ?? ?? ?? ?? 74 10 38 15 ?? ?? ?? ?? 75 08 "
+            "38 15 ?? ?? ?? ?? 74 0A 38 54 24 60",
+            0x2C2EF08};
+        // Its take of a request ring entry (decal_add_guard.h): at most 0x400 in
+        // flight, the cursor at manager+0xD75D0, the ring at manager+0xB5D0, entries
+        // of 0x330, the settings copied in, the entity ref at entry+0x310.
+        const sig::Signature kDecalCoreRing{"decal_core_ring", kDecalCore, sig::Offset{0x58},
+            "41 B8 00 04 00 00 44 39 81 D8 75 0D 00 0F 83 ?? ?? ?? ?? 8B 81 D0 75 0D 00 48 81 C1 D0 B5 00 00 FF C0 89 81 "
+            "00 C0 0C 00 41 3B C0 75 08 89 91 00 C0 0C 00 8B C2 48 98 41 BF 01 00 00 00 44 01 B9 08 C0 0C 00 48 8B D5 48 "
+            "69 D8 30 03 00 00 48 03 D9 48 8B CB E8 ?? ?? ?? ?? 48 8D 8B 10 03 00 00",
+            0x2C2EF60};
+        // The generic wrapper and its call of the core (kDecalWrapper,
+        // kDecalGenericCall) are in clip_sites.h: a clip names the call.
+        // The pending ring's worker: an entry's settings info (+0x88), its entity
+        // (+0x318) and the info's +0x72, read with no null check.
+        const sig::Signature kDecalWorkerInfo{"decal_worker_info",
+            "48 8B 83 88 00 00 00 48 8B BB 18 03 00 00 80 78 72 00 74 5C", 0x2C42D0C};
+        // The game's decal add (weapon impacts, explosions, blood, ADD_DECAL) and
+        // its load of the rage decal manager (a pointer) for the wrapper.
+        const sig::Signature kDecalGameAdd{"decal_game_add",
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 20 57 48 83 EC 30 33 ED 49 8B D8", 0x125F9EC};
+        const sig::Signature kDecalGameAddManager{"decal_game_add_manager", kDecalGameAdd, sig::Offset{0x150},
+            "48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 5C 24 40", 0x125FB3C};
+        const sig::Signature kDecalManager{"decal_manager", kDecalGameAddManager, sig::Rel32{0x03, 0x07}, "", 0x5B1F940};
+        // The removal by id (manager, id).
+        const sig::Signature kDecalRemove{"decal_remove",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 48 89 78 20 41 56 48 83 EC 20 44 8B F2 48 8D 99 60 39 00 00",
+            0x2C49FCC};
         using RemoveFn = void(__fastcall*)(void*, int);
-        constexpr std::uintptr_t kProjAddRva = 0x140CF14;
-        constexpr std::uint8_t kProjAddSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x48, 0x89, 0x50, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54,
-            0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0xA8, 0x18, 0xFD, 0xFF, 0xFF, 0x48, 0x81, 0xEC};
-        // 32 bytes; the first 24 appear 29 times in .text, the 32 once.
-        constexpr std::uintptr_t kProjManagerRva = 0x4F15040; // the manager object itself
+        // The projected decal add (13 arguments).
+        const sig::Signature kDecalProjAdd{"decal_proj_add",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 54 41 55 41 56 41 57 48 8D A8 18 FD FF FF 48 81 EC B0 03 00 "
+            "00 80 B9 92 90 01 00 00 45 8B F1 0F 29 70 B8 49 8B F8",
+            0x140CF14};
+        // Its reads of the stack arguments (engine_calls.h): a build that
+        // changed them fails here.
+        const sig::Signature kDecalProjAddArg5{"decal_proj_add_arg5", kDecalProjAdd, sig::Offset{0x131},
+            "4C 8B BD 10 03 00 00", 0x140D045};
+        const sig::Signature kDecalProjAddArg7{"decal_proj_add_arg7", kDecalProjAdd, sig::Offset{0x195},
+            "4C 8B A5 20 03 00 00", 0x140D0A9};
+        const sig::Signature kDecalProjAddArg6{"decal_proj_add_arg6", kDecalProjAdd, sig::Offset{0x1A0},
+            "4C 8B AD 18 03 00 00", 0x140D0B4};
+        const sig::Signature kDecalProjAddArg9{"decal_proj_add_arg9", kDecalProjAdd, sig::Offset{0x237},
+            "0F B7 85 30 03 00 00", 0x140D14B};
+        const sig::Signature kDecalProjAddArg8{"decal_proj_add_arg8", kDecalProjAdd, sig::Offset{0x254},
+            "F3 0F 10 85 28 03 00 00", 0x140D168};
+        const sig::Signature kDecalProjAddArg13{"decal_proj_add_arg13", kDecalProjAdd, sig::Offset{0x2A2},
+            "48 8B 85 50 03 00 00", 0x140D1B6};
+        const sig::Signature kDecalProjAddArg11{"decal_proj_add_arg11", kDecalProjAdd, sig::Offset{0x4F3},
+            "83 BD 40 03 00 00 00", 0x140D407};
+        const sig::Signature kDecalProjAddArg12{"decal_proj_add_arg12", kDecalProjAdd, sig::Offset{0x53F},
+            "8B 9D 48 03 00 00", 0x140D453};
+        const sig::Signature* const kDecalProjAddArgs[] = {&kDecalProjAddArg5, &kDecalProjAddArg7, &kDecalProjAddArg6,
+            &kDecalProjAddArg9, &kDecalProjAddArg8, &kDecalProjAddArg13, &kDecalProjAddArg11, &kDecalProjAddArg12};
+        // The rage decal callback that mirrors a decal on an entity: it hands the
+        // projected decal manager (the object itself) to the projected add.
+        const sig::Signature kDecalRageMirror{"decal_rage_mirror",
+            "45 84 C9 0F 84 ?? ?? ?? ?? 48 8B C4 48 89 58 08 48 89 70 10 55 57 41 54", 0x124AC84};
+        const sig::Signature kDecalRageProjManager{"decal_rage_proj_manager", kDecalRageMirror, sig::Offset{0x153},
+            "48 8D 0D ?? ?? ?? ?? 83 4C 24 58 FF 45 8B CF 83 4C 24 50 FF 4D 8B C6 C0 E8 06", 0x124ADD7};
+        const sig::Signature kDecalProjManager{"decal_proj_manager", kDecalRageProjManager, sig::Rel32{0x03, 0x07}, "",
+            0x4F15040};
+        const sig::Signature kDecalRageMirrorCall{"decal_rage_mirror_call", kDecalRageMirror, sig::Offset{0x1B3},
+            "E8 ?? ?? ?? ?? 4C 8D 9C 24 20 01 00 00", 0x124AE37};
+        // The blood pool add, and its call of the game's decal add.
+        const sig::Signature kDecalPoolAdd{"decal_pool_add",
+            "48 8B C4 48 89 58 10 48 89 70 18 48 89 48 08 55 57 41 54 41 55", 0x125CCF4};
+        const sig::Signature kDecalPoolAddCall{"decal_pool_add_call", kDecalPoolAdd, sig::Offset{0x639},
+            "E8 ?? ?? ?? ?? EB 02 33 C0", 0x125D32D};
         using ProjAddFn = void*(__fastcall*)(void*, const std::uint32_t*, void*, int, const float*, const float*, const float*,
             float, std::uint16_t, std::uint8_t, int, int, void*);
-        constexpr std::uintptr_t kAliveRva = 0x2C3DD04; // (manager, id) -> bool
-        constexpr std::uint8_t kAliveSignature[] = {
-            0x85, 0xD2, 0x74, 0x1A, 0x8D, 0x82, 0x00, 0x00, 0xFF, 0xFF, 0x44, 0x8B, 0xC0, 0x49, 0xC1, 0xE8,
-            0x10, 0x66, 0x42, 0x39, 0x94, 0x41, 0x48, 0x09};
-        using AliveFn = bool(__fastcall*)(void*, int);
+        // The alive test (manager, id) -> bool: the slot's generation word at
+        // manager+0x948 against the id's low word.
+        const sig::Signature kDecalAlive{"decal_alive",
+            "85 D2 74 1A 8D 82 00 00 FF FF 44 8B C0 49 C1 E8 10 66 42 39 94 41 48 09 00 00", 0x2C3DD04};
+        // The info lookup (table, hash*, index) -> record, and the game's add path
+        // asking it with the info table: a null result or a record whose qword
+        // +0x130 is 0 is refused before the add.
+        const sig::Signature kDecalInfoLookup{"decal_info_lookup",
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 41 8B F8 48 83 C1 18 E8 ?? ?? ?? ??",
+            0x2C3A3D8};
+        const sig::Signature kDecalAddPath{"decal_add_path",
+            "48 8B C4 48 89 58 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D A8 C8 FE FF FF", 0x125B97C};
+        const sig::Signature kDecalInfoUse{"decal_info_use", kDecalAddPath, sig::Offset{0xF7},
+            "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 0F 84 ?? ?? ?? ?? 48 83 B8 30 01 00 00 00 0F 84 ?? ?? "
+            "?? ??",
+            0x125BA73};
+        const sig::Signature kDecalInfoTable{"decal_info_table", kDecalInfoUse, sig::Rel32{0x03, 0x07}, "", 0x3CE4F00};
 
         using CoreFn = int(__fastcall*)(void*, void*, void*, int, std::uint8_t);
-        using WrapperFn = int(__fastcall*)(void*, void*, void*, std::uint8_t);
 
         constexpr std::uint32_t kRingSize = 1024;
         using Slot = replay::ring::Slot<AddCall>; // event_ring.h
@@ -65,7 +133,7 @@ namespace replay::decal
         std::uintptr_t g_base = 0;
         std::uintptr_t g_imageEnd = 0;
         LARGE_INTEGER g_frequency{};
-        WrapperFn g_wrapper = nullptr;
+        std::uintptr_t g_wrapper = 0;
         constexpr std::uint32_t kRemoveRing = 1024;
         using RemoveSlot = replay::ring::Slot<RemoveCall>; // event_ring.h
         RemoveSlot g_removes[kRemoveRing];
@@ -78,17 +146,15 @@ namespace replay::decal
         std::atomic<std::uint64_t> g_nextProj{0};
         std::atomic<ProjAddFn> g_originalProj{nullptr};
         void* g_projTarget = nullptr;
-        // The deferred decal job's drain, 0x1431DD4 (queue) -> count drained. It
-        // walks the 0x80-byte requests of the queue at 0x4F50980 and adds each
-        // through 0x14357D0 -> 0x125B97C -> 0x125F9EC -> wrapper 0x2C2F054 -> core
-        // 0x2C2EF08, on a worker of the task scheduler (job 0xC1F450). It is the
-        // engine's producer into the request ring the replay also produces into;
-        // the gate below keeps the two apart.
-        constexpr std::uintptr_t kDrainRva = 0x1431DD4;
-        constexpr std::uint8_t kDrainSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
-            0x48, 0x83, 0xEC, 0x20, 0x33, 0xF6, 0x48, 0x8D, 0xA9, 0x30, 0x80, 0x01, 0x00, 0x40, 0x88, 0xB1};
-        // 32 bytes, once in .text.
+        // The deferred decal job's drain (queue) -> count drained. It walks the
+        // 0x80-byte requests of its queue and adds each through the game's add
+        // path, the game's decal add, the wrapper and the core, on a worker of the
+        // task scheduler. It is the engine's producer into the request ring the
+        // replay also produces into; the gate below keeps the two apart.
+        const sig::Signature kDecalDrain{"decal_drain",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 57 48 83 EC 20 33 F6 48 8D A9 30 80 01 00 40 88 B1 18 80 01 "
+            "00",
+            0x1431DD4};
         using DrainFn = int(__fastcall*)(void*);
         std::atomic<DrainFn> g_originalDrain{nullptr};
         void* g_drainTarget = nullptr;
@@ -103,11 +169,6 @@ namespace replay::decal
         bool GuardedRead(std::uint8_t* out, const void* source, std::size_t size)
         {
             return replay::mem::Copy(out, source, size); // guarded_memory.h
-        }
-
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size); // guarded_memory.h
         }
 
         // Set while the replay itself adds a decal (same thread, the detour
@@ -275,8 +336,8 @@ namespace replay::decal
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
         g_base = reinterpret_cast<std::uintptr_t>(base);
         g_imageEnd = g_base + nt->OptionalHeader.SizeOfImage;
-        void* target = base + kCoreRva;
-        if (!GuardedCompare(target, kCoreSignature, sizeof(kCoreSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kDecalCore));
+        if (!target)
         {
             error = "decal_core_signature_mismatch";
             return false;
@@ -305,8 +366,8 @@ namespace replay::decal
         }
         g_target = target;
         g_installed = true;
-        void* removeTarget = base + kRemoveRva;
-        if (GuardedCompare(removeTarget, kRemoveSignature, sizeof(kRemoveSignature)))
+        void* removeTarget = reinterpret_cast<void*>(sig::Find(kDecalRemove));
+        if (removeTarget)
         {
             void* removeTrampoline = nullptr;
             if (MH_CreateHook(removeTarget, reinterpret_cast<void*>(&RemoveDetour), &removeTrampoline) == MH_OK && removeTrampoline)
@@ -323,8 +384,8 @@ namespace replay::decal
         }
         if (!g_removeTarget)
             error = "decal_remove_observer_unavailable";
-        void* projTarget = base + kProjAddRva;
-        if (GuardedCompare(projTarget, kProjAddSignature, sizeof(kProjAddSignature)))
+        void* projTarget = reinterpret_cast<void*>(sig::Find(kDecalProjAdd));
+        if (projTarget)
         {
             void* projTrampoline = nullptr;
             if (MH_CreateHook(projTarget, reinterpret_cast<void*>(&ProjDetour), &projTrampoline) == MH_OK && projTrampoline)
@@ -344,8 +405,8 @@ namespace replay::decal
         // The drain of the deferred decal job, so the replay's adds never run
         // beside the engine's.
         ReadGateIni();
-        void* drainTarget = base + kDrainRva;
-        if (GuardedCompare(drainTarget, kDrainSignature, sizeof(kDrainSignature)))
+        void* drainTarget = reinterpret_cast<void*>(sig::Find(kDecalDrain));
+        if (drainTarget)
         {
             void* drainTrampoline = nullptr;
             if (MH_CreateHook(drainTarget, reinterpret_cast<void*>(&DrainDetour), &drainTrampoline) == MH_OK && drainTrampoline)
@@ -390,10 +451,12 @@ namespace replay::decal
                 std::memcpy(side, call.side, sizeof(side));
                 const std::uint32_t type = call.typeHash;
                 t_replayProj = true;
-                fn(manager, &type, entity, call.arg4, position, direction, side, call.size, call.arg9, call.arg10, call.arg11,
+                void* added = nullptr;
+                const bool called = engine::Call(engine::kDecalProjAdd, reinterpret_cast<std::uintptr_t>(fn), added, manager,
+                    &type, entity, call.arg4, position, direction, side, call.size, call.arg9, call.arg10, call.arg11,
                     call.arg12, reinterpret_cast<void*>(call.owner));
                 t_replayProj = false;
-                return true;
+                return called || engine::Failed(code);
             }
             __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
             {
@@ -405,15 +468,28 @@ namespace replay::decal
 
     bool AddProjDecal(const ProjCall& call, void* entity, std::string& error)
     {
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
         ProjAddFn fn = g_originalProj.load(std::memory_order_acquire);
         if (!fn)
         {
             error = "proj_not_hooked";
             return false;
         }
+        for (const sig::Signature* site : kDecalProjAddArgs)
+        {
+            if (!sig::Find(*site))
+            {
+                error = "proj_add_signature_mismatch";
+                return false;
+            }
+        }
+        void* manager = reinterpret_cast<void*>(sig::Find(kDecalProjManager));
+        if (!manager)
+        {
+            error = "proj_manager_signature_mismatch";
+            return false;
+        }
         std::uint32_t code = 0;
-        if (!GuardedProjAdd(fn, base + kProjManagerRva, call, entity, code))
+        if (!GuardedProjAdd(fn, manager, call, entity, code))
         {
             char text[32]{};
             std::snprintf(text, sizeof(text), "exception_%08X", code);
@@ -436,21 +512,12 @@ namespace replay::decal
 
     namespace
     {
-        bool GuardedRemove(void* manager, int id, std::uint32_t& code)
+        bool GuardedRemove(std::uintptr_t remove, void* manager, int id, std::uint32_t& code)
         {
-            __try
-            {
-                const RemoveFn fn = g_originalRemove.load(std::memory_order_acquire);
-                if (fn)
-                    fn(manager, id);
-                else
-                    reinterpret_cast<RemoveFn>(reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr)) + kRemoveRva)(manager, id);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            // Through the trampoline when observed (no event of ours).
+            const RemoveFn fn = g_originalRemove.load(std::memory_order_acquire);
+            return engine::Call(engine::kDecalRemove, fn ? reinterpret_cast<std::uintptr_t>(fn) : remove, manager, id) ||
+                engine::Failed(code);
         }
     }
 
@@ -458,9 +525,9 @@ namespace replay::decal
     {
         bool ManagerPointer(std::uint64_t& manager, std::string& error)
         {
-            auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
+            const std::uintptr_t at = sig::Find(kDecalManager);
             std::uint8_t pointer[8] = {};
-            if (!GuardedRead(pointer, base + kManagerRva, 8))
+            if (!at || !GuardedRead(pointer, reinterpret_cast<const void*>(at), 8))
             {
                 error = "decal_manager_unreadable";
                 return false;
@@ -475,6 +542,17 @@ namespace replay::decal
         // thread only (both adds).
         guard::Refusals g_guardRefusals;
         RingStale g_lastRingStale;
+
+        // What the checks read and the field the replay writes into a settings
+        // copy (the info, +0x88) are in the bytes of these: the core's ring take,
+        // the worker's reads, the add path's info test.
+        bool LayoutProven(std::string& error)
+        {
+            static const bool proven = sig::Find(kDecalCoreRing) && sig::Find(kDecalWorkerInfo) && sig::Find(kDecalInfoUse);
+            if (!proven)
+                error = "decal_layout_signature_mismatch";
+            return proven;
+        }
 
         bool CheckInfo(const std::uint8_t* settings, std::string& error)
         {
@@ -517,7 +595,7 @@ namespace replay::decal
         }
 
         // The ring entry the core takes next: its previous entity is unlinked
-        // first (0x15EDE0 -> 0x15E544 writes [previous+8]); a value that is
+        // first (the ref assign's unlink writes [previous+8]); a value that is
         // not a readable pointer is refused. Under the producer gate the cursor
         // does not move between this and the add.
         bool CheckRingEntry(std::uint64_t manager, std::string& error)
@@ -549,28 +627,14 @@ namespace replay::decal
         bool GuardedCoreAdd(CoreFn fn, void* manager, void* entity, std::uint8_t* settings, int id, std::uint8_t flag, int& result,
             std::uint32_t& code)
         {
-            __try
-            {
-                result = fn(manager, entity, settings, id, flag);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kDecalCore, reinterpret_cast<std::uintptr_t>(fn), result, manager, entity, settings, id,
+                       flag) ||
+                engine::Failed(code);
         }
 
-        bool GuardedAlive(AliveFn fn, void* manager, int id, bool& alive, std::uint32_t& code)
+        bool GuardedAlive(std::uintptr_t fn, void* manager, int id, bool& alive, std::uint32_t& code)
         {
-            __try
-            {
-                alive = fn(manager, id);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kDecalAlive, fn, alive, manager, id) || engine::Failed(code);
         }
     }
 
@@ -581,6 +645,14 @@ namespace replay::decal
         if (!core)
         {
             error = "decal_core_not_hooked";
+            return false;
+        }
+        if (!LayoutProven(error))
+            return false;
+        // The id check reads the generation words the alive test reads.
+        if (!sig::Find(kDecalAlive))
+        {
+            error = "decal_alive_signature_mismatch";
             return false;
         }
         if (!CheckInfo(settings, error))
@@ -625,8 +697,8 @@ namespace replay::decal
 
     bool IsDecalAlive(std::uint32_t id, std::string& error)
     {
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        if (!GuardedCompare(base + kAliveRva, kAliveSignature, sizeof(kAliveSignature)))
+        const std::uintptr_t aliveTest = sig::Find(kDecalAlive);
+        if (!aliveTest)
         {
             error = "decal_alive_signature_mismatch";
             return false;
@@ -636,7 +708,7 @@ namespace replay::decal
             return false;
         bool alive = false;
         std::uint32_t code = 0;
-        if (!GuardedAlive(reinterpret_cast<AliveFn>(base + kAliveRva), reinterpret_cast<void*>(manager), static_cast<int>(id), alive, code))
+        if (!GuardedAlive(aliveTest, reinterpret_cast<void*>(manager), static_cast<int>(id), alive, code))
         {
             error = "exception";
             return false;
@@ -646,14 +718,15 @@ namespace replay::decal
 
     bool RemoveDecal(std::uint32_t id, std::string& error)
     {
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        if (!g_removeTarget && !GuardedCompare(base + kRemoveRva, kRemoveSignature, sizeof(kRemoveSignature)))
+        const std::uintptr_t remove = sig::Find(kDecalRemove);
+        if (!g_removeTarget && !remove)
         {
             error = "decal_remove_signature_mismatch";
             return false;
         }
+        const std::uintptr_t managerAt = sig::Find(kDecalManager);
         std::uint8_t pointer[8] = {};
-        if (!GuardedRead(pointer, base + kManagerRva, 8))
+        if (!managerAt || !GuardedRead(pointer, reinterpret_cast<const void*>(managerAt), 8))
         {
             error = "decal_manager_unreadable";
             return false;
@@ -661,7 +734,7 @@ namespace replay::decal
         std::uint64_t manager = 0;
         std::memcpy(&manager, pointer, 8);
         std::uint32_t code = 0;
-        if (!manager || !GuardedRemove(reinterpret_cast<void*>(manager), static_cast<int>(id), code))
+        if (!manager || !GuardedRemove(remove, reinterpret_cast<void*>(manager), static_cast<int>(id), code))
         {
             char text[32]{};
             std::snprintf(text, sizeof(text), "exception_%08X", code);
@@ -694,15 +767,9 @@ namespace replay::decal
 
     namespace
     {
-        constexpr std::uintptr_t kInfoTableRva = 0x3CE4F00;
-        constexpr std::uintptr_t kInfoLookupRva = 0x2C3A3D8;
-        constexpr std::uint8_t kInfoLookupSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20,
-            0x48, 0x8B, 0xD9, 0x41, 0x8B, 0xF8, 0x48, 0x83, 0xC1, 0x18,
-        };
         constexpr std::size_t kInfoRecordBytes = 0x160;
-        using InfoLookupFn = void*(__fastcall*)(void* table, const std::uint32_t* hash, int index);
-        InfoLookupFn g_infoLookup = nullptr;
+        std::uintptr_t g_infoLookup = 0;
+        std::uintptr_t g_infoTable = 0;
         bool g_infoLookupChecked = false;
         std::unordered_map<std::uint64_t, InfoKey> g_infoKeys;
 
@@ -712,17 +779,10 @@ namespace replay::decal
             return GuardedRead(reinterpret_cast<std::uint8_t*>(&value), reinterpret_cast<const void*>(address), sizeof(T));
         }
 
-        bool GuardedLookup(InfoLookupFn fn, void* table, const std::uint32_t* hash, int index, void*& out, std::uint32_t& code)
+        bool GuardedLookup(std::uintptr_t fn, void* table, const std::uint32_t* hash, int index, void*& out,
+            std::uint32_t& code)
         {
-            __try
-            {
-                out = fn(table, hash, index);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kDecalInfoLookup, fn, out, table, hash, index) || engine::Failed(code);
         }
     }
 
@@ -734,7 +794,9 @@ namespace replay::decal
         const auto cached = g_infoKeys.find(info);
         if (cached != g_infoKeys.end())
             return cached->second;
-        const std::uintptr_t table = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + kInfoTableRva;
+        const std::uintptr_t table = sig::Find(kDecalInfoTable);
+        if (!table)
+            return key;
         // Map at table+0x18: pairs at [+0x20] ({u32 hash, pad, u64 value}),
         // u16 count at +0x28; value = {u64 base, u16 count} of 0x160 B records.
         std::uint64_t pairs = 0;
@@ -771,12 +833,12 @@ namespace replay::decal
             error = "info_key_unknown";
             return 0;
         }
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
         if (!g_infoLookupChecked)
         {
             g_infoLookupChecked = true;
-            if (GuardedCompare(base + kInfoLookupRva, kInfoLookupSignature, sizeof(kInfoLookupSignature)))
-                g_infoLookup = reinterpret_cast<InfoLookupFn>(base + kInfoLookupRva);
+            g_infoTable = sig::Find(kDecalInfoTable);
+            if (g_infoTable)
+                g_infoLookup = sig::Find(kDecalInfoLookup);
         }
         if (!g_infoLookup)
         {
@@ -786,7 +848,7 @@ namespace replay::decal
         void* out = nullptr;
         std::uint32_t code = 0;
         const std::uint32_t hash = key.hash;
-        if (!GuardedLookup(g_infoLookup, base + kInfoTableRva, &hash, key.index, out, code))
+        if (!GuardedLookup(g_infoLookup, reinterpret_cast<void*>(g_infoTable), &hash, key.index, out, code))
         {
             char text[32]{};
             std::snprintf(text, sizeof(text), "exception_%08X", code);
@@ -802,13 +864,13 @@ namespace replay::decal
     {
         if (g_wrapper)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        if (!GuardedCompare(base + kWrapperRva, kWrapperSignature, sizeof(kWrapperSignature)))
+        const std::uintptr_t wrapper = sig::Find(kDecalWrapper);
+        if (!wrapper)
         {
             error = "decal_wrapper_signature_mismatch";
             return false;
         }
-        g_wrapper = reinterpret_cast<WrapperFn>(base + kWrapperRva);
+        g_wrapper = wrapper;
         return true;
     }
 
@@ -816,18 +878,10 @@ namespace replay::decal
     {
         bool GuardedAdd(void* manager, void* entity, std::uint8_t* settings, std::uint8_t flag, int& id, std::uint32_t& code)
         {
-            __try
-            {
-                t_replayAdd = true;
-                id = g_wrapper(manager, entity, settings, flag);
-                t_replayAdd = false;
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                t_replayAdd = false;
-                return false;
-            }
+            t_replayAdd = true;
+            const bool called = engine::Call(engine::kDecalWrapper, g_wrapper, id, manager, entity, settings, flag);
+            t_replayAdd = false;
+            return called || engine::Failed(code);
         }
     }
 
@@ -841,11 +895,13 @@ namespace replay::decal
     {
         if (!EnsurePlayer(error))
             return 0;
+        if (!LayoutProven(error))
+            return 0;
         if (!CheckInfo(settings, error))
             return 0;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
+        const std::uintptr_t managerAt = sig::Find(kDecalManager);
         std::uint8_t pointer[8] = {};
-        if (!GuardedRead(pointer, base + kManagerRva, 8))
+        if (!managerAt || !GuardedRead(pointer, reinterpret_cast<const void*>(managerAt), 8))
         {
             error = "decal_manager_unreadable";
             return 0;
@@ -894,6 +950,37 @@ namespace replay::decal
 
     guard::Refusals GuardRefusals() { return g_guardRefusals; }
     RingStale LastRingStale() { return g_lastRingStale; }
+
+    namespace
+    {
+        // The RVA the return of the call at `call` (5 bytes) has, or `missing`
+        // (above every RVA) when the game lacks the call.
+        std::uint32_t ReturnRva(const sig::Signature& call, std::uint32_t missing)
+        {
+            const std::uintptr_t at = sig::Find(call);
+            const std::uintptr_t base = sig::ImageBase();
+            return at && base ? static_cast<std::uint32_t>(at + 5 - base) : missing;
+        }
+
+        struct ReturnRvas
+        {
+            std::uint32_t generic;
+            std::uint32_t rageMirror;
+            std::uint32_t poolAdd;
+        };
+
+        // Once, a value of its own for each site the game lacks.
+        const ReturnRvas& Returns()
+        {
+            static const ReturnRvas returns{ReturnRva(kDecalGenericCall, 0xFFFFFFFFu),
+                ReturnRva(kDecalRageMirrorCall, 0xFFFFFFFEu), ReturnRva(kDecalPoolAddCall, 0xFFFFFFFDu)};
+            return returns;
+        }
+    }
+
+    std::uint32_t GenericReturn() { return Returns().generic; }
+    std::uint32_t RageMirrorProjReturn() { return Returns().rageMirror; }
+    std::uint32_t PoolAddReturn() { return Returns().poolAdd; }
 
     void Shutdown()
     {

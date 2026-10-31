@@ -382,9 +382,9 @@ namespace
             "a hatless head is left as recorded");
     }
 
-    // Base + 0x39ECE40 / 0x39ECE48, the ped's component handle at +0x9C, the row of
-    // 0x148 bytes, the tagged pointer at row + 0x98 and the owner check at
-    // component + 8.
+    // The pool's base index and table, the ped's component handle at +0x9C, the
+    // row of 0x148 bytes, the tagged pointer at row + 0x98 and the owner check
+    // at component + 8.
     void TestAnimVisibleComponent()
     {
         using namespace replay::animvisible;
@@ -412,43 +412,48 @@ namespace
         const std::uintptr_t owner = ped | 0x7u; // low 4 bits are flags
         put(ped + kEntityTypeOffset, &pedType, 1);
         put(ped + kComponentHandleOffset, &handle, 4);
-        put(base + kComponentBaseIndexRva, &baseIndex, 4);
-        put(base + kComponentTableRva, &table, 8);
+        const replay::enginesig::Pool pool{base + 0x39ECE40, base + 0x39ECE48};
+        put(pool.baseIndex, &baseIndex, 4);
+        put(pool.table, &table, 8);
         const std::uintptr_t row = table + static_cast<std::uintptr_t>(slot - baseIndex) * kComponentRowBytes;
         put(row + kGraphicsComponentSlot, &tagged, 8);
         put(component + kComponentOwnerOffset, &owner, 8);
-        Check(GraphicsComponent(base, ped, read) == component, "the graphics component of the ped (tag bit cleared)");
-        Check(GraphicsComponent(base, 0, read) == 0 && GraphicsComponent(0, ped, read) == 0, "no ped or no base: nothing");
+        Check(GraphicsComponent(pool, ped, read) == component, "the graphics component of the ped (tag bit cleared)");
+        Check(GraphicsComponent(pool, 0, read) == 0 && GraphicsComponent(replay::enginesig::Pool{}, ped, read) == 0 &&
+                  GraphicsComponent(replay::enginesig::Pool{pool.baseIndex, 0}, ped, read) == 0,
+            "no ped or a pool not found: nothing");
 
         const std::uint8_t vehicleType = 3;
         put(ped + kEntityTypeOffset, &vehicleType, 1);
-        Check(GraphicsComponent(base, ped, read) == 0, "an entity that is not a ped is refused");
+        Check(GraphicsComponent(pool, ped, read) == 0, "an entity that is not a ped is refused");
         put(ped + kEntityTypeOffset, &pedType, 1);
 
         const std::uintptr_t stranger = 0x2B0004560ull;
         put(component + kComponentOwnerOffset, &stranger, 8);
-        Check(GraphicsComponent(base, ped, read) == 0, "a component owned by another entity is refused");
+        Check(GraphicsComponent(pool, ped, read) == 0, "a component owned by another entity is refused");
         put(component + kComponentOwnerOffset, &owner, 8);
 
         const std::uint32_t lowHandle = 0x10; // below the table's base index
         put(ped + kComponentHandleOffset, &lowHandle, 4);
-        Check(GraphicsComponent(base, ped, read) == 0, "a slot below the base index is refused");
+        Check(GraphicsComponent(pool, ped, read) == 0, "a slot below the base index is refused");
         const std::uint32_t farHandle = baseIndex + kMaxSlot;
         put(ped + kComponentHandleOffset, &farHandle, 4);
-        Check(GraphicsComponent(base, ped, read) == 0, "a slot past any ped pool is refused before it becomes an address");
+        Check(GraphicsComponent(pool, ped, read) == 0, "a slot past any ped pool is refused before it becomes an address");
         put(ped + kComponentHandleOffset, &handle, 4);
 
         const std::uintptr_t empty = 0;
         put(row + kGraphicsComponentSlot, &empty, 8);
-        Check(GraphicsComponent(base, ped, read) == 0, "a ped without a graphics component");
+        Check(GraphicsComponent(pool, ped, read) == 0, "a ped without a graphics component");
         put(row + kGraphicsComponentSlot, &tagged, 8);
-        memory.erase(base + kComponentTableRva);
-        Check(GraphicsComponent(base, ped, read) == 0, "an unreadable table: nothing");
-        Check(kAnimVisibleOffset == 0x4A8, "the byte 0x8F0991 reads");
+        memory.erase(pool.table);
+        Check(GraphicsComponent(pool, ped, read) == 0, "an unreadable table: nothing");
+        Check(kAnimVisibleOffset == 0x4A8, "the byte the visibility test reads");
+        Check(std::string(kAnimVisibleTest.pattern).find("A8 04 00 00") != std::string::npos,
+            "the checked instruction holds the offset written");
     }
 
-    // The anim director of a ped as 0x2BDDE1C finds it (base + 0x3CD4380 /
-    // 0x3CD4388, 16-byte rows, tag bit, director at +0x28).
+    // The anim director of a ped as the creature lookup finds it (the pool's
+    // base index and table, 16-byte rows, tag bit, director at +0x28).
     void TestAnimLodDirector()
     {
         using namespace replay::animlod;
@@ -476,28 +481,29 @@ namespace
         const std::uintptr_t tagged = anim | 1u;
         put(ped + kEntityTypeOffset, &pedType, 1);
         put(ped + kComponentHandleOffset, &handle, 4);
-        put(base + kAnimTableBaseIndexRva, &baseIndex, 4);
-        put(base + kAnimTableRva, &table, 8);
+        const replay::enginesig::Pool creatures{base + 0x3CD4380, base + 0x3CD4388};
+        put(creatures.baseIndex, &baseIndex, 4);
+        put(creatures.table, &table, 8);
         const std::uintptr_t row = table + static_cast<std::uintptr_t>(slot - baseIndex) * kAnimRowBytes;
         put(row, &tagged, 8);
         put(anim + kDirectorOffset, &director, 8);
-        Check(DirectorOf(base, ped, read) == director, "the anim director of the ped (tag bit cleared, row of 16 bytes)");
+        Check(DirectorOf(creatures, ped, read) == director, "the anim director of the ped (tag bit cleared, row of 16 bytes)");
         const std::uint8_t objectType = 5;
         put(ped + kEntityTypeOffset, &objectType, 1);
-        Check(DirectorOf(base, ped, read) == 0, "an entity that is not a ped has no director here");
+        Check(DirectorOf(creatures, ped, read) == 0, "an entity that is not a ped has no director here");
         put(ped + kEntityTypeOffset, &pedType, 1);
         const std::uint32_t farHandle = baseIndex + kMaxSlot;
         put(ped + kComponentHandleOffset, &farHandle, 4);
-        Check(DirectorOf(base, ped, read) == 0, "a slot past any ped pool is refused");
+        Check(DirectorOf(creatures, ped, read) == 0, "a slot past any ped pool is refused");
         put(ped + kComponentHandleOffset, &handle, 4);
         const std::uintptr_t none = 0;
         put(row, &none, 8);
-        Check(DirectorOf(base, ped, read) == 0, "no anim component: no director");
+        Check(DirectorOf(creatures, ped, read) == 0, "no anim component: no director");
         Check(kMaxForced >= 256, "every recorded ped can be forced");
     }
 
-    // The engine mount link as 0xCC857C reads it, and when a puppet's "mount"
-    // chain is forwarded (entity_query.h).
+    // The engine mount link as the engine reads it (kMountLink), and when a
+    // puppet's "mount" chain is forwarded (entity_query.h).
     void TestEntityQuery()
     {
         using namespace replay::entityquery;
@@ -513,7 +519,7 @@ namespace
             std::memcpy(out, found->second.data(), size);
             return true;
         };
-        const std::uintptr_t base = 0x140000000ull;
+        const replay::enginesig::Pool pool{0x1439ECE40ull, 0x1439ECE48ull};
         const std::uintptr_t ped = 0x2A0001230ull;
         const std::uintptr_t table = 0x320000000ull;
         const std::uintptr_t ride = 0x350000040ull;
@@ -522,25 +528,31 @@ namespace
         const std::uint32_t slot = 0x2C;
         const std::uint32_t handle = 0x00A0000u | slot;
         put(ped + kComponentHandleOffset, &handle, 4);
-        put(base + kComponentIndexBaseRva, &indexBase, 4);
-        put(base + kComponentTableRva, &table, 8);
+        put(pool.baseIndex, &indexBase, 4);
+        put(pool.table, &table, 8);
         const std::uintptr_t row = table + static_cast<std::uintptr_t>(slot - indexBase) * kComponentRowBytes;
-        Check(ComponentRow(base, ped, read) == row, "the component row (0x148 bytes, slot minus the index base)");
+        Check(ComponentRow(pool, ped, read) == row, "the component row (0x148 bytes, slot minus the index base)");
+        Check(ComponentRow(replay::enginesig::Pool{}, ped, read) == 0, "no row without the mount link's globals");
         const std::uintptr_t taggedRide = ride | 1u;
         put(row + kRowRideSlot, &taggedRide, 8);
         const std::uint32_t mounted = 0x13;
         put(ride + kRideFlagsOffset, &mounted, 4);
         put(ride + kRideMountOffset, &horse, 8);
-        Check(EngineMountOf(base, ped, read) == horse, "mounted: flags bit 4, the mount at +0x178 (tag bit cleared)");
+        Check(EngineMountOf(pool, ped, read) == horse, "mounted: flags bit 4, the mount at +0x178 (tag bit cleared)");
         const std::uint32_t climbing = 0x03;
         put(ride + kRideFlagsOffset, &climbing, 4);
-        Check(EngineMountOf(base, ped, read) == 0, "the ride component without bit 4: not mounted");
+        Check(EngineMountOf(pool, ped, read) == 0, "the ride component without bit 4: not mounted");
         const std::uintptr_t none = 0;
         put(row + kRowRideSlot, &none, 8);
-        Check(EngineMountOf(base, ped, read) == 0, "no ride component (a puppet): not mounted");
+        Check(EngineMountOf(pool, ped, read) == 0, "no ride component (a puppet): not mounted");
         const std::uint32_t outside = indexBase - 1;
         put(ped + kComponentHandleOffset, &outside, 4);
-        Check(ComponentRow(base, ped, read) == 0, "a handle below the index base is refused");
+        Check(ComponentRow(pool, ped, read) == 0, "a handle below the index base is refused");
+        Check(kHolderVtables[0] == &replay::enginesig::kAudioHolderVtable &&
+                  kHolderVtables[1] == &replay::enginesig::kAudioHolderVtableA &&
+                  kHolderVtables[2] == &replay::enginesig::kAudioHolderVtableB && kHolderVtables[0]->rva == 0x3839538u &&
+                  kHolderVtables[1]->rva == 0x3839630u && kHolderVtables[2]->rva == 0x3839728u,
+            "the three holder vtables");
 
         Check(ForwardsToMount(kMountHead, 3, 0, 0x2B0000000ull, true), "a puppet seated by the replay: forwarded");
         Check(!ForwardsToMount(kMountHead, 3, horse, 0x2B0000000ull, true), "the engine link holds: the engine answers");
@@ -828,8 +840,8 @@ namespace
         Check(!bad.Valid(), "an index out of range is refused");
     }
 
-    // The PED_VARIABLES block as 0x258A9B4 and 0x253708C address it, and the read
-    // probe's range test (ped_audio_state.h).
+    // The PED_VARIABLES block as the block setter and the block write address it,
+    // and the read probe's range test (ped_audio_state.h).
     void TestPedVariablesBlock()
     {
         using namespace replay::pedaudiostate;
@@ -845,13 +857,13 @@ namespace
             std::memcpy(out, found->second.data(), size);
             return true;
         };
-        const std::uintptr_t base = 0x140000000ull;
+        const std::uintptr_t table = 0x140000000ull + 0x53598F0; // the block table
         const std::uintptr_t holder = 0x2A0001000ull;
         const std::uintptr_t descriptor = 0x330000000ull;
         const std::uintptr_t values = 0x331000000ull;
         const std::int16_t index = 7;
         put(holder + kHolderBlockIndexOffset, &index, 2);
-        const std::uintptr_t entry = base + kBlockTableRva + 7 * kBlockEntryBytes;
+        const std::uintptr_t entry = table + 7 * kBlockEntryBytes;
         put(entry, &descriptor, 8);
         put(entry + kBlockValuesOffset, &values, 8);
         const std::uint32_t count = 3;
@@ -862,7 +874,7 @@ namespace
         const float recordedValues[3] = {1.0f, 2.5f, 0.0f};
         put(values, recordedValues, sizeof(recordedValues));
         Block recorded;
-        Check(ReadBlock(base, holder, read, recorded) && recorded.count == 3 && recorded.index == 7 && recorded.values == values &&
+        Check(ReadBlock(table, holder, read, recorded) && recorded.count == 3 && recorded.index == 7 && recorded.values == values &&
                   recorded.names[1] == 0x8BAE9C31u && recorded.data[1] == 2.5f,
             "the block: index word +0x12, entry {descriptor, values}, names every 8 bytes from +0xC");
         float value = 0.0f;
@@ -872,7 +884,9 @@ namespace
         const float puppetValues[3] = {0.0f, 2.5f, 0.0f};
         put(values, puppetValues, sizeof(puppetValues));
         Block puppet;
-        Check(ReadBlock(base, holder, read, puppet), "the puppet's block");
+        Check(ReadBlock(table, holder, read, puppet), "the puppet's block");
+        Block unfound;
+        Check(!ReadBlock(0, holder, read, unfound) && unfound.count == 0, "no block table found: nothing");
         std::uint32_t differing = 0;
         Check(DiffText(recorded, puppet, differing) == "is_player:1>0" && differing == 1,
             "the difference: the recorded player's is_player 1, the puppet's 0");
@@ -881,11 +895,11 @@ namespace
 
         const std::int16_t none = -1;
         put(holder + kHolderBlockIndexOffset, &none, 2);
-        Check(!ReadBlock(base, holder, read, puppet), "no block (index -1): nothing");
+        Check(!ReadBlock(table, holder, read, puppet), "no block (index -1): nothing");
         put(holder + kHolderBlockIndexOffset, &index, 2);
         const std::uint32_t tooMany = kMaxBlockVariables + 1;
         put(descriptor + kDescriptorCountOffset, &tooMany, 4);
-        Check(!ReadBlock(base, holder, read, puppet), "a count past the cap is refused");
+        Check(!ReadBlock(table, holder, read, puppet), "a count past the cap is refused");
 
         BlockHistory history;
         Check(history.Note(100, recorded) && !history.Note(200, recorded) && history.Note(300, puppet), "history on change only");
@@ -1465,10 +1479,13 @@ namespace
 
         // The engine sites (offline 1491.50).
         using namespace replay::theatre;
-        Check(SiteTarget(kAnimalBankPickSite) == 0x2F985B0 && SiteTarget(kAnimalBankPickSite) == kAnimalBankPickSite.target,
+        Check(kAnimalBankPick.rva == 0x2F985B0 && kAnimalBankPick.parent == &kAnimalBankPickCall &&
+                kAnimalBankPickCall.parent == &kAnimalBankUpdate,
             "sites: the animal bank update calls the type picker 0x2F985B0");
-        Check(SiteTarget(kAnimalNameTableSite) == 0x3E276A0, "sites: the name builder reads the type name table 0x3E276A0");
-        Check(SiteTarget(kAnimalBankFormatSite) == 0x37FEC88, "sites: and formats with .rdata 0x37FEC88");
+        Check(kAnimalNameTable.rva == 0x3E276A0 && kAnimalNameTableRead.parent == &kAnimalNameBuilder,
+            "sites: the name builder reads the type name table 0x3E276A0");
+        Check(kAnimalBankFormat.rva == 0x37FEC88 && kAnimalBankFormatRead.parent == &kAnimalNameBuilder,
+            "sites: and formats with .rdata 0x37FEC88");
         Check(bank::RecordOffset(bank::kHorseType, bank::kHolder) == 0x1930 &&
                 bank::RecordOffset(bank::kHorseType, bank::kHolderObject) == 0x1940,
             "records: the horse record's holder is the +0x1930/+0x1940 the picker tests (0x2F985D6, 0x2F98626)");
@@ -1640,75 +1657,27 @@ namespace
             "an unknown category not on the puppet is absent");
     }
 
-    void TestNoRecordAlternates()
-    {
-        using namespace replay;
-        using namespace replay::norecord;
-        const entity::ReplayId arthur{0, 1};
-        std::vector<entity::PoseSegment> segments(2);
-        segments[0].entity = arthur;
-        segments[0].startMs = 0;
-        segments[0].recordId = 0x80000008;
-        segments[0].appearance.assets = {Asset(1, 1), Asset(2, 2)};
-        segments[1].entity = arthur;
-        segments[1].startMs = 2324;
-        segments[1].recordId = 0x8000000d;
-        segments[1].appearance.assets = {Asset(1, 1), Asset(2, 2), Asset(3, 3)}; // the 27 layers
-        AppearanceTrack track;
-        track.id = arthur.Packed();
-        track.changes.resize(3);
-        track.changes[0].timeMs = 0;
-        track.changes[0].appearance.assets = {Asset(1, 1), Asset(5, 5)};
-        track.changes[1].timeMs = 9768;
-        track.changes[1].appearance.assets = {Asset(1, 1), Asset(3, 3), Asset(6, 6)};
-        track.changes[2].timeMs = 11275;
-        track.changes[2].appearance.assets = {Asset(1, 1), Asset(3, 3), Asset(7, 7)}; // builds the 1066 bones
-        const entity::Appearance create;
-        const std::uint64_t worn = AppearancePrint(segments[1].appearance);
-        const std::vector<Alternate> found = Alternates(&track, segments, arthur, &segments[1], create, 2339, worn, kMaxAlternates);
-        Check(found.size() == 2 && found[0].key == 2 && found[1].key == 3,
-            "the alternates are the segment's other appearances, nearest first, without the worn one or the earlier segment's");
-        Check(AppearanceForKey(&track, &segments[1], create, 3) == &track.changes[2].appearance &&
-                AppearanceForKey(&track, &segments[1], create, 0) == &segments[1].appearance &&
-                AppearanceForKey(&track, &segments[1], create, 9) == nullptr,
-            "an alternate key gives back its appearance");
-        const std::vector<Alternate> late = Alternates(&track, segments, arthur, &segments[1], create, 11000,
-            AppearancePrint(track.changes[1].appearance), kMaxAlternates);
-        Check(late.size() == 2 && late[0].key == 3 && late[1].key == 0, "nearest to the playhead first, the segment's own included");
-        const std::vector<Alternate> first = Alternates(&track, segments, arthur, &segments[0], create, 100,
-            AppearancePrint(segments[0].appearance), kMaxAlternates);
-        Check(first.size() == 1 && first[0].key == 1, "the first segment's span ends at the next segment");
-    }
-
     void TestNoRecordSteps()
     {
         using namespace replay::norecord;
         Check(MapNow(true, true, false) && !MapNow(false, true, false) && !MapNow(true, false, false) && !MapNow(true, true, true),
             "only a posed body that lost its arm to a change goes through the map at once");
-        std::vector<Alternate> two(2);
-        two[0].key = 3;
-        two[1].key = 2;
         Fallback f;
-        Check(f.Begin(0x8000000d, 1066, two, 1000) && f.alternates == 2 && f.keys[0] == 3, "the steps begin with the alternates' keys");
-        Check(f.Next(985, 24, 1100, true) == Step::Wait, "nothing before the step period");
-        Check(f.Next(985, 24, 1400, true) == Step::Retry && f.retries == 1, "the recorded layers once more");
-        Check(f.Next(985, 24, 1800, true) == Step::Alternate && f.sameAnswer && f.AlternateKey() == 3,
-            "the same answer stops the retries: the nearest alternate");
-        Check(!f.Begin(0x8000000d, 1066, two, 1900), "a re-map for the same record goes on");
-        Check(f.Next(990, 20, 2200, true) == Step::Alternate && f.AlternateKey() == 2, "then the next alternate");
-        Check(f.Next(990, 20, 2600, true) == Step::Restore && !f.active && f.done, "none fit: the recorded layers back");
-        Check(!f.Begin(0x8000000d, 1066, two, 3000) && f.Next(985, 24, 9000, true) == Step::Wait,
-            "done: the restore's re-map does not start again");
+        Check(f.Begin(0x8000000d, 1066, 1000), "the steps begin");
+        Check(f.Next(985, 24, 1100) == Step::Wait, "nothing before the step period");
+        Check(f.Next(985, 24, 1400) == Step::Retry && f.retries == 1, "the recorded layers once more");
+        Check(!f.Begin(0x8000000d, 1066, 1500), "a re-map for the same record goes on");
+        Check(f.Next(985, 24, 1800) == Step::Done && f.sameAnswer && !f.active && f.done,
+            "the same answer stops the retries: the mapped pose stays");
+        Check(!f.Begin(0x8000000d, 1066, 3000) && f.Next(985, 24, 9000) == Step::Wait, "done: not started again");
         f.Reset();
-        Check(f.Begin(0x8000000d, 1066, two, 3000), "a new segment or change starts again");
-        Check(f.Next(985, 24, 3400, false) == Step::Retry && f.Next(985, 24, 3800, false) == Step::Done && f.done,
-            "alternates off: the mapped pose stays after the same answer");
+        Check(f.Begin(0x8000000d, 1066, 3000), "a new segment or change starts again");
         Fallback g;
-        g.Begin(1, 1066, {}, 0);
+        g.Begin(1, 1066, 0);
         std::uint32_t retries = 0;
         for (std::uint64_t t = 400, bones = 900; t < 10000; t += 400, ++bones)
         {
-            const Step step = g.Next(static_cast<std::uint32_t>(bones), 10, t, true);
+            const Step step = g.Next(static_cast<std::uint32_t>(bones), 10, t);
             if (step == Step::Retry)
                 ++retries;
             else if (step != Step::Wait)
@@ -1716,10 +1685,10 @@ namespace
         }
         Check(retries == kMaxRetries && g.done, "answers that keep changing are retried up to the old six");
         Fallback h;
-        h.Begin(1, 1066, two, 0);
-        h.Next(985, 24, 400, true);
+        h.Begin(1, 1066, 0);
+        h.Next(985, 24, 400);
         h.Finish();
-        Check(!h.active && h.done && h.Next(985, 24, 5000, true) == Step::Wait, "an exact arm ends the steps");
+        Check(!h.active && h.done && h.Next(985, 24, 5000) == Step::Wait, "an exact arm ends the steps");
     }
 
 
@@ -1747,9 +1716,11 @@ namespace
         Check(TagsToRead(0, true) == 0 && TagsToRead(1, true) == 1 && TagsToRead(9, true) == kMaxTags &&
                   TagsToRead(3, false) == 1,
             "hat look: the count capped, one tag when the stride is unproven");
-        Check(sizeof(kTagCoreSignature) == 63 && kTagCoreSignature[22] == 0x80 && kTagCoreSignature[25] == kEntityTypeObject &&
-                  kTagCoreSignature[31] == (kTagCountOffset & 0xFF) && kTagCoreSignature[40] == (kTagArrayOffset & 0xFF) &&
-                  kTagWalkSignature[6] == kTagStride,
+        Check(std::string(kTagCore.pattern).find("80 79 30 05") != std::string::npos &&
+                  std::string(kTagCore.pattern).find("66 39 B9 18 04 00 00") != std::string::npos &&
+                  std::string(kTagCore.pattern).find("4C 8B 89 10 04 00 00") != std::string::npos &&
+                  std::string(kTagWalk.pattern).find("48 83 C7 38") != std::string::npos && kEntityTypeObject == 5 &&
+                  kTagCountOffset == 0x418 && kTagArrayOffset == 0x410 && kTagStride == 0x38,
             "hat look: the signatures carry the offsets the reader uses");
 
         const std::vector<std::uint32_t> none;
@@ -2059,7 +2030,9 @@ namespace
         // The two fires of one weapon take its creates in order.
         rows = {{1016000, 0x1000100, 0xA1, 0x10, true}, {1117000, 0x1000100, 0xA2, 0x11, false}};
         const std::uint32_t frames[3] = {0x251688D, 0x2EFAEAF, 0x2F0B800};
-        Check(InFirePlay(frames, 3) && !InFirePlay(frames, 1), "shot delay: the fire path is a frame in the gunshot's play function");
+        const FirePlay firePlay{0x2EFA7E0u, 0x2EFB1F0u}; // the 1491.50 exe's
+        Check(InFirePlay(frames, 3, firePlay) && !InFirePlay(frames, 1, firePlay),
+            "shot delay: the fire path is a frame in the gunshot's play function");
         tracker.OnCreates(rows, matched);
         Check(matched.size() == 2 && tracker.At(0).sound == 0xA1 && tracker.At(1).sound == 0xA2,
             "shot delay: the oldest open fire of the audio takes the first create");
@@ -2125,8 +2098,11 @@ namespace
             {0x290053Cu, 75900, true, true}, {0x111u, 76010, true, true}, {0x260053Bu, 76700, true, true},
             {0x260053Bu, 77005, true, false}};
         const std::uint32_t echoCaller = 0x3125951u;
-        Check(InFirePlay(&kFirePlayBegin, 1) && !InFirePlay(&kFirePlayEnd, 1) && !InFirePlay(&echoCaller, 1),
+        // The gunshot's play function on the 1491.50 exe (its .pdata extent).
+        const FirePlay fire{0x2EFA7E0u, 0x2EFB1F0u};
+        Check(InFirePlay(&fire.begin, 1, fire) && !InFirePlay(&fire.end, 1, fire) && !InFirePlay(&echoCaller, 1, fire),
             "shot delay: the fire path bounds (the echo caller is outside)");
+        Check(!InFirePlay(&fire.begin, 1, FirePlay{}), "shot delay: no fire path when the function was not found");
         const auto refs = ClipReference(shots, packets);
         Check(refs.at(a.shooter).count == 2 && std::fabs(refs.at(a.shooter).minMs + 2.0) < 1e-6 && std::fabs(refs.at(a.shooter).maxMs - 30.0) < 1e-6,
             "shot delay: the clip reference skips packets off the fire path and takes the first one (signed)");
@@ -2146,43 +2122,49 @@ namespace
         owner::ShotWindows shots;
         shots.Add((41u << 16) | 1340u, 74786);
         shots.Seal();
+        const replay::soundgeneric::WrapperCode wrapperCode = replay::soundgeneric::KnownWrapperCode();
+        // FamilyOf with the caller named by the 1491.50 ranges (the player names it with the game's).
+        const auto FamilyNamed = [](owner::PacketKey k, const owner::Cover& c, const owner::ShotWindows* s = nullptr) {
+            owner::NameCaller(k, owner::KnownCallerRanges());
+            return owner::FamilyOf(k, c, s);
+        };
         owner::PacketKey key;
         key.owner = (48u << 16) | 172u; // the meat (052-ScarlettMeadows)
         key.cls = replay::census::OwnerClass::Weapon;
         key.stableId = 0x10e55f6;
         key.caller = 0x251688D;
-        key.callerInWrappers = replay::soundgeneric::InAudioEntityWrappers(key.caller);
+        key.callerInWrappers = replay::soundgeneric::InAudioEntityWrappers(key.caller, wrapperCode);
         key.timeMs = 57286;
         key.audioKnown = true;
         key.audioBase = AudioBase::WeaponAudio;
         Check(key.callerInWrappers, "off shot: the sizzle's caller is inside the creator's wrappers");
-        Check(owner::FamilyOf(key, cover) == owner::Family::Gunshot, "off shot: without the shot list the old rule (gunshot)");
-        Check(owner::FamilyOf(key, cover, &shots) == owner::Family::Owned && owner::OffShot(key, &shots),
+        Check(FamilyNamed(key, cover) == owner::Family::Gunshot, "off shot: without the shot list the old rule (gunshot)");
+        Check(FamilyNamed(key, cover, &shots) == owner::Family::Owned && owner::OffShot(key, &shots),
             "off shot: a script sound on a weapon object with no shot of it is owned (the generic player's)");
         Check(owner::TakerOf(owner::Family::Owned, owner::Overrides()) == owner::Taker::Generic, "off shot: owned goes to the generic player");
         // The shooter's weapon: the fire sound, the echo and a sound inside the window stay the shot's.
         key.owner = (41u << 16) | 1340u;
         key.timeMs = 74784 + owner::kShotAfterMs;
-        Check(owner::FamilyOf(key, cover, &shots) == owner::Family::Gunshot, "off shot: inside the window after the shot");
+        Check(FamilyNamed(key, cover, &shots) == owner::Family::Gunshot, "off shot: inside the window after the shot");
         key.timeMs = 74786 - owner::kShotBeforeMs;
-        Check(owner::FamilyOf(key, cover, &shots) == owner::Family::Gunshot, "off shot: inside the window before the shot");
+        Check(FamilyNamed(key, cover, &shots) == owner::Family::Gunshot, "off shot: inside the window before the shot");
         key.timeMs = 74786 + owner::kShotAfterMs + 1;
-        Check(owner::FamilyOf(key, cover, &shots) == owner::Family::Owned, "off shot: after the window");
+        Check(FamilyNamed(key, cover, &shots) == owner::Family::Owned, "off shot: after the window");
         key.timeMs = 74786 - owner::kShotBeforeMs - 1;
-        Check(owner::FamilyOf(key, cover, &shots) == owner::Family::Owned, "off shot: before the window");
+        Check(FamilyNamed(key, cover, &shots) == owner::Family::Owned, "off shot: before the window");
         // A named weapon caller (the fire path, the weapon foley) stays the shot's anywhere.
         key.caller = 0x2EFAEAF;
-        key.callerInWrappers = replay::soundgeneric::InAudioEntityWrappers(key.caller);
-        Check(!key.callerInWrappers && owner::FamilyOf(key, cover, &shots) == owner::Family::Gunshot,
+        key.callerInWrappers = replay::soundgeneric::InAudioEntityWrappers(key.caller, wrapperCode);
+        Check(!key.callerInWrappers && FamilyNamed(key, cover, &shots) == owner::Family::Gunshot,
             "off shot: a named weapon caller stays the shot's");
         key.caller = 0x319092B;
         key.callerInWrappers = false;
         key.timeMs = 1000;
-        Check(owner::FamilyOf(key, cover, &shots) == owner::Family::Gunshot, "off shot: the weapon foley caller is untouched");
+        Check(FamilyNamed(key, cover, &shots) == owner::Family::Gunshot, "off shot: the weapon foley caller is untouched");
         // Not weapon audio: unaffected.
         key.audioBase = AudioBase::Entity;
         key.callerInWrappers = true;
-        Check(owner::FamilyOf(key, cover, &shots) == owner::Family::Owned && !owner::OffShot(key, &shots),
+        Check(FamilyNamed(key, cover, &shots) == owner::Family::Owned && !owner::OffShot(key, &shots),
             "off shot: only weapon audio packets");
         // An invalid weapon id is not a window; id 0:0 is.
         owner::ShotWindows zero;
@@ -2196,7 +2178,7 @@ namespace
         key.callerInWrappers = true;
         key.owner = replay::census::kNoOwner;
         key.timeMs = 50000;
-        Check(!owner::OffShot(key, &shots) && owner::FamilyOf(key, cover, &shots) == owner::Family::Gunshot,
+        Check(!owner::OffShot(key, &shots) && FamilyNamed(key, cover, &shots) == owner::Family::Gunshot,
             "off shot: an unknown weapon owner stays the shot's");
         key.owner = 0xFFFF0007u;
         Check(!owner::OffShot(key, &shots), "off shot: any instance of slot 0xFFFF is unknown");
@@ -2485,16 +2467,16 @@ namespace
 
         // The layout is used only when the finalizer's code is the one read.
         std::vector<std::uintptr_t> asked;
-        const bool proven = BindLayoutProven([&](std::uintptr_t rva, const std::uint8_t* code, std::size_t size) {
-            asked.push_back(rva);
-            return code != nullptr && size > 0;
+        const bool proven = BindLayoutProven([&](const replay::sig::Signature& site) {
+            asked.push_back(site.rva);
+            return site.parent == &kPoseFinalizer && site.pattern[0] != '\0';
         });
         Check(proven && asked.size() == 5 && asked[0] == 0x266C334 && asked[1] == 0x266C630,
             "tpose: five code sites of the finalizer are checked");
-        Check(!BindLayoutProven([](std::uintptr_t rva, const std::uint8_t*, std::size_t) { return rva != 0x266C67C; }),
+        Check(!BindLayoutProven([](const replay::sig::Signature& site) { return site.rva != 0x266C67C; }),
             "tpose: one site that differs refuses the layout");
-        Check(kFinalizerBindLoadSignature[15] == 0x48 && kFinalizerBindLoadSignature[18] == 0x28 &&
-                  kFinalizerBindLoadSignature[22] == 0x5E && kFinalizerBindStrideSignature[3] == kBoneRecordBytes,
+        Check(std::string(kFinalizerBindLoad.pattern).find("48 8B 58 28 0F B7 78 5E") != std::string::npos &&
+                  std::string(kFinalizerBindStride.pattern) == "49 83 C5 50" && kBoneRecordBytes == 0x50,
             "tpose: the signatures carry the offsets they prove (+28h, +5Eh, 50h)");
     }
 
@@ -2690,7 +2672,6 @@ int RunScenerySpeechTests()
     TestWindDirectionDegrees();
     TestTimecycleTrack();
     TestNoRecordLayerDiff();
-    TestNoRecordAlternates();
     TestNoRecordSteps();
     TestHatLook();
     TestSpeechRequest();

@@ -4,7 +4,9 @@
 #include "horse_audio_session.h"
 
 #include "audio_observer.h"
+#include "engine_sigs.h" // the component table
 #include "foot_event_core.h" // HORSE_STEP_PATHS
+#include "game_sig.h"
 #include "guarded_memory.h"
 
 #include <windows.h>
@@ -19,10 +21,8 @@ namespace replay::horseaudio
 {
     namespace
     {
-        constexpr std::uintptr_t kComponentTableRva = 0x39ECE48;     // the row table every predicate reads
-        constexpr std::uintptr_t kComponentIndexBaseRva = 0x39ECE40;
-        constexpr std::uint64_t kFootOffset = 0x1560;               // foot audio in the holder (0x8C2B64)
-        constexpr std::uint64_t kExtOffset = 0xE00;                 // ped audio +0xE00 object (0x318D9B9)
+        constexpr std::uint64_t kFootOffset = 0x1560;               // foot audio in the holder (its constructor's)
+        constexpr std::uint64_t kExtOffset = 0xE00;                 // ped audio +0xE00 object (the step reads it)
         constexpr std::uint32_t kStepLogCap = 400;                  // per phase, the rider too
         // The recording keeps every step of a clip (the trot decomposed too);
         // the playback keeps 400.
@@ -90,19 +90,22 @@ namespace replay::horseaudio
                 g_pathWindow = window;
                 g_pathOwner = horseId;
             }
-            g_paths.Add(caller2, ref);
+            g_paths.Add(replay::audio::FootStepCallers(), caller2, ref);
         }
 
         std::uint64_t Row(std::uint64_t entity)
         {
             if (!entity)
                 return 0;
-            const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+            // The row table every predicate reads and its index base
+            // (engine_sigs.h).
+            const std::uintptr_t baseAt = replay::sig::Find(replay::enginesig::kComponentBaseIndex);
+            const std::uintptr_t tableAt = replay::sig::Find(replay::enginesig::kComponentTable);
             std::uint32_t index = 0;
             std::uint32_t indexBase = 0;
             std::uint64_t table = 0;
-            if (!replay::mem::Read(entity + 0x9C, index) || !replay::mem::Read(base + kComponentIndexBaseRva, indexBase) ||
-                !replay::mem::Read(base + kComponentTableRva, table) || !table)
+            if (!baseAt || !tableAt || !replay::mem::Read(entity + 0x9C, index) || !replay::mem::Read(baseAt, indexBase) ||
+                !replay::mem::Read(tableAt, table) || !table)
                 return 0;
             return table + static_cast<std::uint64_t>(static_cast<std::uint32_t>((index & 0x1FFFF) - indexBase)) * 0x148;
         }
@@ -186,7 +189,7 @@ namespace replay::horseaudio
                 }
                 else
                 {
-                    // 0x8B69B0: [C+0xB0] entity, its row +0xB8 component +0x40.
+                    // The mount predicate (kMountAudioPredicate): [C+0xB0] entity, its row +0xB8 component +0x40.
                     std::uint64_t rider = 0;
                     std::uint64_t riderFlags = 0;
                     std::uint8_t flags = 0;
@@ -198,7 +201,7 @@ namespace replay::horseaudio
                             replay::mem::Read(riderFlags + 0x40, flags);
                     }
                     Set(state, kLinkIsPlayer, LinkAnswer(readable, riderRead && rider != 0, flags));
-                    // 0x8B7498 first steps: E1 = [C+8] & ~0xF, C0 = row(E1) +0x00.
+                    // The link's other test, first steps: E1 = [C+8] & ~0xF, C0 = row(E1) +0x00.
                     std::uint64_t e1 = 0;
                     if (replay::mem::Read(link + 8, e1))
                     {
@@ -208,7 +211,7 @@ namespace replay::horseaudio
                         if (e1 && Slot(Row(e1), 0x00, c0))
                             Set(state, kLinkC0, c0 ? 1 : 0);
                     }
-                    // 0x8B4A88: [C+0xA8] entity has row +0xF0.
+                    // The link's third test: [C+0xA8] entity has row +0xF0.
                     std::uint64_t other = 0;
                     if (replay::mem::Read(link + 0xA8, other))
                     {
@@ -227,7 +230,7 @@ namespace replay::horseaudio
         std::uint64_t footPed = 0;
         replay::mem::Read(foot + 0x10, footParent);
         replay::mem::Read(foot + 0x18, footPed);
-        // The step path reads the ped audio as [foot+0x10] (0x318D9B0).
+        // The step path reads the ped audio as [foot+0x10] (the step sound).
         const std::uint64_t audio = footParent ? footParent : holder;
         const std::uint64_t ext = audio + kExtOffset;
         std::uint64_t extParent = 0;
@@ -333,7 +336,7 @@ namespace replay::horseaudio
             g_stepsSilenced += step.silenced ? 1 : 0;
         }
         // Sounds the engine queued on this horse's ped audio (the step
-        // sounds of 0x318D52C among them).
+        // sounds of kStepSound among them).
         static std::vector<replay::audio::SoundRequest> requests;
         replay::audio::CollectPlayRequestsSince(g_playCursor, requests);
         bool sampled = false;
@@ -397,14 +400,14 @@ namespace replay::horseaudio
                 static_cast<unsigned long long>(now.values[kFoot0428]),
                 static_cast<unsigned long long>(now.values[kRowMask]), timeMs);
             // The step's init params (volume and variables), the foot audio's
-            // movement volume terms read by 0x31815C4 (+0x504, written by the
-            // foot update 0x31925AC at 0x3192731; +0x500 its input; +0x508 the
+            // movement volume terms read by kMovementVolume (+0x504, written by the
+            // foot update, mountaudio::kCaller06; +0x500 its input; +0x508 the
             // step's variable scale) and the four foot mix slots (+0x390
             // volume, +0x3B0 high-pass), guarded reads (rung 2).
             {
                 const std::uint64_t foot = holder + kFootOffset;
                 float f500 = 0.0f, f504 = 0.0f, f508 = 0.0f, f510 = 0.0f, f518 = 0.0f, f51c = 0.0f;
-                replay::mem::Read(foot + 0x510, f510); // the movement sounds' base volume (0x3193FE7)
+                replay::mem::Read(foot + 0x510, f510); // the movement sounds' base volume (their step queue's read)
                 replay::mem::Read(foot + 0x518, f518);
                 replay::mem::Read(foot + 0x51C, f51c);
                 float vol[4] = {};

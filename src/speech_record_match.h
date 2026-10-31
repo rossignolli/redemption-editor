@@ -7,8 +7,8 @@
 // Matching an audible start with the oldest pending line at the same line
 // address is wrong: the interaction prompt (greet, antagonize) prepares the
 // player's options in groups of 2 or 3 when a ped is focused and the speech
-// entity's update releases the unused ones through 0x2FA67FC -> 0x2FA167C,
-// which never calls the stop 0x2FBCCD4 the recorder observes (build
+// entity's update releases the unused ones through its own release path,
+// which never calls the line stop the recorder observes (build
 // 1491.50). The pending option would stay in the recorder; seconds later
 // another line is created at the same address and its audible start would be
 // recorded as the player's option (ghost lines, real lines lost).
@@ -20,9 +20,9 @@
 //      ("reused");
 //   2. an audible start is checked against the pending's voice, context and
 //      variation, read from the line data at the start (+0x1D8 -> +0x110,
-//      +0x114, +0x118, written only by the data init 0x2FA92C0 at creation;
-//      the line release 0x2FC1524 clears +0x1D8 and the next line init
-//      0x2FABBAC allocates new data). A mismatch drops the pending
+//      +0x114, +0x118, written only by the data init at creation;
+//      the line release clears +0x1D8 and the next line init
+//      allocates new data). A mismatch drops the pending
 //      ("start_mismatch"): the start belongs to another line;
 //   3. a line only prepared (created, never started) never becomes a speech
 //      event: the caller logs it as unheard.

@@ -361,12 +361,8 @@ namespace replay::pose::fidelity
         std::uint32_t tickMs);
     // The recording stopped (after capture::StopAll, before any playback):
     // the reads against the tracks, logged; the reads are then released.
-    // With PoseFidelityAsync=1 (default) the stop tick only exports the
-    // tracks (ExportedTracks) and hands the reads and that export to a
-    // worker (deferred_log.h); the same lines are written on a later tick,
-    // eval_ms the worker's time. At 0 it runs here, on the stop tick (seconds
-    // for a long clip).
+    // The stop tick only exports the tracks (ExportedTracks) and hands the
+    // reads and that export to a worker (deferred_log.h); the lines are
+    // written on a later tick, eval_ms the worker's time.
     void Evaluate(std::ostream& log);
-    void SetAsync(bool async);
-    bool Async();
 }

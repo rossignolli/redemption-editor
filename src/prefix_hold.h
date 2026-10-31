@@ -3,14 +3,11 @@
 // A body puppet posed through a skeleton that shrank to a bone count no
 // record has, for the frames until a record fits it again.
 //
-// A head shot that blows the head off (gore) makes the engine rebuild the
-// ped's skeleton in place: same pointer, the head's layers gone, then the
-// stump's layers on. Example: 998 bones (the record before the shot), 705 for
-// two or three frames (the body group alone), then 857 (the record after
-// it). No record has 705 bones, so the segment
-// switch released the arm (segment_switch.h: no_record_for_bones), the detour
-// wrote nothing (bone_mismatch: the bind pose) and the unposed hide hid the
-// body until the 857 record armed: the puppet blinked at the shot.
+// A gore head shot makes the engine rebuild the ped's skeleton in place for a
+// few frames with the body group alone (e.g. 998, then 705, then 857 bones).
+// No record has the middle count, so without this hold the arm is released
+// and the unposed hide makes the puppet blink at the shot.
+// Research: docs/research/pose-bind-and-finalizer.md
 //
 // The rule, as a replay writes only the bones the skeleton and the frame
 // share: while the

@@ -299,26 +299,11 @@ namespace replay::pose::capture
     // frames, compose only what the encoder reads, skip unchanged channels, cheap
     // tests and rounding, the end-of-frame check by memcmp) and the detour's
     // streaming copy (H9) are always on.
-    // RedemptionEditor.ini PoseStallPollMs (0 to 1000, default 250,
-    // kDefaultStallPollMs). N: PollIfStalled copies a ped the finalizer did not
-    // visit since the previous script tick only when the finalizer never
-    // visited it or its last visit is at least N ms old (a corpse, a ragdoll, a
-    // posed object), through a rate gate of its own, so the detour's gate keeps
-    // the detour's samples. 0 (the default up to 1.0): whenever the finalizer
-    // did not visit it, through the detour's rate gate; an NPC the engine
-    // animates on fewer frames than the game runs (off the game camera) is then
-    // copied on the skipped frames, with the previous pose still in the buffer,
-    // and the track repeats poses while the body moves. Changes the recorded
-    // samples. Each record keeps the value Start saw.
-    void SetStallPollMs(std::uint32_t ms);
-    std::uint32_t StallPollMs();
-    // RedemptionEditor.ini PoseLateBackoff (default 0). 1: the end-of-frame
-    // check of a clean record waits 1, 2, 4, then 8 s (a change: 250 ms, then 1 s
-    // again), and a record's first check waits a hash of its id (0 to 999 ms)
-    // after its engine parent table is ready instead of running at once. Each
-    // record keeps the value Start saw.
-    void SetLateBackoff(bool on);
-    bool LateBackoff();
+    // PollIfStalled copies a ped the finalizer did not visit since the previous
+    // script tick only when the finalizer never visited it or its last visit is
+    // at least kDefaultStallPollMs (250) old (a corpse, a ragdoll, a posed
+    // object), through a rate gate of its own, so the detour's gate keeps the
+    // detour's samples (pose_capture_rules.h StallPollDue).
     // The pose fidelity judge is on (fidelity::Configure, at load): each record
     // Start arms keeps the times ContentTimeMs reads (the detour the time of
     // every finalizer call, the script captures their own). Off: nothing kept.
@@ -461,10 +446,6 @@ namespace replay::pose::capture
         std::uint64_t pruned = 0;
     };
     RecordCounts RecordCountsSnapshot();
-    // RedemptionEditor.ini PoseWorkerPollMs (1 to 100, default 5), the
-    // worker's wait between two passes over the rings.
-    void SetWorkerPollMs(std::uint32_t ms);
-    std::uint32_t WorkerPollMs();
     // Replaces the records with loaded ones: the reset of BeginRecording,
     // then one disarmed record per entry, played through TrackSpan and
     // SampleTrack like a finished recording. Script thread, nothing armed.

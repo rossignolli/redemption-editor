@@ -1,29 +1,29 @@
 #pragma once
 
 // The checks the replay makes before it hands a decal to the rage decal
-// core 0x2C2EF08 (directly, AddDecalWithId, or through the generic wrapper
-// 0x2C2F054, AddDecal). Pure logic; the guarded reads live in
-// decal_observer.cpp.
+// core (directly, AddDecalWithId, or through the generic wrapper, AddDecal).
+// Pure logic; the guarded reads and the signatures that hold this layout
+// (the core's ring take, the worker's reads, the add path's info test, the
+// alive test) live in decal_observer.cpp.
 //
-// - Info (settings +0x88). The pending ring's worker 0x2C42C18 reads
-//   [info+0x72] with no null check (a crash at 0x2C42D1A). Each of the 11
-//   callers of the info lookup 0x2C3A3D8 refuses a null result and a
-//   record whose qword +0x130 is 0 (e.g. 0x125BA82..0x125BA93) before it
+// - Info (settings +0x88). The pending ring's worker reads [info+0x72] with
+//   no null check (a crash there). Each of the 11 callers of the info lookup
+//   refuses a null result and a record whose qword +0x130 is 0 before it
 //   adds.
 // - Id (AddDecalWithId). The core ends with `lock add word [mgr + slot*2 +
 //   0x2148], 1`, slot = (id - 0x10000) >> 16, with no range or liveness
 //   check. The id table has 0xC00 slots (generation words at mgr+0x948,
-//   free-list links / counters at mgr+0x2148, head at mgr+0x3948; allocator
-//   0x2C2F734, alive test 0x2C3DD04 compares the generation word with the
+//   free-list links / counters at mgr+0x2148, head at mgr+0x3948; the
+//   allocator, and the alive test that compares the generation word with the
 //   id's low word). A dead id bumps a free-list link (the allocator then
 //   hands out a wrong slot); a slot past the table adds 1 to whatever
 //   manager field lies there, the request ring included (mgr+0xB5D0).
-// - Ring entry (a guarded fault at 0x15E5BD writing 0x9). The core takes
-//   entry (cursor [mgr+0xD75D0] + 1) mod 0x400 of stride 0x330 at
-//   mgr+0xB5D0 and assigns the entity ref at entry+0x310 through 0x15EDE0,
-//   which first unlinks the previous entity at entry+0x318 (0x15E544 writes
-//   [old+8]). A corrupted previous value (1 was seen) faults there, so a
-//   non-null previous value that is not a readable pointer is refused.
+// - Ring entry (a guarded fault in the entity unlink, writing 0x9). The core
+//   takes entry (cursor [mgr+0xD75D0] + 1) mod 0x400 of stride 0x330 at
+//   mgr+0xB5D0 and assigns the entity ref at entry+0x310, which first unlinks
+//   the previous entity at entry+0x318 (the unlink writes [old+8]). A
+//   corrupted previous value (1 was seen) faults there, so a non-null
+//   previous value that is not a readable pointer is refused.
 
 #include <cstdint>
 
@@ -48,8 +48,8 @@ namespace replay::decal::guard
         return slot < kIdSlots ? static_cast<std::int32_t>(slot) : -1;
     }
 
-    // Alive the way 0x2C3DD04 tests it: the slot's generation word is the
-    // id's low word.
+    // Alive the way the engine's alive test tests it: the slot's generation
+    // word is the id's low word.
     inline bool IdAlive(std::uint32_t id, std::uint16_t generation)
     {
         return IdSlot(id) >= 0 && generation == static_cast<std::uint16_t>(id & 0xFFFF);

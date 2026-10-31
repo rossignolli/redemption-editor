@@ -242,4 +242,38 @@ namespace replay::recindicator
         Kind Shown() const { return seen != Kind::None ? seen : ended; }
         bool Stopped() const { return seen == Kind::None; }
     };
+
+    // The normal mode's REPLAY ON row: the buffer says it runs for
+    // kReplayOnMs when it starts (the game entered with it on, a save loaded,
+    // the buffer turned on), then the row goes; a manual recording's REC stays.
+    // The seconds count once the recording gate opens (a loading screen or a
+    // cutscene at the start would hide them); a manual recording ending back
+    // into the buffer shows nothing (the buffer never stopped).
+    constexpr std::uint64_t kReplayOnMs = 5000;
+
+    struct ReplayOnTimer
+    {
+        Kind last = Kind::None;
+        bool pending = false;
+        std::uint64_t until = 0;
+
+        void Update(std::uint64_t now, Kind kind, bool gated)
+        {
+            if (kind == Kind::Replay && last == Kind::None)
+                pending = true;
+            if (kind != Kind::Replay)
+            {
+                pending = false;
+                until = 0;
+            }
+            if (pending && !gated)
+            {
+                pending = false;
+                until = now + kReplayOnMs;
+            }
+            last = kind;
+        }
+
+        bool Visible(std::uint64_t now) const { return last == Kind::Replay && now < until; }
+    };
 }

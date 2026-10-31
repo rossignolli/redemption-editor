@@ -96,38 +96,44 @@ namespace
     void TestSounds1149()
     {
         using namespace conversation;
-        // The recorded ESND around the lines of 7:8 (41162) and 4:5 (39377).
+        // The recorded ESND around the lines of 7:8 (41162) and 4:5 (39377):
+        // the callers are the two calls' returns on 1491.50.
+        const std::uint32_t wave = kWaveSoundCall.rva + 5;
+        const std::uint32_t layer = kLayerSoundCall.rva + 5;
+        Check(wave == 0x2FA10CFu && layer == 0x2FA0DCCu, "sounds: the callers of the clip");
         std::vector<Row> rows;
-        rows.push_back({Ped(4, 5), 39327, 0x0080000500436465ull, kWaveSoundCaller});
-        rows.push_back({Ped(4, 5), 39377, 0x0080000400436465ull, kLayerSoundCaller});
-        rows.push_back({Ped(7, 8), 39578, 0x0080000400438F79ull, kWaveSoundCaller});
-        rows.push_back({Ped(7, 8), 41162, 0x0080000300438F79ull, kLayerSoundCaller});
-        rows.push_back({Ped(7, 8), 41162, 0x0080000200438F79ull, kLayerSoundCaller});
+        rows.push_back({Ped(4, 5), 39327, 0x0080000500436465ull, wave});
+        rows.push_back({Ped(4, 5), 39377, 0x0080000400436465ull, layer});
+        rows.push_back({Ped(7, 8), 39578, 0x0080000400438F79ull, wave});
+        rows.push_back({Ped(7, 8), 41162, 0x0080000300438F79ull, layer});
+        rows.push_back({Ped(7, 8), 41162, 0x0080000200438F79ull, layer});
         rows.push_back({Ped(7, 8), 41300, 0x00000000002F49ACull, 0x2588C2Fu}); // a step, not speech
         std::uint32_t at = 0;
-        Check(SetRefFromSounds(rows, Ped(7, 8), 2, 41162, at) == 0x438F79u && at == 41162, "sounds: 7:8 line at 41162");
-        Check(SetRefFromSounds(rows, Ped(4, 5), 2, 39378, at) == 0x436465u && at == 39377, "sounds: 4:5 AI line");
-        Check(SetRefFromSounds(rows, Ped(1, 2), 2, 41162, at) == 0, "sounds: another speaker");
-        Check(SetRefFromSounds(rows, Ped(7, 8), 2, 30000, at) == 0, "sounds: nothing near the start");
+        Check(SetRefFromSounds(layer, rows, Ped(7, 8), 2, 41162, at) == 0x438F79u && at == 41162, "sounds: 7:8 line at 41162");
+        Check(SetRefFromSounds(layer, rows, Ped(4, 5), 2, 39378, at) == 0x436465u && at == 39377, "sounds: 4:5 AI line");
+        Check(SetRefFromSounds(layer, rows, Ped(1, 2), 2, 41162, at) == 0, "sounds: another speaker");
+        Check(SetRefFromSounds(layer, rows, Ped(7, 8), 2, 30000, at) == 0, "sounds: nothing near the start");
         // A line not timed by its start: the sounds come up to 2.5 s later.
-        Check(SetRefFromSounds(rows, Ped(7, 8), 2, 39000, at) == 0x438F79u && at == 41162, "sounds: after the request");
+        Check(SetRefFromSounds(layer, rows, Ped(7, 8), 2, 39000, at) == 0x438F79u && at == 41162, "sounds: after the request");
         // Only the layers prove the line's set (the wave may come from a default set).
-        Check(SetRefFromSounds(rows, Ped(7, 8), 2, 39578, at) == 0x438F79u && at == 41162, "sounds: type 2, not the wave");
-        Check(SetRefFromSounds(rows, Ped(7, 8), 1, 39578, at) == 0, "sounds: a type 1 line gets no set");
-        Check(SetRefFromSounds(rows, Ped(7, 8), 3, 41162, at) == 0, "sounds: a type 3 line gets no set");
-        Check(SetRefFromSounds(rows, Ped(4, 5), 0, 39378, at) == 0x436465u && at == 39377, "sounds: unknown type, the layers");
-        std::vector<Row> waveOnly = {{Ped(7, 8), 41162, 0x0080000400438F79ull, kWaveSoundCaller}};
-        Check(SetRefFromSounds(waveOnly, Ped(7, 8), 2, 41162, at) == 0, "sounds: a type 2 line without layers has no set");
+        Check(SetRefFromSounds(layer, rows, Ped(7, 8), 2, 39578, at) == 0x438F79u && at == 41162, "sounds: type 2, not the wave");
+        Check(SetRefFromSounds(layer, rows, Ped(7, 8), 1, 39578, at) == 0, "sounds: a type 1 line gets no set");
+        Check(SetRefFromSounds(layer, rows, Ped(7, 8), 3, 41162, at) == 0, "sounds: a type 3 line gets no set");
+        Check(SetRefFromSounds(layer, rows, Ped(4, 5), 0, 39378, at) == 0x436465u && at == 39377, "sounds: unknown type, the layers");
+        std::vector<Row> waveOnly = {{Ped(7, 8), 41162, 0x0080000400438F79ull, wave}};
+        Check(SetRefFromSounds(layer, waveOnly, Ped(7, 8), 2, 41162, at) == 0, "sounds: a type 2 line without layers has no set");
         Check(!SetFromSoundsAllowed(1) && SetFromSoundsAllowed(2) && SetFromSoundsAllowed(0) && !SetFromSoundsAllowed(3),
             "sounds: allowed by type");
-        std::vector<Row> notPed = {{Ped(7, 8), 41162, 0x0080000300438F79ull, kLayerSoundCaller, false, false}};
-        Check(SetRefFromSounds(notPed, Ped(7, 8), 2, 41162, at) == 0, "sounds: only the ped audio rows");
-        std::vector<Row> byHash = {{Ped(7, 8), 41162, 0x0080000300438F79ull, kLayerSoundCaller, true, true}};
-        Check(SetRefFromSounds(byHash, Ped(7, 8), 2, 41162, at) == 0, "sounds: a by-hash row is not a ref");
+        std::vector<Row> notPed = {{Ped(7, 8), 41162, 0x0080000300438F79ull, layer, false, false}};
+        Check(SetRefFromSounds(layer, notPed, Ped(7, 8), 2, 41162, at) == 0, "sounds: only the ped audio rows");
+        std::vector<Row> byHash = {{Ped(7, 8), 41162, 0x0080000300438F79ull, layer, true, true}};
+        Check(SetRefFromSounds(layer, byHash, Ped(7, 8), 2, 41162, at) == 0, "sounds: a by-hash row is not a ref");
         // Two lines: the nearest one.
-        std::vector<Row> two = {{Ped(7, 8), 48500, 0x0080000300436465ull, kLayerSoundCaller},
-            {Ped(7, 8), 48646, 0x0080000300438F79ull, kLayerSoundCaller}};
-        Check(SetRefFromSounds(two, Ped(7, 8), 2, 48646, at) == 0x438F79u, "sounds: the nearest row wins");
+        std::vector<Row> two = {{Ped(7, 8), 48500, 0x0080000300436465ull, layer},
+            {Ped(7, 8), 48646, 0x0080000300438F79ull, layer}};
+        Check(SetRefFromSounds(layer, two, Ped(7, 8), 2, 48646, at) == 0x438F79u, "sounds: the nearest row wins");
+        // The layer call not found in this game: no set from the sounds.
+        Check(SetRefFromSounds(0, rows, Ped(7, 8), 2, 41162, at) == 0, "sounds: no layer call, no set");
     }
 
     void TestApply()
@@ -167,11 +173,6 @@ namespace
         request::Ask noFields;
         Apply(true, unread, 0x438F79u, noFields);
         Check(AskedDuck(noFields) == -1 && noFields.setFrom == request::SetFrom::EntitySounds, "apply: no fields read");
-        // The script path's own duck write is the same byte (no second write).
-        request::Ask both;
-        scriptpath::Apply(true, false, script, both);
-        Apply(true, script, 0x438F79u, both);
-        Check(both.byteCount == 1 && AskedDuck(both) == 0, "apply: one duck byte with the script path");
     }
 
     void TestResolve()

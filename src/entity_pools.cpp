@@ -1,5 +1,8 @@
 #include "entity_pools.h"
 
+#include "engine_calls.h"
+#include "game_sig.h"
+
 #include <windows.h>
 
 #include <sstream>
@@ -8,21 +11,17 @@ namespace replay::pools
 {
     namespace
     {
-        // Build 1491.50 (see entity_pools.h). Pool pointer globals: the
-        // value; the flag byte is at -8 and the key at +8.
-        constexpr std::uintptr_t kPedPoolRva = 0x4A11F70;
-        constexpr std::uintptr_t kVehiclePoolRva = 0x500D850;
-        constexpr std::uintptr_t kObjectPoolRva = 0x4643280;
-        constexpr std::uintptr_t kGuidPoolRva = 0x59B3FE8;
+        // Pool pointer globals (see entity_pools.h): the encoded value, the
+        // flag byte before it and the key after it, each found where the
+        // engine's own decoders read it.
         constexpr Cipher kPedCipher{2, 3};
         constexpr Cipher kVehicleCipher{1, 4};
         constexpr Cipher kObjectCipher{2, 2};
         constexpr Cipher kGuidCipher{2, 3};
-        // Entry sizes: CPed 0x380 (the "Peds" pool creation 0xC098E5, the only
-        // allocation 0xBFE2FA); CObject 0xCD0 (creation 0x81BC09, allocations
-        // 0x7A0..0xCD0); vehicles: the size is the largest vehicle class,
-        // read at start (0x3B01B60; allocations 0x10E0..0x1B80); the guid
-        // entry 0x10.
+        // Entry sizes: CPed 0x380 (the "Peds" pool creation, the only
+        // allocation); CObject 0xCD0 (its creation, allocations 0x7A0..0xCD0);
+        // vehicles: the size is the largest vehicle class, read at start
+        // (allocations 0x10E0..0x1B80); the guid entry 0x10.
         constexpr std::int32_t kPedEntry = 0x380;
         constexpr std::int32_t kObjectEntry = 0xCD0;
         constexpr std::int32_t kVehicleEntryMin = 0x10E0;
@@ -30,98 +29,104 @@ namespace replay::pools
         constexpr std::int32_t kGuidEntry = 0x10;
         constexpr std::size_t kGuidTarget = 0x08;
 
-        // The engine's pool switch 0x1D55D8..0x1D5719: reference type 1
-        // vehicle, 2 ped, 3 object, 4 pickup; each case decodes its pool
-        // (the rip displacements pin the globals above, the rotations the
-        // ciphers) and tail-calls GetAt 0x2B09388.
-        constexpr std::uintptr_t kSwitchRva = 0x1D55D8;
-        constexpr std::uint8_t kSwitchSignature[] = {
-            0x81, 0x79, 0x08, 0xFF, 0xFF, 0xFF, 0x7F, 0x4C, 0x8B, 0xC9, 0x0F, 0x84, 0x2F, 0x01, 0x00, 0x00, 0x0F, 0xB6,
-            0x51, 0x10, 0x45, 0x33, 0xC0, 0x85, 0xD2, 0x0F, 0x84, 0x20, 0x01, 0x00, 0x00, 0x83, 0xEA, 0x01, 0x0F, 0x84,
-            0xC8, 0x00, 0x00, 0x00, 0x83, 0xEA, 0x01, 0x0F, 0x84, 0x83, 0x00, 0x00, 0x00, 0x83, 0xEA, 0x01, 0x74, 0x45,
-            0x83, 0xFA, 0x01, 0x0F, 0x85, 0x00, 0x01, 0x00, 0x00, 0x8A, 0x05, 0xDB, 0xD8, 0x36, 0x04, 0x84, 0xC0, 0x0F,
-            0x84, 0xE6, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x0D, 0xDC, 0xD8, 0x36, 0x04, 0x48, 0x8B, 0x15, 0xCD, 0xD8, 0x36,
-            0x04, 0x48, 0xC1, 0xC9, 0x02, 0x48, 0xC1, 0xC1, 0x20, 0x8B, 0xC1, 0x83, 0xE0, 0x1F, 0x83, 0xC0, 0x02, 0x48,
-            0x33, 0xD1, 0x8A, 0xC8, 0x8A, 0x05, 0xAA, 0xD8, 0x36, 0x04, 0xE9, 0xA7, 0x00, 0x00, 0x00, 0x8A, 0x05, 0x1F,
-            0xDC, 0x46, 0x04, 0x84, 0xC0, 0x0F, 0x84, 0xAA, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x0D, 0x20, 0xDC, 0x46, 0x04,
-            0x48, 0x8B, 0x15, 0x11, 0xDC, 0x46, 0x04, 0x48, 0xC1, 0xC9, 0x02, 0x48, 0xC1, 0xC1, 0x20, 0x8B, 0xC1, 0x83,
-            0xE0, 0x1F, 0x83, 0xC0, 0x02, 0x48, 0x33, 0xD1, 0x8A, 0xC8, 0x8A, 0x05, 0xEE, 0xDB, 0x46, 0x04, 0xEB, 0x6E,
-            0x8A, 0x05, 0xD6, 0xC8, 0x83, 0x04, 0x84, 0xC0, 0x74, 0x75, 0x48, 0x8B, 0x0D, 0xDB, 0xC8, 0x83, 0x04, 0x48,
-            0x8B, 0x15, 0xCC, 0xC8, 0x83, 0x04, 0x48, 0xC1, 0xC1, 0x20, 0x48, 0xC1, 0xC9, 0x02, 0x48, 0x33, 0xD1, 0x8B,
-            0xC1, 0x83, 0xE0, 0x1F, 0x83, 0xC0, 0x03, 0x8A, 0xC8, 0x8A, 0x05, 0xA9, 0xC8, 0x83, 0x04, 0x48, 0xD3, 0xC2,
-            0x48, 0xC1, 0xC2, 0x20, 0xEB, 0x39, 0x8A, 0x05, 0x7A, 0x81, 0xE3, 0x04, 0x84, 0xC0, 0x74, 0x39, 0x48, 0x8B,
-            0x0D, 0x7F, 0x81, 0xE3, 0x04, 0x48, 0x8B, 0x15, 0x70, 0x81, 0xE3, 0x04, 0x48, 0xD1, 0xC9, 0x48, 0xC1, 0xC1,
-            0x20, 0x8B, 0xC1, 0x83, 0xE0, 0x1F, 0x83, 0xC0, 0x04, 0x48, 0x33, 0xD1, 0x8A, 0xC8, 0x8A, 0x05, 0x4E, 0x81,
-            0xE3, 0x04, 0x48, 0xC1, 0xC2, 0x20, 0x48, 0xD3, 0xC2, 0x84, 0xC0, 0x74, 0x06, 0x4C, 0x8B, 0xC2, 0x49, 0xF7,
-            0xD0, 0x41, 0x8B, 0x51, 0x08, 0x49, 0x8B, 0xC8, 0xE9, 0x71, 0x3C, 0x93, 0x02, 0x33, 0xC0};
-        // fwBasePool::GetAt 0x2B09388: flags +0x10 compared with the
-        // reference's low byte, storage +0x08 + index * entry size +0x1C.
-        constexpr std::uintptr_t kGetAtRva = 0x2B09388;
-        constexpr std::uint8_t kGetAtSignature[] = {
-            0x48, 0x8B, 0x41, 0x10, 0x44, 0x8B, 0xCA, 0x41, 0xC1, 0xF9, 0x08, 0x41, 0x38, 0x14, 0x01, 0x75, 0x0C, 0x8B,
-            0x41, 0x1C, 0x41, 0x0F, 0xAF, 0xC1, 0x48, 0x03, 0x41, 0x08, 0xC3, 0x33, 0xC0, 0xC3};
-        // fwBasePool::Delete 0x2B079E0: the slot's flag gets 0x80 (free),
-        // the used count at +0x28 drops in its low 30 bits.
-        constexpr std::uintptr_t kDeleteRva = 0x2B079E0;
-        constexpr std::uint8_t kDeleteSignature[] = {
-            0x4C, 0x8B, 0xD9, 0x48, 0x85, 0xD2, 0x74, 0x6E, 0x4C, 0x63, 0x49, 0x1C, 0x4C, 0x8B, 0x51, 0x08, 0x49, 0x2B,
-            0xD2, 0x48, 0x8B, 0xC2, 0x48, 0x99, 0x49, 0xF7, 0xF9, 0x44, 0x0F, 0xAF, 0xC8, 0x4C, 0x8B, 0xC0, 0x49, 0x63,
-            0xC9, 0x42, 0x83, 0x0C, 0x11, 0xFF, 0x41, 0x83, 0x7B, 0x20, 0xFF, 0x75, 0x04, 0x45, 0x89, 0x43, 0x20, 0x49,
-            0x8D, 0x4B, 0x24, 0x83, 0x39, 0xFF, 0x75, 0x05, 0x48, 0x8B, 0xC1, 0xEB, 0x0D, 0x41, 0x8B, 0x43, 0x1C, 0x0F,
-            0xAF, 0x01, 0x48, 0x98, 0x49, 0x03, 0x43, 0x08, 0x44, 0x89, 0x00, 0x49, 0x8B, 0x43, 0x10, 0x44, 0x89, 0x01,
-            0x49, 0x63, 0xC8, 0x80, 0x0C, 0x08, 0x80, 0x41, 0x8B, 0x43, 0x28, 0x8D, 0x48, 0xFF, 0x33, 0xC8, 0x81, 0xE1,
-            0xFF, 0xFF, 0xFF, 0x3F, 0x33, 0xC8, 0x41, 0x89, 0x4B, 0x28, 0xC3};
-        // IS_ENTITY_A_PED / _A_VEHICLE / _AN_OBJECT cores 0xF9A458..: the
-        // type byte +0x30 against 4, 3 and 5.
-        constexpr std::uintptr_t kTypesRva = 0xF9A458;
-        constexpr std::uint8_t kTypesSignature[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x33, 0xDB, 0xE8, 0xBF, 0x76, 0x9D, 0xFF, 0x48, 0x85, 0xC0, 0x74, 0x07,
-            0x80, 0x78, 0x30, 0x04, 0x0F, 0x94, 0xC3, 0x8A, 0xC3, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3, 0xCC, 0x72, 0x48,
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x33, 0xDB, 0xE8, 0x9B, 0x76, 0x9D, 0xFF, 0x48, 0x85, 0xC0, 0x74, 0x07,
-            0x80, 0x78, 0x30, 0x03, 0x0F, 0x94, 0xC3, 0x8A, 0xC3, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3, 0xCC, 0xEA, 0x41,
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x33, 0xDB, 0xE8, 0x77, 0x76, 0x9D, 0xFF, 0x48, 0x85, 0xC0, 0x74, 0x07,
-            0x80, 0x78, 0x30, 0x05, 0x0F, 0x94, 0xC3, 0x8A, 0xC3, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3};
-        // GET_ENTITY_COORDS' reader 0xFA4D2C: movdqu [rax+0x70], the high
-        // words widened, times the constant 0x330F370, added to +0x70.
-        constexpr std::uintptr_t kPositionRva = 0xFA4D2C;
-        constexpr std::uint8_t kPositionSignature[] = {
-            0xF3, 0x0F, 0x6F, 0x40, 0x70, 0x66, 0x0F, 0x69, 0xC0, 0x66, 0x0F, 0x72, 0xE0, 0x10, 0x0F, 0x5B, 0xC0, 0x66,
-            0x0F, 0x70, 0xC8, 0xEE, 0x0F, 0x59, 0x0D, 0x27, 0xA6, 0x36, 0x02, 0x0F, 0x58, 0x48, 0x70, 0x0F, 0x11, 0x0B};
-        constexpr std::uintptr_t kPositionStepRva = 0x330F370;
-        // The natives' entity-to-handle path: 0xEE5C3C `jmp 0x2B07598`;
-        // 0x2B07598 looks the entity's script guid extension up (entity
-        // +0x10), allocates one in the guid pool when missing (the guid
-        // pool decoder is in the signature), and returns
-        // (guid slot << 8) | its flag byte (0x2B07689..).
-        constexpr std::uintptr_t kGuidJumpRva = 0xEE5C3C;
-        constexpr std::uint8_t kGuidJumpSignature[] = {0xE9, 0x57, 0x19, 0xC2, 0x01};
-        constexpr std::uintptr_t kCreateGuidRva = 0x2B07598;
-        constexpr std::uint8_t kCreateGuidSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83,
-            0xEC, 0x20, 0x8B, 0x15, 0x12, 0xCB, 0xEA, 0x02, 0x48, 0x8B, 0xF1, 0x48, 0x83, 0xC1, 0x10, 0x33, 0xFF, 0x32,
-            0xDB, 0xE8, 0xAE, 0x67, 0x0D, 0x00, 0x48, 0x85, 0xC0, 0x75, 0x65, 0x8A, 0x05, 0x13, 0xCA, 0xEA, 0x02, 0x84,
-            0xC0, 0x75, 0x05, 0x45, 0x33, 0xC0, 0xEB, 0x37, 0x48, 0x8B, 0x0D, 0x13, 0xCA, 0xEA, 0x02, 0x4C, 0x8B, 0x05,
-            0x04, 0xCA, 0xEA, 0x02, 0x48, 0xC1, 0xC1, 0x20, 0x48, 0xC1, 0xC9, 0x02, 0x4C, 0x33, 0xC1, 0x8B, 0xC1, 0x83,
-            0xE0, 0x1F, 0x83, 0xC0, 0x03, 0x8A, 0xC8, 0x8A, 0x05, 0xE1, 0xC9, 0xEA, 0x02, 0x49, 0xD3, 0xC0, 0x49, 0xC1,
-            0xC0, 0x20, 0x84, 0xC0, 0x74, 0xC7, 0x49, 0xF7, 0xD0};
-        constexpr std::uintptr_t kGuidHandleRva = 0x2B07689;
-        constexpr std::uint8_t kGuidHandleSignature[] = {
-            0x49, 0x63, 0x49, 0x1C, 0x49, 0x8B, 0xC2, 0x49, 0x2B, 0x41, 0x08, 0x48, 0x99, 0x48, 0xF7, 0xF9, 0x4C, 0x8B,
-            0xC0, 0x48, 0x63, 0xC8, 0x49, 0x8B, 0x41, 0x10, 0x41, 0xC1, 0xE0, 0x08, 0x0F, 0xB6, 0x3C, 0x08, 0x41, 0x03,
-            0xF8};
+        // The engine's pool switch: reference type 1 vehicle, 2 ped, 3 object,
+        // 4 pickup; each case decodes its pool (its flag byte, key and value
+        // globals; the rotations are the ciphers) and tail-calls GetAt. Its
+        // 321 bytes are the switch and its tail (the vehicle case on).
+        const sig::Signature kSwitch{"pools_switch",
+            "81 79 08 FF FF FF 7F 4C 8B C9 0F 84 ?? ?? ?? ?? 0F B6 51 10 45 33 C0 85 D2 0F 84 ?? ?? ?? ?? 83 EA 01 0F "
+            "84 ?? ?? ?? ?? 83 EA 01 0F 84 ?? ?? ?? ?? 83 EA 01 74 45 83 FA 01 0F 85 ?? ?? ?? ?? 8A 05 ?? ?? ?? ?? 84 "
+            "C0 0F 84 ?? ?? ?? ?? 48 8B 0D ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? 48 C1 C9 02 48 C1 C1 20 8B C1 83 E0 1F 83 "
+            "C0 02 48 33 D1 8A C8 8A 05 ?? ?? ?? ?? E9 ?? ?? ?? ?? 8A 05 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 48 8B 0D "
+            "?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? 48 C1 C9 02 48 C1 C1 20 8B C1 83 E0 1F 83 C0 02 48 33 D1 8A C8 8A 05 ?? "
+            "?? ?? ?? EB 6E 8A 05 ?? ?? ?? ?? 84 C0 74 75 48 8B 0D ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? 48 C1 C1 20 48 C1 "
+            "C9 02 48 33 D1 8B C1 83 E0 1F 83 C0 03 8A C8 8A 05 ?? ?? ?? ?? 48 D3 C2 48 C1 C2 20 EB 39",
+            0x1D55D8};
+        const sig::Signature kSwitchTail{"pools_switch_tail", kSwitch, sig::Offset{0xF0},
+            "8A 05 ?? ?? ?? ?? 84 C0 74 39 48 8B 0D ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? 48 D1 C9 48 C1 C1 20 8B C1 83 E0 "
+            "1F 83 C0 04 48 33 D1 8A C8 8A 05 ?? ?? ?? ?? 48 C1 C2 20 48 D3 C2 84 C0 74 06 4C 8B C2 49 F7 D0 41 8B 51 "
+            "08 49 8B C8 E9 ?? ?? ?? ?? 33 C0",
+            0x1D56C8};
+        // Each case's globals: the flag byte (mov al), the key (mov rcx) and the
+        // value (mov rdx).
+        const sig::Signature kObjectPresent{"pools_object_present", kSwitch, sig::Rel32{0x7D, 0x81}, "", 0x4643278};
+        const sig::Signature kObjectKey{"pools_object_key", kSwitch, sig::Rel32{0x8C, 0x90}, "", 0x4643288};
+        const sig::Signature kObjectPool{"pools_object_pool", kSwitch, sig::Rel32{0x93, 0x97}, "", 0x4643280};
+        const sig::Signature kPedPresent{"pools_ped_present", kSwitch, sig::Rel32{0xB6, 0xBA}, "", 0x4A11F68};
+        const sig::Signature kPedKey{"pools_ped_key", kSwitch, sig::Rel32{0xC1, 0xC5}, "", 0x4A11F78};
+        const sig::Signature kPedPool{"pools_ped_pool", kSwitch, sig::Rel32{0xC8, 0xCC}, "", 0x4A11F70};
+        const sig::Signature kVehiclePresent{"pools_vehicle_present", kSwitchTail, sig::Rel32{0x02, 0x06}, "",
+            0x500D848};
+        const sig::Signature kVehicleKey{"pools_vehicle_key", kSwitchTail, sig::Rel32{0x0D, 0x11}, "", 0x500D858};
+        const sig::Signature kVehiclePool{"pools_vehicle_pool", kSwitchTail, sig::Rel32{0x14, 0x18}, "", 0x500D850};
+        // fwBasePool::GetAt, the switch's tail call: flags +0x10 compared with
+        // the reference's low byte, storage +0x08 + index * entry size +0x1C.
+        const sig::Signature kGetAt{"pools_get_at", kSwitchTail, sig::Rel32{0x4B, 0x4F},
+            "48 8B 41 10 44 8B CA 41 C1 F9 08 41 38 14 01 75 0C 8B 41 1C 41 0F AF C1 48 03 41 08 C3 33 C0 C3",
+            0x2B09388};
+        // fwBasePool::Delete: the slot's flag gets 0x80 (free), the used count
+        // at +0x28 drops in its low 30 bits.
+        const sig::Signature kDelete{"pools_delete",
+            "4C 8B D9 48 85 D2 74 6E 4C 63 49 1C 4C 8B 51 08 49 2B D2 48 8B C2 48 99 49 F7 F9 44 0F AF C8 4C 8B C0 49 "
+            "63 C9 42 83 0C 11 FF 41 83 7B 20 FF 75 04 45 89 43 20 49 8D 4B 24 83 39 FF 75 05 48 8B C1 EB 0D 41 8B 43 "
+            "1C 0F AF 01 48 98 49 03 43 08 44 89 00 49 8B 43 10 44 89 01 49 63 C8 80 0C 08 80 41 8B 43 28 8D 48 FF 33 "
+            "C8 81 E1 FF FF FF 3F 33 C8 41 89 4B 28 C3",
+            0x2B079E0};
+        // IS_ENTITY_A_PED / _A_VEHICLE / _AN_OBJECT cores: the type byte +0x30
+        // against 4, 3 and 5, each one by itself.
+        const sig::Signature kTypePedCore{"pools_entity_type_ped",
+            "40 53 48 83 EC 20 33 DB E8 ?? ?? ?? ?? 48 85 C0 74 07 80 78 30 04 0F 94 C3 8A C3 48 83 C4 20 5B C3",
+            0xF9A458};
+        const sig::Signature kTypeVehicleCore{"pools_entity_type_vehicle",
+            "40 53 48 83 EC 20 33 DB E8 ?? ?? ?? ?? 48 85 C0 74 07 80 78 30 03 0F 94 C3 8A C3 48 83 C4 20 5B C3",
+            0xF9A47C};
+        const sig::Signature kTypeObjectCore{"pools_entity_type_object",
+            "40 53 48 83 EC 20 33 DB E8 ?? ?? ?? ?? 48 85 C0 74 07 80 78 30 05 0F 94 C3 8A C3 48 83 C4 20 5B C3",
+            0xF9A4A0};
+        // GET_ENTITY_COORDS' reader: movdqu [rax+0x70], the high words widened,
+        // times the step constant {32, 32, 0, 0}, added to +0x70.
+        const sig::Signature kPositionReader{"pools_position_reader",
+            "40 53 48 83 EC 20 48 8B DA 41 8A D0 E8 ?? ?? ?? ?? 0F 57 C0 0F 11 03 48 85 C0 74 24", 0xFA4D10};
+        const sig::Signature kPosition{"pools_position", kPositionReader, sig::Offset{0x1C},
+            "F3 0F 6F 40 70 66 0F 69 C0 66 0F 72 E0 10 0F 5B C0 66 0F 70 C8 EE 0F 59 0D ?? ?? ?? ?? 0F 58 48 70 0F 11 "
+            "0B",
+            0xFA4D2C};
+        const sig::Signature kStepConstant{"pools_position_step", kPosition, sig::Rel32{0x19, 0x1D}, "", 0x330F370};
+        // The natives' entity-to-handle path: a native's call of the jump to
+        // the guid maker, which looks the entity's script guid extension up
+        // (entity +0x10), allocates one in the guid pool when missing (the
+        // guid pool decoder is in its bytes) and returns (guid slot << 8) | its
+        // flag byte (kGuidHandle).
+        const sig::Signature kHandleNative{"pools_handle_native",
+            "48 83 EC 28 48 8B 0D ?? ?? ?? ?? 33 C0 48 85 C9 74 05 E8 ?? ?? ?? ?? 48 83 C4 28 C3", 0xFD423C};
+        const sig::Signature kGuidJump{"pools_guid_jump", kHandleNative, sig::Rel32{0x13, 0x17}, "E9 ?? ?? ?? ??",
+            0xEE5C3C};
+        const sig::Signature kCreateGuid{"pools_create_guid", kGuidJump, sig::Rel32{0x01, 0x05},
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 8B 15 ?? ?? ?? ?? 48 8B F1 48 83 C1 10 33 FF "
+            "32 DB E8 ?? ?? ?? ?? 48 85 C0 75 65 8A 05 ?? ?? ?? ?? 84 C0 75 05 45 33 C0 EB 37 48 8B 0D ?? ?? ?? ?? 4C "
+            "8B 05 ?? ?? ?? ?? 48 C1 C1 20 48 C1 C9 02 4C 33 C1 8B C1 83 E0 1F 83 C0 03 8A C8 8A 05 ?? ?? ?? ?? 49 D3 "
+            "C0 49 C1 C0 20 84 C0 74 C7 49 F7 D0",
+            0x2B07598};
+        const sig::Signature kGuidPresent{"pools_guid_present", kCreateGuid, sig::Rel32{0x31, 0x35}, "", 0x59B3FE0};
+        const sig::Signature kGuidKey{"pools_guid_key", kCreateGuid, sig::Rel32{0x41, 0x45}, "", 0x59B3FF0};
+        const sig::Signature kGuidPool{"pools_guid_pool", kCreateGuid, sig::Rel32{0x48, 0x4C}, "", 0x59B3FE8};
+        const sig::Signature kGuidHandle{"pools_guid_handle", kCreateGuid, sig::Offset{0xF1},
+            "49 63 49 1C 49 8B C2 49 2B 41 08 48 99 48 F7 F9 4C 8B C0 48 63 C8 49 8B 41 10 41 C1 E0 08 0F B6 3C 08 41 "
+            "03 F8",
+            0x2B07689};
 
-        using CreateGuidFn = std::int32_t(__fastcall*)(void* entity);
 
         bool g_checked = false;
         bool g_ok = false;
-        bool g_enabled = true;
         std::string g_error;
         std::uintptr_t g_base = 0;
-        CreateGuidFn g_createGuid = nullptr;
+        std::uintptr_t g_createGuid = 0;
 
         struct PoolSite
         {
-            std::uintptr_t rva;
+            const sig::Signature* present; // the flag byte (0: no pool)
+            const sig::Signature* value;   // the encoded pointer
+            const sig::Signature* key;
             Cipher cipher;
             std::int32_t minEntry;
             std::int32_t maxEntry;
@@ -129,23 +134,13 @@ namespace replay::pools
             const char* name;
         };
         const PoolSite kSites[kKinds] = {
-            {kPedPoolRva, kPedCipher, kPedEntry, kPedEntry, kTypePed, "peds"},
-            {kVehiclePoolRva, kVehicleCipher, kVehicleEntryMin, kVehicleEntryMax, kTypeVehicle, "vehicles"},
-            {kObjectPoolRva, kObjectCipher, kObjectEntry, kObjectEntry, kTypeObject, "objects"},
+            {&kPedPresent, &kPedPool, &kPedKey, kPedCipher, kPedEntry, kPedEntry, kTypePed, "peds"},
+            {&kVehiclePresent, &kVehiclePool, &kVehicleKey, kVehicleCipher, kVehicleEntryMin, kVehicleEntryMax,
+                kTypeVehicle, "vehicles"},
+            {&kObjectPresent, &kObjectPool, &kObjectKey, kObjectCipher, kObjectEntry, kObjectEntry, kTypeObject,
+                "objects"},
         };
-        const PoolSite kGuidSite{kGuidPoolRva, kGuidCipher, kGuidEntry, kGuidEntry, 0, "guids"};
-
-        bool GuardedCompare(std::uintptr_t target, const std::uint8_t* signature, std::size_t size)
-        {
-            __try
-            {
-                return std::memcmp(reinterpret_cast<const void*>(target), signature, size) == 0;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
-        }
+        const PoolSite kGuidSite{&kGuidPresent, &kGuidPool, &kGuidKey, kGuidCipher, kGuidEntry, kGuidEntry, 0, "guids"};
 
         bool GuardedCopy(void* out, std::uintptr_t from, std::size_t size)
         {
@@ -205,14 +200,8 @@ namespace replay::pools
 
         std::int32_t GuardedCreateGuid(std::uint64_t entity)
         {
-            __try
-            {
-                return g_createGuid(reinterpret_cast<void*>(entity));
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return 0;
-            }
+            std::int32_t guid = 0;
+            return engine::Call(engine::kCreateGuid, g_createGuid, guid, reinterpret_cast<void*>(entity)) ? guid : 0;
         }
 
         // The pool's address now (0 when the engine has none or the read
@@ -226,9 +215,11 @@ namespace replay::pools
             std::uint8_t present = 0;
             std::uint64_t value = 0;
             std::uint64_t key = 0;
-            const std::uintptr_t global = g_base + site.rva;
-            if (!GuardedCopy(&present, global - 8, 1) || !present || !GuardedCopy(&value, global, 8) ||
-                !GuardedCopy(&key, global + 8, 8))
+            const std::uintptr_t presentAt = sig::Find(*site.present);
+            const std::uintptr_t valueAt = sig::Find(*site.value);
+            const std::uintptr_t keyAt = sig::Find(*site.key);
+            if (!presentAt || !valueAt || !keyAt || !GuardedCopy(&present, presentAt, 1) || !present ||
+                !GuardedCopy(&value, valueAt, 8) || !GuardedCopy(&key, keyAt, 8))
                 return false;
             pool = DecodePointer(value, key, site.cipher);
             std::uint8_t bytes[kHeaderBytes]{};
@@ -320,7 +311,7 @@ namespace replay::pools
             return g_ok;
         }
         g_checked = true;
-        g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        g_base = sig::ImageBase();
         std::uintptr_t imageSize = 0;
         const auto fail = [&](const char* what) {
             g_error = what;
@@ -328,38 +319,56 @@ namespace replay::pools
             g_ok = false;
             return false;
         };
-        if (!g_base || !GuardedImageSize(g_base, imageSize) || imageSize < kGuidPoolRva + 0x10)
+        if (!g_base || !GuardedImageSize(g_base, imageSize))
             return fail("image");
-        struct Signature
+        struct Required
         {
-            std::uintptr_t rva;
-            const std::uint8_t* bytes;
-            std::size_t size;
+            const sig::Signature* signature;
             const char* name;
         };
-        const Signature signatures[] = {
-            {kSwitchRva, kSwitchSignature, sizeof(kSwitchSignature), "pool_switch_signature_mismatch"},
-            {kGetAtRva, kGetAtSignature, sizeof(kGetAtSignature), "get_at_signature_mismatch"},
-            {kDeleteRva, kDeleteSignature, sizeof(kDeleteSignature), "delete_signature_mismatch"},
-            {kTypesRva, kTypesSignature, sizeof(kTypesSignature), "type_signature_mismatch"},
-            {kPositionRva, kPositionSignature, sizeof(kPositionSignature), "position_signature_mismatch"},
-            {kGuidJumpRva, kGuidJumpSignature, sizeof(kGuidJumpSignature), "guid_jump_signature_mismatch"},
-            {kCreateGuidRva, kCreateGuidSignature, sizeof(kCreateGuidSignature), "create_guid_signature_mismatch"},
-            {kGuidHandleRva, kGuidHandleSignature, sizeof(kGuidHandleSignature), "guid_handle_signature_mismatch"},
+        // The globals the pools are read from come with the code that pins
+        // them (the switch's cases, the guid maker).
+        const Required required[] = {
+            {&kSwitch, "pool_switch_signature_mismatch"},
+            {&kSwitchTail, "pool_switch_signature_mismatch"},
+            {&kPedPresent, "pool_switch_signature_mismatch"},
+            {&kPedPool, "pool_switch_signature_mismatch"},
+            {&kPedKey, "pool_switch_signature_mismatch"},
+            {&kVehiclePresent, "pool_switch_signature_mismatch"},
+            {&kVehiclePool, "pool_switch_signature_mismatch"},
+            {&kVehicleKey, "pool_switch_signature_mismatch"},
+            {&kObjectPresent, "pool_switch_signature_mismatch"},
+            {&kObjectPool, "pool_switch_signature_mismatch"},
+            {&kObjectKey, "pool_switch_signature_mismatch"},
+            {&kGetAt, "get_at_signature_mismatch"},
+            {&kDelete, "delete_signature_mismatch"},
+            {&kTypePedCore, "type_signature_mismatch"},
+            {&kTypeVehicleCore, "type_signature_mismatch"},
+            {&kTypeObjectCore, "type_signature_mismatch"},
+            {&kPositionReader, "position_signature_mismatch"},
+            {&kPosition, "position_signature_mismatch"},
+            {&kStepConstant, "position_signature_mismatch"},
+            {&kHandleNative, "guid_jump_signature_mismatch"},
+            {&kGuidJump, "guid_jump_signature_mismatch"},
+            {&kCreateGuid, "create_guid_signature_mismatch"},
+            {&kGuidPresent, "create_guid_signature_mismatch"},
+            {&kGuidPool, "create_guid_signature_mismatch"},
+            {&kGuidKey, "create_guid_signature_mismatch"},
+            {&kGuidHandle, "guid_handle_signature_mismatch"},
         };
-        for (const Signature& signature : signatures)
+        for (const Required& r : required)
         {
-            if (!GuardedCompare(g_base + signature.rva, signature.bytes, signature.size))
-                return fail(signature.name);
+            if (!sig::Find(*r.signature))
+                return fail(r.name);
         }
         float step[4]{};
-        if (!GuardedCopy(step, g_base + kPositionStepRva, sizeof(step)) || step[0] != kPositionStep ||
+        if (!GuardedCopy(step, sig::Find(kStepConstant), sizeof(step)) || step[0] != kPositionStep ||
             step[1] != kPositionStep || step[2] != 0.0f || step[3] != 0.0f)
             return fail("position_step_mismatch");
         // The pools are decoded and validated on every use (a pool that does
         // not decode to a header of its class makes that call return -1),
         // so only the code is checked here.
-        g_createGuid = reinterpret_cast<CreateGuidFn>(g_base + kCreateGuidRva);
+        g_createGuid = sig::Find(kCreateGuid);
         g_ok = true;
         g_error.clear();
         error.clear();
@@ -368,14 +377,10 @@ namespace replay::pools
 
     bool Available()
     {
-        if (!g_enabled)
-            return false;
         std::string error;
         return Check(error);
     }
 
-    void SetEnabled(bool enabled) { g_enabled = enabled; }
-    bool Enabled() { return g_enabled; }
 
     PoolState State(Kind kind)
     {
@@ -553,7 +558,7 @@ namespace replay::pools
         std::ostringstream out;
         std::string error;
         const bool ok = Check(error);
-        out << "ENTITY_POOLS,status=" << (ok ? "ok" : "unavailable") << ",enabled=" << (g_enabled ? 1 : 0);
+        out << "ENTITY_POOLS,status=" << (ok ? "ok" : "unavailable");
         if (!ok)
             out << ",error=" << error;
         for (std::size_t n = 0; n < kKinds; ++n)

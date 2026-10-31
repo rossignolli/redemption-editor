@@ -155,9 +155,9 @@ namespace
         preset.ease = false;
         Keyframe afterPreset;
         const bool presetFromFrame = camera::InheritFrom(afterPreset, preset);
-        Check(!presetFromFrame && afterPreset.blend == camera::Blend::Spline && afterPreset.ease &&
+        Check(!presetFromFrame && afterPreset.blend == camera::Blend::None && afterPreset.ease &&
                 afterPreset.cameraMode == camera::CameraMode::Rear && Near(afterPreset.pose.position.x, 4.0f),
-            "preset previous: blend back to the default (Spline), pose copied");
+            "preset previous: blend back to the default (No Blend), pose copied");
 
         Keyframe anchor = Free(0, {9, 9, 9});
         anchor.markerType = camera::MarkerType::Anchor;

@@ -1,9 +1,14 @@
 #include <intrin.h> // _ReturnAddress for the read probe
 #include "fx_observer.h"
 #include "entity_events.h" // ComposeFxWorld
+#include "fx_motion_rule.h" // the hoof and registry restart sites
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "mod_clock.h"
 #include "profiler.h"
+#include "script_fx_loop.h" // the script looped sites
+#include "shot_fx_audit_core.h" // the impact and body hit sites
 #include "soundfx_probe.h"
 #include "weapon_fx_intent_core.h" // the wrapper played back
 
@@ -22,85 +27,121 @@ namespace replay::fx
 {
     namespace
     {
-        // Build 1491.50: (const u32* effectHash, const u32* assetHash) ->
-        // effect instance or null. Reached by the script trigger path and,
-        // through a one-argument wrapper, by 71 call sites of the vfx code.
-        constexpr std::uintptr_t kTriggerRva = 0x2C3A57C;
-        constexpr std::uint8_t kTriggerSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, // mov [rsp+8], rbx
-            0x57,                         // push rdi
-            0x48, 0x83, 0xEC, 0x20,       // sub rsp, 20h
-            0x48, 0x8B, 0xD9,             // mov rbx, rcx
-            0x48, 0x8B, 0xFA,             // mov rdi, rdx
-        };
+        namespace sig = replay::sig;
+
+        // (const u32* effectHash, const u32* assetHash) -> effect instance or
+        // null. Reached by the script trigger path and, through a one-argument
+        // wrapper, by 71 call sites of the vfx code.
+        const sig::Signature kFxTrigger{"fx_trigger",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 8B FA 48 8B 0D ?? ?? ?? ?? 48 8B 01 FF 90 50 01 00 00",
+            0x2C3A57C};
 
         using TriggerFn = void*(__fastcall*)(const std::uint32_t*, const std::uint32_t*);
 
-        // Build 1491.50 fx start, called only by the particle native path
-        // (0x2C50E0C, after the name is hashed and the rotation turned into
-        // a matrix): (effect*, asset*, entity, bone, matrix*, zoom, flags).
-        constexpr std::uintptr_t kStartRva = 0x2C50C88;
-        constexpr std::uint8_t kStartSignature[] = {
-            0x4C, 0x8B, 0xDC,             // mov r11, rsp
-            0x49, 0x89, 0x5B, 0x18,       // mov [r11+18h], rbx
-            0x49, 0x89, 0x73, 0x20,       // mov [r11+20h], rsi
-            0x57,                         // push rdi
-            0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00, // sub rsp, 80h
-        };
-        using StartFn = bool(__fastcall*)(
-            const std::uint32_t*, const std::uint32_t*, void*, int, const void*, float, std::uint8_t);
-        StartFn g_start = nullptr;
+        // The fx start, called only by the particle native path (after the
+        // name is hashed and the rotation turned into a matrix): (effect*,
+        // asset*, entity, bone, matrix*, zoom, flags).
+        const sig::Signature kFxStart{"fx_start",
+            "4C 8B DC 49 89 5B 18 49 89 73 20 57 48 81 EC 80 00 00 00 8B 02 41 8B F1 41 89 43 08 49 8D 53 08 8B 01 49 "
+            "8B F8 49 8D 4B 10 41 89 43 10 E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 08 83 79 50 FF 75 "
+            "1A 83 B8 44 03 00 00 02 75 0A 33 D2 48 8B C8 E8 ?? ?? ?? ?? 32 C0 E9 ?? ?? ?? ?? 48 8B CB 48 85 FF 74 1A "
+            "C6 44 24 28 00 45 33 C9 44 8B C6 C6 44 24 20 00 48 8B D7 E8 ?? ?? ?? ?? EB 3D 0F 28 05 ?? ?? ?? ?? 4C 8D "
+            "44 24 40 0F 57 C9 0F 29 44 24 40 0F 14 C8 48 8D 54 24 30 0F 57 D2 0F 29 4C 24 50 0F 14 CA 0F 29 4C 24 60 "
+            "0F 29 54 24 70 E8 ?? ?? ?? ?? C6 83 D0 05 00 00 02 48 8B 94 24 B0 00 00 00 48 8B CB E8 ?? ?? ?? ?? 8A 84 "
+            "24 C0 00 00 00 48 8B CB 88 83 BA 03 00 00 E8 ?? ?? ?? ?? F3 0F 10 84 24 B8 00 00 00",
+            0x2C50C88};
+        std::uintptr_t g_start = 0;
 
-        // The weapon muzzle path (build 1491.50, from 0x14523E0).
-        constexpr std::uintptr_t kTriggeredInstRva = 0x2C3A624; // (effect*) -> inst
-        constexpr std::uint8_t kTriggeredInstSignature[] = {
-            0x48, 0x83, 0xEC, 0x28, 0x8B, 0x01, 0x48, 0x8D, 0x54, 0x24, 0x30};
-        constexpr std::uintptr_t kAttachRva = 0x2C2FD40; // (inst, entity, bone, 0, u8, u8)
+        // The weapon muzzle path (the muzzle core, weapon_fx_intent_core.h),
+        // reached from its own calls: the triggered instance wrapper (effect*)
+        // -> inst (its bytes alone are not unique), the attach wrapper (inst,
+        // entity, bone, 0, u8, u8) and the offset setter (inst+280h = *vec).
+        const sig::Signature kFxTriggeredInst{"fx_triggered_inst", weaponfx::kWeaponMuzzleCall, sig::Rel32{1, 5},
+            "48 83 EC 28 8B 01 48 8D 54 24 30 83 64 24 30 00 48 8D 4C 24 38 89 44 24 38 E8 ?? ?? ?? ?? 48 83 C4 28 C3",
+            0x2C3A624};
+        const sig::Signature kFxAttach{"fx_attach", weaponfx::kWeaponMuzzleCore, sig::Rel32{0x402, 0x406},
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 33 C0 41 8B F9 41 8B F0 48 8B DA 48 8B E9 48 "
+            "85 D2 74 0E 48 8B 4A 20 48 85 C9 74 05 E8 ?? ?? ?? ?? 8A 4C 24 78 41 83 C9 FF 88 4C 24 38 44 8B C6 8A 4C "
+            "24 70",
+            0x2C2FD40};
+        const sig::Signature kFxSetOffsetPos{"fx_set_offset_pos", weaponfx::kWeaponMuzzleCore, sig::Rel32{0x472, 0x476},
+            "F3 0F 6F 02 0F 11 81 80 02 00 00 C3", 0x29E42A0};
         // The attach core every attach path ends in (the wrapper above calls
         // it with r9d = -1): observed for the entity and bone of an instance.
-        constexpr std::uintptr_t kAttachCoreRva = 0x2C2FB60;
-        constexpr std::uint8_t kAttachCoreSignature[] = {0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8B, 0xEC};
+        const sig::Signature kFxAttachCore{"fx_attach_core",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 20 55 41 56 41 57 48 8B EC 48 83 EC 70 48 8B F1 45 8B F0",
+            0x2C2FB60};
         using AttachCoreFn = void(__fastcall*)(void*, void*, int, int, std::uint64_t, int, std::uint8_t, std::uint8_t);
-        constexpr std::uint8_t kAttachSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10,
-            0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x40};
-        constexpr std::uintptr_t kSetOffsetPosRva = 0x29E42A0; // inst+280h = *vec
-        constexpr std::uint8_t kSetOffsetPosSignature[] = {
-            0xF3, 0x0F, 0x6F, 0x02, 0x0F, 0x11, 0x81, 0x80, 0x02, 0x00, 0x00, 0xC3};
-        constexpr std::uintptr_t kSetMatrixRva = 0x29E4274; // (inst, matrix*): inst+250h..28Fh
-        constexpr std::uint8_t kSetMatrixSignature[] = {
-            0x0F, 0x10, 0x02, 0x0F, 0x11, 0x81, 0x50, 0x02, 0x00, 0x00, 0x0F, 0x10, 0x4A, 0x10, 0x0F, 0x11};
-        constexpr std::uintptr_t kSetParentRva = 0x29E2754; // (inst, out vec*, matrix*): inst+210h..24Fh
-        constexpr std::uint8_t kSetParentSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78, 0x20, 0x41};
-        using SetMatrixFn = void(__fastcall*)(void*, const void*);
-        using SetParentFn = void*(__fastcall*)(void*, void*, const void*);
+        // (inst, matrix*): inst+250h..28Fh, reached from the bullet impact
+        // core's call (its bytes alone are not unique).
+        const sig::Signature kFxSetMatrix{"fx_set_matrix", shotfx::kShotImpactCore, sig::Rel32{0x431, 0x435},
+            "0F 10 02 0F 11 81 50 02 00 00 0F 10 4A 10 0F 11 89 60 02 00 00 0F 10 42 20 0F 11 81 70 02 00 00 0F 10 "
+            "4A 30 0F 11 89 80 02 00 00 C3",
+            0x29E4274};
+        // (inst, out vec*, matrix*): inst+210h..24Fh.
+        const sig::Signature kFxSetParent{"fx_set_parent",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 20 4C 8B F1 49 8B E8 48 8B 0D ?? "
+            "?? ?? ?? 48 8B F2",
+            0x29E2754};
         // Registered effect get-or-create core (owner, id, arg3, flag, hash*,
         // asset*, created out*, u8, u8) -> inst; key = owner + id.
-        constexpr std::uintptr_t kRegisteredRva = 0x2C49B08;
-        constexpr std::uint8_t kRegisteredSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-            0x48, 0x8B, 0xEC, 0x48, 0x83, 0xEC, 0x40};
+        const sig::Signature kFxRegistered{"fx_registered",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 57 48 8B EC 48 83 EC 40 48 8B 45 70 4C 8B E9 4C 63 E2 45 8A "
+            "F9 48 8D 55 E0 4C 89 45 E8 49 8B F0 C6 00 00 4E 8D 34 21 48 8D 0D ?? ?? ?? ?? 4C 89 75 E0 E8 ?? ?? ?? ?? "
+            "48 8D 48 10 48 F7 D8 48 1B DB 48 23 D9 74 05 48 8B 1B EB 02 33 DB 48 8B 7D 60",
+            0x2C49B08};
+        // Its reads of the stack arguments (engine_calls.h): a build that
+        // changed them fails here.
+        const sig::Signature kFxRegisteredArg8{"fx_registered_arg8", kFxRegistered, sig::Offset{0x137},
+            "40 8A 7D 78", 0x2C49C3F};
+        const sig::Signature kFxRegisteredArg6{"fx_registered_arg6", kFxRegistered, sig::Offset{0x13F},
+            "48 8B 45 68", 0x2C49C47};
+        const sig::Signature kFxRegisteredArg9{"fx_registered_arg9", kFxRegistered, sig::Offset{0x1AB},
+            "8A 85 80 00 00 00", 0x2C49CB3};
+        const sig::Signature* const kFxRegisteredArgs[] = {&kFxRegisteredArg8, &kFxRegisteredArg6, &kFxRegisteredArg9};
         using RegisteredFn = void*(__fastcall*)(void*, int, void*, std::uint8_t, std::uint32_t*, std::uint32_t*,
             std::uint8_t*, std::uint8_t, std::uint8_t);
-        constexpr std::uintptr_t kAddPlanesRva = 0x29E41E0; // (inst, list*: count at +0x300, planes at +0x20)
-        constexpr std::uint8_t kAddPlanesSignature[] = {
-            0x48, 0x8B, 0x05, 0x09, 0x51, 0x5A, 0x02, 0x44, 0x0F, 0xB6, 0x48, 0x01, 0x49, 0x8D, 0x41, 0x03};
-        constexpr std::uintptr_t kSetAux350Rva = 0x2C4F508; // (inst, vec*)
-        constexpr std::uint8_t kSetAux350Signature[] = {0x80, 0x3D, 0x4B, 0x7D, 0x09, 0x01, 0x00, 0x75, 0x0B, 0xF3, 0x0F, 0x6F};
-        constexpr std::uintptr_t kQualityGlobalRva = 0x4F892F0; // pointer; byte +1 = quality level
-        using AddPlanesFn = void(__fastcall*)(void*, const void*);
-        using SetAux350Fn = void(__fastcall*)(void*, const void*);
-        constexpr std::uintptr_t kInstStartRva = 0x29E7644; // (inst)
-        constexpr std::uint8_t kInstStartSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x70, 0x18,
-            0x48, 0x89, 0x78, 0x20, 0x55, 0x41, 0x56, 0x41, 0x57};
+        // (inst, list*: count at +0x300, planes at +0x20), and the quality
+        // global it reads (a pointer; byte +1 = quality level).
+        const sig::Signature kFxAddPlanes{"fx_add_planes",
+            "48 8B 05 ?? ?? ?? ?? 44 0F B6 48 01 49 8D 41 03 4C 69 C0 10 03 00 00 41 83 24 08 00 41 B8 10 00 00 00 8B "
+            "82 00 03 00 00",
+            0x29E41E0};
+        const sig::Signature kFxQuality{"fx_quality", kFxAddPlanes, sig::Rel32{3, 7}, "", 0x4F892F0};
+        // (inst, vec*): +0x350, when its global switch allows it.
+        const sig::Signature kFxSetAux350{"fx_set_aux350",
+            "80 3D ?? ?? ?? ?? 00 75 0B F3 0F 6F 02 0F 11 81 50 03 00 00 C3", 0x2C4F508};
+        // (inst)
+        const sig::Signature kFxInstStart{"fx_inst_start",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 20 55 41 56 41 57 48 8B EC 48 83 EC 50 48 8B D9 0F 29 70 D8 48 "
+            "8B 0D ?? ?? ?? ??",
+            0x29E7644};
+        // The instance initializer: its stores are the layout the player
+        // writes into an instance of ours before its start. The first site
+        // holds +0x310 (a tracer's start), +0x350, +0x380 (the colour float4,
+        // its alpha at +0x38C), +0x394 (zoom), +0x39C, +0x3A0, +0x3A8 and the
+        // word +0x3BC; the second +0x3C4 (far clip), +0x3E0 (the evolutions),
+        // +0x580 (flags), +0x584 and +0x5CC.
+        const sig::Signature kFxInstInit{"fx_inst_init",
+            "48 89 5C 24 08 48 89 6C 24 10 56 57 41 54 41 56 41 57 48 83 EC 50 48 89 11 45 33 F6 0F 28 0D ?? ?? ?? ??",
+            0x29D6008};
+        const sig::Signature kFxInitSettings{"fx_inst_init_settings", kFxInstInit, sig::Offset{0xF8},
+            "0F 11 B1 10 03 00 00 4C 89 B1 20 03 00 00 4C 89 B1 28 03 00 00 48 89 A9 30 03 00 00 4C 89 B1 38 03 00 00 "
+            "66 44 89 B1 40 03 00 00 44 89 B1 44 03 00 00 0F 11 B1 50 03 00 00 0F 11 B1 60 03 00 00 0F 11 B1 70 03 00 "
+            "00 0F 28 05 ?? ?? ?? ?? 0F 11 81 80 03 00 00 89 A9 90 03 00 00 89 A9 94 03 00 00 89 A9 98 03 00 00 89 A9 "
+            "9C 03 00 00 89 A9 A0 03 00 00 89 A9 A4 03 00 00 C7 81 A8 03 00 00 00 00 20 41 44 88 A1 B0 03 00 00 44 88 "
+            "A1 B1 03 00 00 44 88 A1 B2 03 00 00 44 88 A1 B3 03 00 00 44 88 A1 B4 03 00 00 44 88 A1 B5 03 00 00 44 89 "
+            "B1 B6 03 00 00 44 88 B1 BA 03 00 00 66 44 89 B9 BC 03 00 00",
+            0x29D6100};
+        const sig::Signature kFxInitFlags{"fx_inst_init_flags", kFxInstInit, sig::Offset{0x201},
+            "89 87 C0 03 00 00 89 87 C4 03 00 00 89 87 C8 03 00 00 33 C0 0F 11 B7 D0 03 00 00 44 88 B7 BB 03 00 00 48 "
+            "89 87 E0 03 00 00 66 89 87 E8 03 00 00 48 89 8F F0 03 00 00 E8 ?? ?? ?? ?? 89 9F 80 05 00 00 48 8D 8F 27 "
+            "06 00 00 44 89 B7 84 05 00 00 48 8D 87 80 0C 00 00 4C 89 B7 88 05 00 00 48 8D 97 30 09 00 00 4C 89 B7 90 "
+            "05 00 00 45 8D 46 02 4C 89 B7 98 05 00 00 44 89 B7 CC 05 00 00",
+            0x29D6209};
         constexpr std::size_t kInstFlags = 0x580;
         constexpr std::size_t kInstZoom = 0x394;
 
-        using TriggeredInstFn = std::uint8_t*(__fastcall*)(const std::uint32_t*);
-        using AttachFn = void(__fastcall*)(void*, void*, int, int, std::uint8_t, std::uint8_t);
-        using SetOffsetPosFn = void(__fastcall*)(void*, const void*);
         using InstStartFn = void(__fastcall*)(void*);
         constexpr std::uint32_t kMuzzleStartRing = 256;
         using MuzzleStartSlot = replay::ring::Slot<MuzzleStart>; // event_ring.h
@@ -135,14 +176,14 @@ namespace replay::fx
             }
         }
 
-        TriggeredInstFn g_triggeredInst = nullptr;
-        AttachFn g_attach = nullptr;
-        SetOffsetPosFn g_setOffsetPos = nullptr;
-        InstStartFn g_instStart = nullptr;
-        SetMatrixFn g_setMatrix = nullptr;
-        SetParentFn g_setParent = nullptr;
-        AddPlanesFn g_addPlanes = nullptr;
-        SetAux350Fn g_setAux350 = nullptr;
+        std::uintptr_t g_triggeredInst = 0;
+        std::uintptr_t g_attach = 0;
+        std::uintptr_t g_setOffsetPos = 0;
+        std::uintptr_t g_instStart = 0;
+        std::uintptr_t g_setMatrix = 0;
+        std::uintptr_t g_setParent = 0;
+        std::uintptr_t g_addPlanes = 0;
+        std::uintptr_t g_setAux350 = 0;
 
         constexpr std::uint32_t kRingSize = 8192;
 
@@ -186,6 +227,40 @@ namespace replay::fx
         std::uintptr_t g_base = 0;
         std::uintptr_t g_imageEnd = 0;
         LARGE_INTEGER g_frequency{};
+        // The foot vfx site's return address (its call + 5), set at install, 0
+        // when the game has not the call: the trigger detour compares with it.
+        std::uintptr_t g_footVfxReturn = 0;
+
+        // A recorded site: the return address of `call` (an E8 call, 5 bytes)
+        // as an RVA of this exe, kNoSite when the game has not the call.
+        std::uint32_t SiteOf(const sig::Signature& call)
+        {
+            const std::uintptr_t at = sig::Find(call);
+            const std::uintptr_t base = sig::ImageBase();
+            return at && base && at > base ? static_cast<std::uint32_t>(at + 5 - base) : kNoSite;
+        }
+
+        struct RecordedSites
+        {
+            std::uint32_t muzzle = SiteOf(weaponfx::kWeaponMuzzleCall);
+            std::uint32_t impact = SiteOf(shotfx::kShotImpactCall);
+            std::uint32_t foot = SiteOf(kFxFootVfxCall);
+            std::uint32_t cameraAmbient = SiteOf(kFxCameraAmbientCall);
+            std::uint32_t body = SiteOf(shotfx::kShotBodyCall);
+            std::uint32_t shell = SiteOf(weaponfx::kWeaponShellCall);
+            std::uint32_t scriptStart = SiteOf(scriptfx::kScriptFxStartCall);
+            std::uint32_t scriptKeepAlive = SiteOf(scriptfx::kScriptFxKeepAliveCall);
+            std::uint32_t hoof = SiteOf(fxmotion::kFxHoofCall);
+            std::uint32_t registryRestart = SiteOf(fxmotion::kFxRegistryRestartCall);
+        };
+
+        // Resolved once, on the first use (Install makes it, before any detour
+        // reads it).
+        const RecordedSites& Sites()
+        {
+            static const RecordedSites sites;
+            return sites;
+        }
 
         std::uint64_t QpcUs()
         {
@@ -225,11 +300,11 @@ namespace replay::fx
             bool refused = false;
             if (g_suppressFootVfx.load(std::memory_order_relaxed))
             {
-                // frames[0] returns into the one-argument wrapper 0x2C3A624,
-                // frames[1] into its caller (the site).
+                // frames[0] returns into the one-argument wrapper, frames[1]
+                // into its caller (the site).
                 captured = RtlCaptureStackBackTrace(1, kCallerDepth + 1, frames, nullptr);
-                refused = captured >= 2 && reinterpret_cast<std::uintptr_t>(frames[1]) >= g_base &&
-                    reinterpret_cast<std::uintptr_t>(frames[1]) - g_base == kFootVfxSite;
+                refused = captured >= 2 && g_footVfxReturn &&
+                    reinterpret_cast<std::uintptr_t>(frames[1]) == g_footVfxReturn;
                 if (refused)
                     g_suppressedFootVfx.fetch_add(1, std::memory_order_relaxed);
             }
@@ -259,7 +334,7 @@ namespace replay::fx
             call.inst = reinterpret_cast<std::uint64_t>(result);
             slot.Publish();
             const std::uint32_t watchHash = g_watchHash.load(std::memory_order_relaxed);
-            if (result && (watchHash ? effect == watchHash : call.callers[1] == kMuzzleFlashSite))
+            if (result && (watchHash ? effect == watchHash : call.callers[1] == Sites().muzzle))
                 g_watchInst.store(result, std::memory_order_release);
             return result;
         }
@@ -354,7 +429,7 @@ namespace replay::fx
             {
                 void* frames[3] = {};
                 const USHORT captured = RtlCaptureStackBackTrace(1, 3, frames, nullptr);
-                // frames[0] returns into the wrapper 0x2C3A2C0; its caller is the site.
+                // frames[0] returns into the registered wrapper; its caller is the site.
                 const std::uintptr_t address = captured > 2 ? reinterpret_cast<std::uintptr_t>(frames[2]) : 0;
                 replay::ring::Writer<RegisteredCall> slot(g_registered, kRegisteredRing, g_nextRegistered);
                 RegisteredCall& call = slot.value;
@@ -390,8 +465,7 @@ namespace replay::fx
         std::atomic<std::int32_t> g_replayScopeDepth{0};
         std::atomic<bool> g_oneShotOwnerRule{false};
         std::atomic<bool> g_weaponSitesExempt{true}; // see SetWeaponSitesExempt
-        using KillFn = void(__fastcall*)(void*, std::uint8_t);
-        std::atomic<KillFn> g_killFn{nullptr};
+        std::atomic<std::uintptr_t> g_killFn{0}; // the fx stop
         std::atomic<std::uint64_t> g_oneShotKilled{0};
         constexpr std::size_t kMaxExempt = 64;
         std::atomic<std::uint32_t> g_exemptHashes[kMaxExempt] = {};
@@ -430,7 +504,7 @@ namespace replay::fx
         {
             if (!g_oneShotOwnerRule.load(std::memory_order_relaxed) || start.byReplay || !start.effectHash)
                 return false;
-            if ((start.callerSite == kMuzzleFlashSite || start.callerSite == kBulletImpactSite) &&
+            if ((start.callerSite == Sites().muzzle || start.callerSite == Sites().impact) &&
                 g_weaponSitesExempt.load(std::memory_order_relaxed))
                 return false;
             if (ExemptHash(start.effectHash))
@@ -440,17 +514,9 @@ namespace replay::fx
             return start.entity && IsSuppressedOwner(reinterpret_cast<const void*>(start.entity));
         }
 
-        bool GuardedKill(KillFn kill, void* inst)
+        bool GuardedKill(std::uintptr_t kill, void* inst)
         {
-            __try
-            {
-                kill(inst, 1);
-                return true;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kFxStop, kill, inst, 1);
         }
 
         // The settings fields of an instance
@@ -592,16 +658,12 @@ namespace replay::fx
                 original(inst);
             if (kill && original)
             {
-                const KillFn killFn = g_killFn.load(std::memory_order_acquire);
+                const std::uintptr_t killFn = g_killFn.load(std::memory_order_acquire);
                 if (killFn && GuardedKill(killFn, inst))
                     g_oneShotKilled.fetch_add(1, std::memory_order_relaxed);
             }
         }
 
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size); // guarded_memory.h
-        }
     }
 
     bool Install(std::string& error)
@@ -609,17 +671,21 @@ namespace replay::fx
         if (g_installed)
             return true;
         QueryPerformanceFrequency(&g_frequency);
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-        g_base = reinterpret_cast<std::uintptr_t>(base);
-        g_imageEnd = g_base + nt->OptionalHeader.SizeOfImage;
-        void* target = base + kTriggerRva;
-        if (!GuardedCompare(target, kTriggerSignature, sizeof(kTriggerSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kFxTrigger));
+        if (!target)
         {
             error = "fx_trigger_signature_mismatch";
             return false;
         }
+        auto* base = reinterpret_cast<std::uint8_t*>(sig::ImageBase());
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        g_base = reinterpret_cast<std::uintptr_t>(base);
+        g_imageEnd = g_base + nt->OptionalHeader.SizeOfImage;
+        // The sites the detours compare with, before any of them runs.
+        Sites();
+        const std::uintptr_t footCall = sig::Find(kFxFootVfxCall);
+        g_footVfxReturn = footCall ? footCall + 5 : 0;
         const MH_STATUS init = MH_Initialize();
         if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED)
         {
@@ -652,8 +718,8 @@ namespace replay::fx
 
         // Start observer (research): optional, the trigger observer works
         // without it.
-        void* startTarget = base + kInstStartRva;
-        if (GuardedCompare(startTarget, kInstStartSignature, sizeof(kInstStartSignature)))
+        void* startTarget = reinterpret_cast<void*>(sig::Find(kFxInstStart));
+        if (startTarget)
         {
             void* startTrampoline = nullptr;
             if (MH_CreateHook(startTarget, reinterpret_cast<void*>(&InstStartDetour), &startTrampoline) == MH_OK &&
@@ -673,8 +739,8 @@ namespace replay::fx
             error = "start_observer_unavailable";
         // Attach observer: the entity and bone of every attached
         // instance, on the attach core every path ends in.
-        void* attachTarget = base + kAttachCoreRva;
-        if (GuardedCompare(attachTarget, kAttachCoreSignature, sizeof(kAttachCoreSignature)))
+        void* attachTarget = reinterpret_cast<void*>(sig::Find(kFxAttachCore));
+        if (attachTarget)
         {
             void* attachTrampoline = nullptr;
             if (MH_CreateHook(attachTarget, reinterpret_cast<void*>(&AttachDetour), &attachTrampoline) == MH_OK &&
@@ -693,8 +759,8 @@ namespace replay::fx
         if (!g_attachTarget && error.empty())
             error = "attach_observer_unavailable";
         // Registered-effect observer (research).
-        void* registeredTarget = base + kRegisteredRva;
-        if (GuardedCompare(registeredTarget, kRegisteredSignature, sizeof(kRegisteredSignature)))
+        void* registeredTarget = reinterpret_cast<void*>(sig::Find(kFxRegistered));
+        if (registeredTarget)
         {
             void* trampolineRegistered = nullptr;
             if (MH_CreateHook(registeredTarget, reinterpret_cast<void*>(&RegisteredDetour), &trampolineRegistered) == MH_OK &&
@@ -715,51 +781,34 @@ namespace replay::fx
     {
         if (g_start)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* target = base + kStartRva;
-        if (!GuardedCompare(target, kStartSignature, sizeof(kStartSignature)))
+        const std::uintptr_t start = sig::Find(kFxStart);
+        if (!start)
         {
             error = "fx_start_signature_mismatch";
             return false;
         }
-        struct Check
+        // The functions the player calls, and the initializer's stores of
+        // every instance field it writes before a start.
+        const sig::Signature* const checks[] = {&kFxTriggeredInst, &kFxAttach, &kFxSetOffsetPos, &kFxInstStart,
+            &kFxSetMatrix, &kFxSetParent, &kFxInitSettings, &kFxInitFlags};
+        for (const sig::Signature* check : checks)
         {
-            std::uintptr_t rva;
-            const std::uint8_t* signature;
-            std::size_t size;
-            const char* name;
-        };
-        const Check checks[] = {
-            {kTriggeredInstRva, kTriggeredInstSignature, sizeof(kTriggeredInstSignature), "triggered_inst"},
-            {kAttachRva, kAttachSignature, sizeof(kAttachSignature), "attach"},
-            {kSetOffsetPosRva, kSetOffsetPosSignature, sizeof(kSetOffsetPosSignature), "set_offset_pos"},
-            {kInstStartRva, kInstStartSignature, sizeof(kInstStartSignature), "inst_start"},
-            {kSetMatrixRva, kSetMatrixSignature, sizeof(kSetMatrixSignature), "set_matrix"},
-            {kSetParentRva, kSetParentSignature, sizeof(kSetParentSignature), "set_parent"},
-        };
-        for (const Check& check : checks)
-        {
-            // Already verified before the start observer hooked it.
-            if (check.rva == kInstStartRva && g_startTarget)
-                continue;
-            if (!GuardedCompare(base + check.rva, check.signature, check.size))
+            if (!sig::Find(*check))
             {
-                error = std::string("fx_") + check.name + "_signature_mismatch";
+                error = std::string(check->name) + "_signature_mismatch";
                 return false;
             }
         }
-        g_triggeredInst = reinterpret_cast<TriggeredInstFn>(base + kTriggeredInstRva);
-        g_attach = reinterpret_cast<AttachFn>(base + kAttachRva);
-        g_setOffsetPos = reinterpret_cast<SetOffsetPosFn>(base + kSetOffsetPosRva);
-        g_instStart = reinterpret_cast<InstStartFn>(base + kInstStartRva);
-        g_setMatrix = reinterpret_cast<SetMatrixFn>(base + kSetMatrixRva);
-        g_setParent = reinterpret_cast<SetParentFn>(base + kSetParentRva);
-        // Optional (fire): checked here, missing ones logged by ApplyInstancePlanes.
-        if (GuardedCompare(base + kAddPlanesRva, kAddPlanesSignature, sizeof(kAddPlanesSignature)))
-            g_addPlanes = reinterpret_cast<AddPlanesFn>(base + kAddPlanesRva);
-        if (GuardedCompare(base + kSetAux350Rva, kSetAux350Signature, sizeof(kSetAux350Signature)))
-            g_setAux350 = reinterpret_cast<SetAux350Fn>(base + kSetAux350Rva);
-        g_start = reinterpret_cast<StartFn>(target);
+        g_triggeredInst = sig::Find(kFxTriggeredInst);
+        g_attach = sig::Find(kFxAttach);
+        g_setOffsetPos = sig::Find(kFxSetOffsetPos);
+        g_instStart = sig::Find(kFxInstStart);
+        g_setMatrix = sig::Find(kFxSetMatrix);
+        g_setParent = sig::Find(kFxSetParent);
+        // Optional (fire): missing ones logged by ApplyInstancePlanes.
+        g_addPlanes = sig::Find(kFxAddPlanes);
+        g_setAux350 = sig::Find(kFxSetAux350);
+        g_start = start;
         return true;
     }
 
@@ -770,15 +819,8 @@ namespace replay::fx
             bool& started, std::uint32_t& code)
         {
             const std::uint32_t asset = 0; // any loaded asset, as the vfx code does
-            __try
-            {
-                started = g_start(&effect, &asset, entity, bone, matrix, scale, 0);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kFxStart, g_start, started, &effect, &asset, entity, bone, matrix, scale, 0) ||
+                engine::Failed(code);
         }
     }
 
@@ -816,21 +858,26 @@ namespace replay::fx
         {
             __try
             {
-                std::uint8_t* inst = g_triggeredInst(&effect);
+                std::uint8_t* inst = nullptr;
+                if (!engine::Call(engine::kFxTriggeredInst, g_triggeredInst, inst, &effect))
+                    return engine::Failed(code);
                 if (!inst)
                     return true;
-                g_attach(inst, entity, bone, 0, 0, 0);
+                if (!engine::Call(engine::kFxAttach, g_attach, inst, entity, bone, 0, 0, 0))
+                    return engine::Failed(code);
                 std::uint32_t& flags = *reinterpret_cast<std::uint32_t*>(inst + kInstFlags);
                 flags = (flags & ~kMuzzleFlagMask) | (recorded & kMuzzleFlagMask);
                 alignas(16) const float offset[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-                g_setOffsetPos(inst, offset);
+                if (!engine::Call(engine::kFxSetOffsetPos, g_setOffsetPos, inst, offset))
+                    return engine::Failed(code);
                 *reinterpret_cast<float*>(inst + kInstZoom) = scale;
                 if (!g_watchHash.load(std::memory_order_relaxed) && !g_replaySnapshotReady.load(std::memory_order_relaxed))
                 {
                     std::memcpy(g_replaySnapshot, inst, kSnapshotBytes);
                     g_replaySnapshotReady.store(true, std::memory_order_release);
                 }
-                g_instStart(inst);
+                if (!engine::Call(engine::kFxInstStart, g_instStart, inst))
+                    return engine::Failed(code);
                 started = true;
                 return true;
             }
@@ -852,16 +899,21 @@ namespace replay::fx
         {
             __try
             {
-                std::uint8_t* inst = g_triggeredInst(&effect);
+                std::uint8_t* inst = nullptr;
+                if (!engine::Call(engine::kFxTriggeredInst, g_triggeredInst, inst, &effect))
+                    return engine::Failed(code);
                 if (!inst)
                     return true;
-                if (entity)
-                    g_attach(inst, entity, bone, 0, 0, 0);
-                g_setMatrix(inst, offset);
+                if (entity && !engine::Call(engine::kFxAttach, g_attach, inst, entity, bone, 0, 0, 0))
+                    return engine::Failed(code);
+                if (!engine::Call(engine::kFxSetMatrix, g_setMatrix, inst, offset))
+                    return engine::Failed(code);
                 if (!entity)
                 {
                     alignas(16) float delta[4] = {};
-                    g_setParent(inst, delta, parent);
+                    void* parented = nullptr;
+                    if (!engine::Call(engine::kFxSetParent, g_setParent, parented, inst, delta, parent))
+                        return engine::Failed(code);
                 }
                 std::memcpy(inst + kInstEvolutions, evolutions, kEvolutionBytes);
                 *reinterpret_cast<float*>(inst + kInstZoom) = zoom;
@@ -880,7 +932,8 @@ namespace replay::fx
                         {
                             alignas(16) float aux[4];
                             std::memcpy(aux, options->settings->vel350, sizeof(aux));
-                            g_setAux350(inst, aux);
+                            if (!engine::Call(engine::kFxSetAux350, g_setAux350, inst, aux))
+                                return engine::Failed(code);
                         }
                         WriteSettingsRaw(inst, *options->settings);
                     }
@@ -893,7 +946,8 @@ namespace replay::fx
                     std::memcpy(g_replaySnapshot, inst, kSnapshotBytes);
                     g_replaySnapshotReady.store(true, std::memory_order_release);
                 }
-                g_instStart(inst);
+                if (!engine::Call(engine::kFxInstStart, g_instStart, inst))
+                    return engine::Failed(code);
                 started = true;
                 return true;
             }
@@ -1098,7 +1152,7 @@ namespace replay::fx
 
     namespace
     {
-        bool GuardedRegisteredGet(RegisteredFn fn, const void* owner, int id, std::uint8_t flag, std::uint32_t hash,
+        bool GuardedRegisteredGet(std::uintptr_t fn, const void* owner, int id, std::uint8_t flag, std::uint32_t hash,
             std::uint8_t arg8, std::uint8_t arg9, std::uint64_t& inst, std::uint8_t& created, std::uint32_t& code)
         {
             __try
@@ -1107,8 +1161,12 @@ namespace replay::fx
                 std::uint32_t asset = 0;
                 std::uint8_t createdOut = 0;
                 t_replayRegistered = true;
-                void* result = fn(const_cast<void*>(owner), id, nullptr, flag, &hashCopy, &asset, &createdOut, arg8, arg9);
+                void* result = nullptr;
+                const bool called = engine::Call(engine::kFxRegistered, fn, result,
+                    const_cast<void*>(owner), id, nullptr, flag, &hashCopy, &asset, &createdOut, arg8, arg9);
                 t_replayRegistered = false;
+                if (!called)
+                    return engine::Failed(code);
                 inst = reinterpret_cast<std::uint64_t>(result);
                 created = createdOut;
                 return true;
@@ -1125,14 +1183,16 @@ namespace replay::fx
         {
             __try
             {
-                g_setMatrix(inst, matrix);
+                if (!engine::Call(engine::kFxSetMatrix, g_setMatrix, inst, matrix))
+                    return engine::Failed(code);
                 alignas(16) float delta[4] = {};
-                if (writeParent)
-                    g_setParent(inst, delta, parent);
+                void* parented = nullptr;
+                if (writeParent && !engine::Call(engine::kFxSetParent, g_setParent, parented, inst, delta, parent))
+                    return engine::Failed(code);
                 std::memcpy(inst + kInstEvolutions, evolutions, kEvolutionBytes);
                 *reinterpret_cast<float*>(inst + kInstZoom) = zoom;
-                if (start)
-                    g_instStart(inst);
+                if (start && !engine::Call(engine::kFxInstStart, g_instStart, inst))
+                    return engine::Failed(code);
                 return true;
             }
             __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
@@ -1148,16 +1208,23 @@ namespace replay::fx
         created = false;
         if (!g_start && !EnsurePlayer(error))
             return 0;
-        RegisteredFn fn = g_originalRegistered.load(std::memory_order_acquire);
+        auto fn = reinterpret_cast<std::uintptr_t>(g_originalRegistered.load(std::memory_order_acquire));
         if (!fn)
         {
-            auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-            if (!GuardedCompare(base + kRegisteredRva, kRegisteredSignature, sizeof(kRegisteredSignature)))
+            fn = sig::Find(kFxRegistered);
+            if (!fn)
             {
                 error = "fx_registered_signature_mismatch";
                 return 0;
             }
-            fn = reinterpret_cast<RegisteredFn>(base + kRegisteredRva);
+        }
+        for (const sig::Signature* site : kFxRegisteredArgs)
+        {
+            if (!sig::Find(*site))
+            {
+                error = "fx_registered_signature_mismatch";
+                return 0;
+            }
         }
         std::uint64_t inst = 0;
         std::uint8_t createdOut = 0;
@@ -1208,16 +1275,17 @@ namespace replay::fx
         {
             __try
             {
-                if (aux350)
-                    g_setAux350(inst, aux350);
+                if (aux350 && !engine::Call(engine::kFxSetAux350, g_setAux350, inst, aux350))
+                    return engine::Failed(code);
                 if (planeCount)
                 {
-                    // The list the engine reads (0x29E41E0: r8 = list + 0x20, rows at
+                    // The list the engine reads (the plane adder: r8 = list + 0x20, rows at
                     // r8 - 0x20, r8 - 0x10, r8): planes from +0, 3 float4 each, count at +0x300.
                     alignas(16) std::uint8_t list[0x320] = {};
                     std::memcpy(list, planes, planeCount * 12 * sizeof(float));
                     std::memcpy(list + 0x300, &planeCount, 4);
-                    g_addPlanes(inst, list);
+                    if (!engine::Call(engine::kFxAddPlanes, g_addPlanes, inst, list))
+                        return engine::Failed(code);
                 }
                 return true;
             }
@@ -1240,19 +1308,9 @@ namespace replay::fx
             return false;
         if (!g_addPlanes || !g_setAux350)
         {
-            // Evidence for the mismatch: the live bytes at both entries.
-            auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-            std::uint8_t live[16] = {};
-            char text[160]{};
-            int n = std::snprintf(text, sizeof(text), "planes_functions_unavailable,add_planes=");
-            if (GuardedRead(live, base + kAddPlanesRva, 16))
-                for (std::uint8_t byte : live)
-                    n += std::snprintf(text + n, sizeof(text) - n, "%02x", byte);
-            n += std::snprintf(text + n, sizeof(text) - n, ",set_aux=");
-            if (GuardedRead(live, base + kSetAux350Rva, 12))
-                for (int i = 0; i < 12; ++i)
-                    n += std::snprintf(text + n, sizeof(text) - n, "%02x", live[i]);
-            error = text;
+            // Which signature the game lacks (the resolver's SIG line has its result).
+            error = std::string("planes_functions_unavailable,add_planes=") + (g_addPlanes ? "found" : "missing") +
+                ",set_aux=" + (g_setAux350 ? "found" : "missing");
             return false;
         }
         alignas(16) float alignedAux[4];
@@ -1295,6 +1353,9 @@ namespace replay::fx
             error = "no_instance";
             return false;
         }
+        // +0x310 and +0x3C4 only where the initializer's stores were found.
+        if (!g_start && !EnsurePlayer(error))
+            return false;
         if (!GuardedWriteExtras(reinterpret_cast<std::uint8_t*>(inst), start310, farClip))
         {
             error = "extras_write_fault";
@@ -1305,25 +1366,14 @@ namespace replay::fx
 
     namespace
     {
-        // The instance stop (offline 0x29E7C3C, build 1491.50).
-        constexpr std::uintptr_t kInstStopRva = 0x29E7C3C;
-        constexpr std::uint8_t kInstStopSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48,
-            0x89, 0x78, 0x20, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x40, 0x48, 0x8B, 0xF9, 0x33, 0xDB, 0x48, 0x8B,
-            0x0D, 0x37, 0x5A, 0x4D, 0x01, 0x44, 0x8A, 0xF2};
-        using InstStopFn = void(__fastcall*)(void*, std::uint8_t);
-
-        bool GuardedStop(InstStopFn stop, std::uint64_t inst, std::uint8_t immediate, std::uint32_t& code)
+        // The instance stop (inst, immediate).
+        const sig::Signature kFxStop{"fx_stop",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 40 48 8B F9 33 DB 48 8B 0D ?? "
+            "?? ?? ?? 44 8A F2",
+            0x29E7C3C};
+        bool GuardedStop(std::uintptr_t stop, std::uint64_t inst, std::uint8_t immediate, std::uint32_t& code)
         {
-            __try
-            {
-                stop(reinterpret_cast<void*>(inst), immediate);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kFxStop, stop, reinterpret_cast<void*>(inst), immediate) || engine::Failed(code);
         }
     }
 
@@ -1361,16 +1411,8 @@ namespace replay::fx
 
     bool StopInstance(std::uint64_t inst, bool immediate, std::string& error)
     {
-        static int verified = -1;
-        static InstStopFn stop = nullptr;
-        if (verified < 0)
-        {
-            auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-            verified = GuardedCompare(base + kInstStopRva, kInstStopSignature, sizeof(kInstStopSignature)) ? 1 : 0;
-            if (verified)
-                stop = reinterpret_cast<InstStopFn>(base + kInstStopRva);
-        }
-        if (!verified || !stop)
+        static const std::uintptr_t stop = sig::Find(kFxStop);
+        if (!stop)
         {
             error = "fx_stop_signature_mismatch";
             return false;
@@ -1429,8 +1471,8 @@ namespace replay::fx
         std::uint8_t quality = 0;
         {
             std::uint8_t pointer[8] = {};
-            auto* module = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-            if (GuardedRead(pointer, module + kQualityGlobalRva, 8))
+            const std::uintptr_t global = sig::Find(kFxQuality);
+            if (global && GuardedRead(pointer, reinterpret_cast<const std::uint8_t*>(global), 8))
             {
                 std::uint64_t address = 0;
                 std::memcpy(&address, pointer, 8);
@@ -1491,7 +1533,8 @@ namespace replay::fx
         {
             __try
             {
-                g_attach(inst, entity, bone, 0, 0, 0);
+                if (!engine::Call(engine::kFxAttach, g_attach, inst, entity, bone, 0, 0, 0))
+                    return engine::Failed(code);
                 return true;
             }
             __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
@@ -1539,14 +1582,14 @@ namespace replay::fx
             g_oneShotOwnerRule.store(false, std::memory_order_release);
             return true;
         }
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        if (!GuardedCompare(base + kInstStopRva, kInstStopSignature, sizeof(kInstStopSignature)))
+        const std::uintptr_t stop = sig::Find(kFxStop);
+        if (!stop)
         {
             error = "fx_stop_signature_mismatch";
             g_oneShotOwnerRule.store(false, std::memory_order_release);
             return false;
         }
-        g_killFn.store(reinterpret_cast<KillFn>(base + kInstStopRva), std::memory_order_release);
+        g_killFn.store(stop, std::memory_order_release);
         const std::uint32_t count = static_cast<std::uint32_t>((std::min)(exempt.size(), kMaxExempt));
         g_exemptCount.store(0, std::memory_order_release);
         for (std::uint32_t n = 0; n < count; ++n)
@@ -1592,6 +1635,29 @@ namespace replay::fx
         return g_suppressedFootVfx.load(std::memory_order_relaxed);
     }
 
+    std::uint32_t MuzzleFlashSite() { return Sites().muzzle; }
+    std::uint32_t BulletImpactSite() { return Sites().impact; }
+    std::uint32_t FootVfxSite() { return Sites().foot; }
+    std::uint32_t CameraAmbientFxSite() { return Sites().cameraAmbient; }
+    std::uint32_t BodyHitSite() { return Sites().body; }
+    std::uint32_t ShellRegisteredSite() { return Sites().shell; }
+    std::uint32_t ScriptLoopStartSite() { return Sites().scriptStart; }
+    std::uint32_t ScriptLoopKeepAliveSite() { return Sites().scriptKeepAlive; }
+    std::uint32_t HoofRegisteredSite() { return Sites().hoof; }
+    std::uint32_t RegistryRestartSite() { return Sites().registryRestart; }
+
+    std::uintptr_t MuzzleInfoTable()
+    {
+        static const std::uintptr_t table = sig::Find(weaponfx::kWeaponMuzzleInfoTable);
+        return table;
+    }
+
+    std::uintptr_t Viewport()
+    {
+        static const std::uintptr_t viewport = sig::Find(weaponfx::kWeaponViewport);
+        return viewport;
+    }
+
     std::uint64_t TotalSuppressed()
     {
         return g_suppressedCalls.load(std::memory_order_relaxed);
@@ -1631,11 +1697,11 @@ namespace replay::fx
                 std::memcpy(inst + 0x3A0, &s.lod3A0, 4);
             if (s.mask & entity::FxSettings::kTele3A8)
                 std::memcpy(inst + 0x3A8, &s.tele3A8, 4);
-            // One byte. +0x3BC is a byte (read as one at 0x29C8844, the site
-            // 0x145441C writes one); +0x3BD is the instance update's own
-            // (zeroed at 0x29ED5D9 in 0x29ED368, tested with +0x340 at
-            // 0x29F3C22) [binary]: a recorded value of a live instance would
-            // put that runtime byte back on ours.
+            // One byte. +0x3BC is a byte (the instance update reads it as
+            // one, a vfx site writes one); +0x3BD is the instance update's own
+            // (it zeroes it and tests it with +0x340) [binary]: a recorded
+            // value of a live instance would put that runtime byte back on
+            // ours.
             if (s.mask & entity::FxSettings::kCull3BC)
                 inst[0x3BC] = static_cast<std::uint8_t>(s.cull3BC & 0xFFu);
         }
@@ -1644,8 +1710,8 @@ namespace replay::fx
         {
             __try
             {
-                if (aux)
-                    g_setAux350(inst, aux);
+                if (aux && !engine::Call(engine::kFxSetAux350, g_setAux350, inst, aux))
+                    return engine::Failed(code);
                 WriteSettingsRaw(inst, s);
                 return true;
             }
@@ -1655,93 +1721,93 @@ namespace replay::fx
             }
         }
 
-        // The particle manager's lock (see ClearRelocateMarks).
-        constexpr std::uintptr_t kPtfxManagerRva = 0x3EBD698;
+        // The particle manager's lock (see ClearRelocateMarks), the way the
+        // parent setter takes it: it loads the manager global into rcx, takes
+        // the lock object at manager +0x3E280, calls the owner test, the lock
+        // (when not owned), writes the parent matrix and calls the unlock.
         constexpr std::size_t kPtfxLockOffset = 0x3E280;
-        constexpr std::uintptr_t kParentLockLoadRva = 0x29E2773; // mov rcx, [rip+0x14DAF1E] -> 0x3EBD698
-        constexpr std::uint8_t kParentLockLoadSignature[] = {0x48, 0x8B, 0x0D, 0x1E, 0xAF, 0x4D, 0x01};
-        constexpr std::uintptr_t kLockOwnedRva = 0x29DB42C;
-        constexpr std::uint8_t kLockOwnedSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10,
-            0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78, 0x20, 0x41, 0x56, 0x48, 0x83, 0xEC};
-        constexpr std::uintptr_t kLockRva = 0x25A1658;
-        constexpr std::uintptr_t kUnlockRva = 0x25A5694;
-        // sub rsp,28h; cmp qword [rcx],0; je +6; call [rip+rel32] (the import, free); add rsp,28h; ret
-        constexpr std::uint8_t kLockHead[] = {0x48, 0x83, 0xEC, 0x28, 0x48, 0x83, 0x39, 0x00, 0x74, 0x06, 0xFF, 0x15};
-        constexpr std::uint8_t kLockTail[] = {0x48, 0x83, 0xC4, 0x28, 0xC3};
-        using LockOwnedFn = bool(__fastcall*)(void*);
-        using LockFn = void(__fastcall*)(void*);
+        const sig::Signature kFxParentLockLoad{"fx_parent_lock_load", kFxSetParent, sig::Offset{0x1F},
+            "48 8B 0D ?? ?? ?? ?? 48 8B F2 33 FF 48 8D 99 80 E2 03 00 E8 ?? ?? ?? ?? 84 C0 75 0D 48 8B CB E8 ?? ?? "
+            "?? ?? BF 01 00 00 00 0F 10 45 30 41 0F 5C 86 40 02 00 00 0F 11 06 0F 10 45 00 41 0F 11 86 10 02 00 00 "
+            "0F 10 4D 10 41 0F 11 8E 20 02 00 00 0F 10 45 20 41 0F 11 86 30 02 00 00 0F 10 4D 30 41 0F 11 8E 40 02 "
+            "00 00 83 FF 01 75 08 48 8B CB E8 ?? ?? ?? ??",
+            0x29E2773};
+        const sig::Signature kFxPtfxManager{"fx_ptfx_manager", kFxParentLockLoad, sig::Rel32{3, 7}, "", 0x3EBD698};
+        const sig::Signature kFxLockOwned{"fx_lock_owned", kFxParentLockLoad, sig::Rel32{0x14, 0x18},
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 20 65 48 8B 14 25 58 00 00 00 8B "
+            "05 ?? ?? ?? ?? BD 50 06 00 00 48 8B 04 C2 48 8B 2C 28 48 39 A9 78 E3 03 00",
+            0x29DB42C};
+        // The lock and the unlock: sub rsp,28h; cmp qword [rcx],0; je +6; call
+        // [rip+rel32] (the import, free); add rsp,28h; ret.
+        const sig::Signature kFxLock{"fx_lock", kFxParentLockLoad, sig::Rel32{0x20, 0x24},
+            "48 83 EC 28 48 83 39 00 74 06 FF 15 ?? ?? ?? ?? 48 83 C4 28 C3", 0x25A1658};
+        const sig::Signature kFxUnlock{"fx_unlock", kFxParentLockLoad, sig::Rel32{0x71, 0x75},
+            "48 83 EC 28 48 83 39 00 74 06 FF 15 ?? ?? ?? ?? 48 83 C4 28 C3", 0x25A5694};
+        // The relocation mark: every instance attached to an entity whose
+        // transform a script native set gets `or dword [inst+0x584], 2`, the
+        // bit ClearRelocateMarks clears.
+        const sig::Signature kFxRelocateMark{"fx_relocate_mark",
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 83 EC 20 4C 8B 05 ?? ?? ?? ?? 45 33 FF "
+            "4C 8B F2 41 0F B7 80 A8 BB 03 00 66 44 3B F8 73 4F 41 8B DF 0F B7 F0 49 8B 80 A0 BB 03 00 48 8B 0C 03 "
+            "48 8B 01 48 85 C0 74 2C 48 8B 28 48 8D 78 20 48 8B CF 49 8B D6 E8 ?? ?? ?? ?? 84 C0 74 07 83 8F 84 05 "
+            "00 00 02",
+            0x143C180};
         int g_relocateLockChecked = -1;
-        LockOwnedFn g_lockOwned = nullptr;
-        LockFn g_lock = nullptr;
-        LockFn g_unlock = nullptr;
+        std::uintptr_t g_lockOwned = 0;
+        std::uintptr_t g_lock = 0;
+        std::uintptr_t g_unlock = 0;
         std::string g_relocateLockError;
 
         bool CheckRelocateLock()
         {
             if (g_relocateLockChecked >= 0)
                 return g_relocateLockChecked == 1;
-            auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-            const auto lockShape = [&](std::uintptr_t rva) {
-                return GuardedCompare(base + rva, kLockHead, sizeof(kLockHead)) &&
-                    GuardedCompare(base + rva + sizeof(kLockHead) + 4, kLockTail, sizeof(kLockTail));
-            };
             char text[64]{};
-            if (!GuardedCompare(base + kParentLockLoadRva, kParentLockLoadSignature, sizeof(kParentLockLoadSignature)))
-                std::snprintf(text, sizeof(text), "sig_mismatch,rva=0x%llx", static_cast<unsigned long long>(kParentLockLoadRva));
-            else if (!GuardedCompare(base + kLockOwnedRva, kLockOwnedSignature, sizeof(kLockOwnedSignature)))
-                std::snprintf(text, sizeof(text), "sig_mismatch,rva=0x%llx", static_cast<unsigned long long>(kLockOwnedRva));
-            else if (!lockShape(kLockRva))
-                std::snprintf(text, sizeof(text), "sig_mismatch,rva=0x%llx", static_cast<unsigned long long>(kLockRva));
-            else if (!lockShape(kUnlockRva))
-                std::snprintf(text, sizeof(text), "sig_mismatch,rva=0x%llx", static_cast<unsigned long long>(kUnlockRva));
+            for (const sig::Signature* check :
+                {&kFxParentLockLoad, &kFxPtfxManager, &kFxLockOwned, &kFxLock, &kFxUnlock, &kFxRelocateMark})
+                if (!sig::Find(*check))
+                {
+                    std::snprintf(
+                        text, sizeof(text), "sig_mismatch,rva=0x%llx", static_cast<unsigned long long>(check->rva));
+                    break;
+                }
             if (text[0])
             {
                 g_relocateLockError = text;
                 g_relocateLockChecked = 0;
                 return false;
             }
-            g_lockOwned = reinterpret_cast<LockOwnedFn>(base + kLockOwnedRva);
-            g_lock = reinterpret_cast<LockFn>(base + kLockRva);
-            g_unlock = reinterpret_cast<LockFn>(base + kUnlockRva);
+            g_lockOwned = sig::Find(kFxLockOwned);
+            g_lock = sig::Find(kFxLock);
+            g_unlock = sig::Find(kFxUnlock);
             g_relocateLockChecked = 1;
             return true;
         }
 
-        // The owner test takes the MANAGER, not the lock object: 0x29E2773
-        // loads [0x3EBD698] into rcx, 0x29E277F only copies manager+0x3E280
-        // into rbx for the lock calls, and 0x29E2786 calls 0x29DB42C with rcx
-        // still the manager; 0x29DB42C compares [rcx+0x3E378] with the
-        // thread's TLS slot +0x650 (and scans the worker list 0x3CA7B10)
+        // The owner test takes the MANAGER, not the lock object: the parent
+        // setter loads the manager global into rcx, only copies
+        // manager+0x3E280 into rbx for the lock calls, and calls the owner test
+        // with rcx still the manager; the owner test compares [rcx+0x3E378]
+        // with the thread's TLS slot +0x650 (and scans the worker list)
         // [binary].
         bool GuardedLockEnter(void* manager, void* lock, bool& taken, std::uint32_t& code)
         {
             taken = false;
-            __try
+            bool owned = false;
+            if (!engine::Call(engine::kFxLockOwned, g_lockOwned, owned, manager))
+                return engine::Failed(code);
+            if (!owned)
             {
-                if (!g_lockOwned(manager))
-                {
-                    g_lock(lock);
-                    taken = true;
-                }
-                return true;
+                if (!engine::Call(engine::kFxLock, g_lock, lock))
+                    return engine::Failed(code);
+                taken = true;
             }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return true;
         }
 
         bool GuardedLockLeave(void* lock, std::uint32_t& code)
         {
-            __try
-            {
-                g_unlock(lock);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kFxUnlock, g_unlock, lock) || engine::Failed(code);
         }
 
         // Under the lock, the instance must
@@ -1779,9 +1845,9 @@ namespace replay::fx
         std::atomic<std::uint64_t> g_relocateSkipped{0};
 
         // The vfx update with the step in xmm1.
-        constexpr std::uintptr_t kVfxUpdateRva = 0x145C17C;
-        constexpr std::uint8_t kVfxUpdateSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10,
-            0x48, 0x89, 0x70, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x0F, 0x29, 0x70, 0xE8};
+        const sig::Signature kFxVfxUpdate{"fx_vfx_update",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 57 48 83 EC 30 0F 29 70 E8 48 8B F9 0F 57 F6",
+            0x145C17C};
         using VfxUpdateFn = void*(__fastcall*)(void*, float);
         std::atomic<VfxUpdateFn> g_originalVfxUpdate{nullptr};
         void* g_vfxUpdateTarget = nullptr;
@@ -1819,17 +1885,18 @@ namespace replay::fx
             return original ? original(self, step) : nullptr;
         }
 
-        bool InstallHookAt(std::uintptr_t rva, const std::uint8_t* signature, std::size_t size, void* detour, void** trampoline,
-            void** target, const char* name, std::string& error)
+        // A signature found is hooked; `name` is the error's (the log's) name.
+        bool InstallHookAt(const sig::Signature& signature, void* detour, void** trampoline, void** target,
+            const char* name, std::string& error)
         {
             if (*target)
                 return true;
-            auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-            void* at = base + rva;
-            if (!GuardedCompare(at, signature, size))
+            void* at = reinterpret_cast<void*>(sig::Find(signature));
+            if (!at)
             {
                 char text[96]{};
-                std::snprintf(text, sizeof(text), "%s_sig_mismatch,rva=0x%llx", name, static_cast<unsigned long long>(rva));
+                std::snprintf(text, sizeof(text), "%s_sig_mismatch,rva=0x%llx", name,
+                    static_cast<unsigned long long>(signature.rva));
                 error = text;
                 return false;
             }
@@ -1931,9 +1998,9 @@ namespace replay::fx
             error = g_relocateLockError;
             return false;
         }
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
         std::uint64_t manager = 0;
-        if (!GuardedRead(reinterpret_cast<std::uint8_t*>(&manager), base + kPtfxManagerRva, 8) || !manager)
+        const auto* global = reinterpret_cast<const std::uint8_t*>(sig::Find(kFxPtfxManager));
+        if (!GuardedRead(reinterpret_cast<std::uint8_t*>(&manager), global, 8) || !manager)
         {
             error = "no_ptfx_manager";
             return false;
@@ -2004,8 +2071,8 @@ namespace replay::fx
         void* trampoline = nullptr;
         if (g_vfxUpdateTarget)
             return true;
-        if (!InstallHookAt(kVfxUpdateRva, kVfxUpdateSignature, sizeof(kVfxUpdateSignature),
-                reinterpret_cast<void*>(&VfxUpdateDetour), &trampoline, &g_vfxUpdateTarget, "vfx_update", error))
+        if (!InstallHookAt(kFxVfxUpdate, reinterpret_cast<void*>(&VfxUpdateDetour), &trampoline, &g_vfxUpdateTarget,
+                "vfx_update", error))
             return false;
         g_originalVfxUpdate.store(reinterpret_cast<VfxUpdateFn>(trampoline), std::memory_order_release);
         return true;
@@ -2026,15 +2093,17 @@ namespace replay::fx
     // recorded and forwarded.
     namespace
     {
-        // Build 1491.50 [binary]: the muzzle request (one caller, 0x11479FC,
-        // after the chance roll 0x1147648) and the shell request (one caller,
-        // 0x110142C, from a queued record {shooter, weapon, object, a5, a6}).
-        constexpr std::uintptr_t kMuzzleRequestRva = 0x14309A8;
-        constexpr std::uint8_t kMuzzleRequestSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10,
-            0x48, 0x89, 0x70, 0x18, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x60};
-        constexpr std::uintptr_t kShellRequestRva = 0x14308F0;
-        constexpr std::uint8_t kShellRequestSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10,
-            0x48, 0x89, 0x70, 0x18, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x40};
+        // [binary] The muzzle request (one caller, weapon_fx_intent_core.h
+        // kWeaponMuzzleCaller, after the chance roll) and the shell request
+        // (one caller, from a queued record {shooter, weapon, object, a5, a6}).
+        const sig::Signature kFxMuzzleRequest{"fx_muzzle_request",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 57 41 54 41 55 41 56 41 57 48 83 EC 60 48 8B AC 24 C0 00 00 "
+            "00 4D 8B F1 8B B4 24 C8 00 00 00 4D 8B F8 48 8B BC 24 B8 00 00 00 4C 8B E2 8B 9C 24 B0 00 00 00 4C 8B E9",
+            0x14309A8};
+        const sig::Signature kFxShellRequest{"fx_shell_request",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 57 41 56 41 57 48 83 EC 40 8B BC 24 88 00 00 00 49 8B F1 8B "
+            "9C 24 80 00 00 00 49 8B E8 C6 40 D8 00 4C 8B F2 89 78 D0 4C 8B F9",
+            0x14308F0};
         using MuzzleRequestFn = void*(__fastcall*)(void*, void*, void*, void*, std::int32_t, const void*, const void*, std::int32_t);
         using ShellRequestFn = void*(__fastcall*)(void*, void*, void*, void*, std::int32_t, std::int32_t);
         std::atomic<MuzzleRequestFn> g_originalMuzzleRequest{nullptr};
@@ -2117,31 +2186,31 @@ namespace replay::fx
     {
         if (g_muzzleRequestTarget && g_shellRequestTarget)
             return true;
-        // Both signatures first: neither is hooked when one differs.
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        if (!GuardedCompare(base + kMuzzleRequestRva, kMuzzleRequestSignature, sizeof(kMuzzleRequestSignature)))
-        {
-            error = "muzzle_request_sig_mismatch,rva=0x14309a8";
+        // Both signatures first: neither is hooked when one is missing.
+        const auto missing = [&error](const sig::Signature& signature, const char* name) {
+            if (sig::Find(signature))
+                return false;
+            char text[96]{};
+            std::snprintf(text, sizeof(text), "%s_sig_mismatch,rva=0x%llx", name,
+                static_cast<unsigned long long>(signature.rva));
+            error = text;
+            return true;
+        };
+        if (missing(kFxMuzzleRequest, "muzzle_request") || missing(kFxShellRequest, "shell_request"))
             return false;
-        }
-        if (!GuardedCompare(base + kShellRequestRva, kShellRequestSignature, sizeof(kShellRequestSignature)))
-        {
-            error = "shell_request_sig_mismatch,rva=0x14308f0";
-            return false;
-        }
         void* trampoline = nullptr;
         if (!g_muzzleRequestTarget)
         {
-            if (!InstallHookAt(kMuzzleRequestRva, kMuzzleRequestSignature, sizeof(kMuzzleRequestSignature),
-                    reinterpret_cast<void*>(&MuzzleRequestDetour), &trampoline, &g_muzzleRequestTarget, "muzzle_request", error))
+            if (!InstallHookAt(kFxMuzzleRequest, reinterpret_cast<void*>(&MuzzleRequestDetour), &trampoline,
+                    &g_muzzleRequestTarget, "muzzle_request", error))
                 return false;
             g_originalMuzzleRequest.store(reinterpret_cast<MuzzleRequestFn>(trampoline), std::memory_order_release);
         }
         trampoline = nullptr;
         if (!g_shellRequestTarget)
         {
-            if (!InstallHookAt(kShellRequestRva, kShellRequestSignature, sizeof(kShellRequestSignature),
-                    reinterpret_cast<void*>(&ShellRequestDetour), &trampoline, &g_shellRequestTarget, "shell_request", error))
+            if (!InstallHookAt(kFxShellRequest, reinterpret_cast<void*>(&ShellRequestDetour), &trampoline,
+                    &g_shellRequestTarget, "shell_request", error))
                 return false;
             g_originalShellRequest.store(reinterpret_cast<ShellRequestFn>(trampoline), std::memory_order_release);
         }
@@ -2159,45 +2228,33 @@ namespace replay::fx
     // One recorded request played back through the original wrapper.
     namespace
     {
-        int CaptureWeaponFxFault(EXCEPTION_POINTERS* info, std::uint32_t& code, std::uint64_t& rip)
+        // The fault's code and the address that faulted.
+        bool WeaponFxFault(std::uint32_t& code, std::uint64_t& rip)
         {
-            code = info && info->ExceptionRecord ? info->ExceptionRecord->ExceptionCode : 0;
-            rip = info && info->ContextRecord ? info->ContextRecord->Rip : 0;
-            return EXCEPTION_EXECUTE_HANDLER;
+            rip = engine::LastFaultAddress();
+            return engine::Failed(code);
         }
 
         bool GuardedMuzzleCall(MuzzleRequestFn fn, void* manager, void* shooter, void* weapon, void* object, std::int32_t bone,
             const void* info, const void* vector, std::int32_t argA, std::uint32_t& code, std::uint64_t& rip)
         {
-            __try
-            {
-                t_replayRegistered = true;
-                fn(manager, shooter, weapon, object, bone, info, vector, argA);
-                t_replayRegistered = false;
-                return true;
-            }
-            __except (CaptureWeaponFxFault(GetExceptionInformation(), code, rip))
-            {
-                t_replayRegistered = false;
-                return false;
-            }
+            t_replayRegistered = true;
+            void* request = nullptr;
+            const bool called = engine::Call(engine::kFxMuzzleRequest, reinterpret_cast<std::uintptr_t>(fn), request, manager,
+                shooter, weapon, object, bone, info, vector, argA);
+            t_replayRegistered = false;
+            return called || WeaponFxFault(code, rip);
         }
 
         bool GuardedShellCall(ShellRequestFn fn, void* manager, void* shooter, void* weapon, void* object, std::int32_t argA,
             std::int32_t bone, std::uint32_t& code, std::uint64_t& rip)
         {
-            __try
-            {
-                t_replayRegistered = true;
-                fn(manager, shooter, weapon, object, argA, bone);
-                t_replayRegistered = false;
-                return true;
-            }
-            __except (CaptureWeaponFxFault(GetExceptionInformation(), code, rip))
-            {
-                t_replayRegistered = false;
-                return false;
-            }
+            t_replayRegistered = true;
+            void* request = nullptr;
+            const bool called = engine::Call(engine::kFxShellRequest, reinterpret_cast<std::uintptr_t>(fn), request, manager,
+                shooter, weapon, object, argA, bone);
+            t_replayRegistered = false;
+            return called || WeaponFxFault(code, rip);
         }
     }
 
@@ -2227,9 +2284,15 @@ namespace replay::fx
             InFlight() { g_inFlight.fetch_add(1, std::memory_order_seq_cst); }
             ~InFlight() { g_inFlight.fetch_sub(1, std::memory_order_seq_cst); }
         } inFlight;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* manager = base + replay::weaponfx::kManagerRva;
-        // movaps reads the vector (0x14309EE): 16-byte aligned.
+        // The manager both request callers pass (weapon_fx_intent_core.h).
+        static const std::uintptr_t managerAddress = sig::Find(replay::weaponfx::kWeaponFxManager);
+        if (!managerAddress)
+        {
+            out.why = "no_manager";
+            return false;
+        }
+        void* manager = reinterpret_cast<void*>(managerAddress);
+        // movaps reads the vector (the muzzle request): 16-byte aligned.
         alignas(16) float vector[4] = {};
         if (vec16)
             std::memcpy(vector, vec16, sizeof(vector));
@@ -2253,12 +2316,12 @@ namespace replay::fx
             if (start.threadId == thread)
             {
                 ++out.starts;
-                out.startsMuzzle += start.callerSite == kMuzzleFlashSite ? 1 : 0;
+                out.startsMuzzle += start.callerSite == Sites().muzzle ? 1 : 0;
             }
         static std::vector<RegisteredCall> gets;
         CollectRegisteredSince(registeredCursor, gets);
         for (const RegisteredCall& get : gets)
-            if (get.threadId == thread && get.caller == replay::weaponfx::kShellRegisteredSite)
+            if (get.threadId == thread && get.caller == Sites().shell)
             {
                 ++out.shellGets;
                 out.shellCreated += get.created && get.inst ? 1 : 0;

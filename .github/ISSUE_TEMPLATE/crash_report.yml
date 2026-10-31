@@ -16,7 +16,7 @@ body:
     attributes:
       label: Redemption Editor version
       description: The version in the release name, or the first lines of RedemptionEditor.log (buildVersion=).
-      placeholder: "1.0.0"
+      placeholder: "1.1.0"
     validations:
       required: true
   - type: input

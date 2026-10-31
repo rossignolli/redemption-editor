@@ -9,8 +9,8 @@
 // every tick. In a mission the follow is skipped (a mission script may fail on
 // distance) and the player stays where the replay was opened: the speech core
 // then refuses his lines in state 3 with code 0x29 (the speaker's squared
-// distance to the listener over the line's range, 0x2F97C9D -> 0x2F9B3A4 ->
-// 0x2F9B31C: 35 or 50 m, 60 m, 100 m, or none by the line's mode). So the
+// distance to the listener over the line's range, the core's range test:
+// 35 or 50 m, 60 m, 100 m, or none by the line's mode). So the
 // hidden player says the line only while he is at the puppet; farther, the
 // puppet says it.
 
@@ -113,7 +113,7 @@ namespace replay::speech::route
     // is asked again at once on the puppet. The recorded voice is pinned on the
     // puppet (PinPoseV2Voice), not on the player, and the request carries no
     // voice, so on the player the engine resolves the player's own current voice
-    // and can refuse the line with 0x44 (68, the variation check 0x2F9EA2C).
+    // and can refuse the line with 0x44 (68, the variation check).
     // `created` is result 74 with a line, `sameLine` that line with the recorded
     // identity, `stoppedOnMismatch` that the replay stopped it (no sound came out).
     inline bool RetryOnPuppet(bool routedToPlayer, bool created, bool sameLine, bool stoppedOnMismatch)
@@ -123,26 +123,17 @@ namespace replay::speech::route
         return !created || stoppedOnMismatch;
     }
 
-    // Why the hidden player refuses the recorded player's conversation lines with
-    // 68 (build 1491.50):
-    //   - the variation step 0x2F9EA2C checks the line against params +0x14C
-    //     (voice name hash), +0x150 (context) and +0x158 (variation): with a
-    //     variation it calls 0x25317DC(voice, context, variation), and with
-    //     the replay's +0x18C set it draws again through 0x2FA844C(voice,
-    //     context); no variation of that context in that voice is the 68;
-    //   - the voice step 0x2F9EF48 keeps any non-zero +0x14C; with none it
-    //     comes from the speaker's voice holder (resolver 0x2FA66D0: holder
-    //     +0x30, else a draw from the model's voice group 0x2FA2C54);
-    //   - the replay pins the recorded voice on the PUPPET's holder and asks
-    //     with no voice, so on the hidden player +0x14C is the player's own
-    //     current voice, which may not have the line.
+    // The hidden player refuses the recorded player's conversation lines with
+    // 68 (the variation check) when the request carries no voice: the engine
+    // then resolves the player's own current voice, which may not have the
+    // line (build 1491.50).
     // Live lines that named their voice are recorded with no voice object (line
     // +0x1E8 = 0). So a line of the recorded player that named its voice is asked
     // on the hidden player with that voice in the request, as the live request
     // did: the variation step finds the line, and the player's own speech
     // treatment is kept. A line recorded with a voice object keeps the holder
     // path (its identity check compares the voice object), and the puppet keeps
-    // its pinned voice.
+    // its pinned voice. Research: docs/research/speech-line-request.md
     inline bool NamedVoiceOnPlayer(bool routedToPlayer, bool animal, std::uint32_t voiceHash,
         std::uint32_t recordedVoiceObjectPartial, std::uint8_t recordedVoiceObjectType)
     {
@@ -153,11 +144,9 @@ namespace replay::speech::route
     // The recorded player's pain, effort and fall vocals (PAIN_HIGH, PAIN_MEDIUM,
     // PAIN_LOW...) are lines that name their voice: the player's pain voices
     // (0xA5D5FD9E, 0xCF175024, 0xF99C4FD0...), recorded with no voice object.
-    // Said by the hidden player they play (live evidence, 1268-Blackwater: 9 of 9
-    // started, heard at -13.8 dB). Said by the puppet they die while loading
-    // (stop reason 4 in state 2, cause killed_loading, QA-232-Valentine and
-    // pp-1261-Valentine-p7): the puppet has no wave for the player's pain voice,
-    // so the line is silent or, through the own voice retry, another voice.
+    // Said by the hidden player they play; said by the puppet they die while
+    // loading (stop reason 4: the puppet has no wave for the player's pain
+    // voice). Evidence: tested in game on recorded clips.
     // The puppet says them whenever the hidden player is not at it (Why::Far),
     // and the follow puts him at the trail focus, which is not always the
     // recorded player's puppet (the nearest puppet when the player's was not yet

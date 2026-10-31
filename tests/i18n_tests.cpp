@@ -251,6 +251,11 @@ namespace
         CheckText(Choose("auto", 12), "es-MX", "auto: mexican (11) is Latin America's");
         Check(replay::i18n::FileCandidates("es-MX").size() == 2 && replay::i18n::FileCandidates("es-MX")[1] == "es", "es-MX, then es");
         CheckText(replay::i18n::Normalize("ES-mx"), "es-MX", "language lower case, region upper case");
+        // Turkish is a file only: the game has no Turkish, so the ini names it.
+        CheckText(Choose("TR", 6), "tr", "the ini picks tr");
+        Check(replay::i18n::FileCandidates("tr").size() == 1 && replay::i18n::FileCandidates("tr")[0] == "tr", "tr has no base language");
+        for (std::uint32_t id = 0; id < 20; ++id)
+            Check(std::strcmp(replay::i18n::GameLanguageCode(id), "tr") != 0, "auto never picks tr");
     }
 
     void TestPseudo()
@@ -381,6 +386,20 @@ namespace
         for (const std::uint32_t code : glyphs)
             latin = latin && code < 0x400;
         Check(latin, "pt-BR's letters are Latin");
+        // Turkish: every letter of its alphabet past ASCII is in the glyphs the
+        // fonts bake, and all are Latin (g_title takes the ones Redemption.otf
+        // lacks from Georgia, 0xA0 to 0x4FF).
+        Check(std::find(names.begin(), names.end(), "tr.lang") != names.end(), "tr.lang is shipped");
+        Table tr;
+        Check(replay::i18n::Parse(ReadFile("editor\\lang\\tr.lang"), tr) && tr.problems.empty(), "tr.lang parses clean");
+        const std::vector<std::uint32_t> trGlyphs = replay::i18n::LanguageGlyphs(&tr);
+        bool trLatin = !trGlyphs.empty();
+        for (const std::uint32_t code : trGlyphs)
+            trLatin = trLatin && code >= 0xA0 && code <= 0x4FF;
+        Check(trLatin, "tr's letters are Latin, in the title font's Georgia range");
+        // c C, g G, I-dot i-dotless, o O, s S, u U with their marks.
+        for (const std::uint32_t letter : {0xE7u, 0xC7u, 0x11Fu, 0x11Eu, 0x130u, 0x131u, 0xF6u, 0xD6u, 0x15Fu, 0x15Eu, 0xFCu, 0xDCu})
+            Check(std::find(trGlyphs.begin(), trGlyphs.end(), letter) != trGlyphs.end(), "a Turkish letter is in tr's glyphs");
     }
 }
 

@@ -8,6 +8,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\camera_track.cpp" />
+    <ClCompile Include="src\camera_track_spline.cpp" />
+    <ClCompile Include="src\camera_track_markers.cpp" />
     <ClCompile Include="src\camera_shake.cpp" />
     <ClCompile Include="src\camera_shake_custom.cpp" />
     <ClCompile Include="src\camera_spline.cpp" />
@@ -31,6 +33,7 @@
     <ClCompile Include="src\pose_math.cpp" />
     <ClCompile Include="src\pose_skeleton_layout.cpp" />
     <ClCompile Include="src\pose_stream.cpp" />
+    <ClCompile Include="src\pose_deadband_smooth.cpp" />
     <ClCompile Include="tests\pose_stream_tests.cpp" />
     <ClCompile Include="tests\pose_sample_tests.cpp" />
     <ClCompile Include="tests\pose_capture_tests.cpp" />
@@ -46,6 +49,9 @@
     <ClCompile Include="tests\replay_transport_tests.cpp" />
     <ClCompile Include="tests\pose_segments_tests.cpp" />
     <ClCompile Include="src\clip_file.cpp" />
+    <ClCompile Include="src\clip_file_events.cpp" />
+    <ClCompile Include="src\clip_file_world.cpp" />
+    <ClCompile Include="src\clip_file_sounds.cpp" />
     <ClCompile Include="src\clip_compress.cpp" />
     <ClCompile Include="external\zstd\zstd.c">
       <!-- The zstd 1.5.6 amalgamation (clip compression). Third
@@ -133,6 +139,7 @@
     <ClCompile Include="tests\missing_sound_tests.cpp" />
     <ClCompile Include="tests\weapon_bones_tests.cpp" />
     <ClCompile Include="tests\frozen_pose_tests.cpp" />
+    <ClCompile Include="tests\pose_rate_tests.cpp" />
     <ClCompile Include="tests\strap_state_tests.cpp" />
     <ClCompile Include="tests\weapon_order_tests.cpp" />
     <ClCompile Include="tests\weapon_look_tests.cpp" />
@@ -157,6 +164,7 @@
     <ClCompile Include="tests\storage_paths_tests.cpp" />
     <ClCompile Include="tests\rec_indicator_tests.cpp" />
     <ClCompile Include="tests\i18n_tests.cpp" />
+    <ClCompile Include="tests\model_names_tests.cpp" />
     <ClCompile Include="tests\gallop_tests.cpp" />
     <ClCompile Include="tests\sound_particles_tests.cpp" />
     <ClCompile Include="tests\foot_material_tests.cpp" />
@@ -179,6 +187,9 @@
     <ClCompile Include="src\replay_project.cpp" />
     <ClCompile Include="tests\project_tests.cpp" />
     <ClCompile Include="tests\project_export_tests.cpp" />
+    <ClCompile Include="tests\export_memory_tests.cpp" />
+    <ClCompile Include="tests\export_segments_tests.cpp" />
+    <ClCompile Include="tests\export_hold_tests.cpp" />
     <ClCompile Include="tests\sky_track_tests.cpp" />
     <ClCompile Include="tests\env_override_tests.cpp" />
     <ClCompile Include="tests\crash_evidence_tests.cpp" />
@@ -202,6 +213,8 @@
     <ClCompile Include="tests\player_weapon_bank_tests.cpp" />
     <ClCompile Include="tests\world_focus_tests.cpp" />
     <ClCompile Include="tests\game_listener_tests.cpp" />
+    <ClCompile Include="tests\game_sig_tests.cpp" />
+    <ClCompile Include="tests\game_sig_site_tests.cpp" />
     <ClCompile Include="tests\volume_probe_tests.cpp" />
     <ClCompile Include="tests\wind_replay_tests.cpp" />
     <ClCompile Include="tests\sound_world_tests.cpp" />
@@ -228,8 +241,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\camera_track.h" />
+    <ClInclude Include="src\camera_track_internal.h" />
     <ClInclude Include="src\project_export_plan.h" />
     <ClInclude Include="editor\render_export\project_parts.h" />
+    <ClInclude Include="editor\render_export\export_memory.h" />
+    <ClInclude Include="editor\render_export\export_segments.h" />
+    <ClInclude Include="src\export_hold.h" />
     <ClInclude Include="src\editor_input.h" />
     <ClInclude Include="src\editor_keys.h" />
     <ClInclude Include="src\editor_ui_qa.h" />
@@ -294,6 +311,7 @@
     <ClInclude Include="src\decal_add_guard.h" />
     <ClInclude Include="src\playback_time.h" />
     <ClInclude Include="src\clip_file.h" />
+    <ClInclude Include="src\clip_file_internal.h" />
     <ClInclude Include="src\clip_compress.h" />
     <ClInclude Include="src\clip_pack.h" />
     <ClInclude Include="src\recording_window.h" />
@@ -307,6 +325,10 @@
     <ClInclude Include="src\drawstore_probe_core.h" />
     <ClInclude Include="src\world_focus_core.h" />
     <ClInclude Include="src\game_listener_core.h" />
+    <ClInclude Include="src\engine_sigs.h" />
+    <ClInclude Include="src\game_sig_core.h" />
+    <ClInclude Include="src\game_sig_site.h" />
+    <ClInclude Include="src\clip_sites.h" />
     <ClInclude Include="src\wind_replay_core.h" />
     <ClInclude Include="src\sound_world_core.h" />
     <ClInclude Include="src\ped_speed_core.h" />

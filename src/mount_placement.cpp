@@ -26,6 +26,7 @@
 #include "mount_placement.h"
 
 #include "entity_cache.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "hook_batch.h"
 #include "module_lifetime.h"
@@ -50,6 +51,42 @@ namespace replay::mount
 {
     namespace
     {
+        namespace sig = replay::sig;
+
+        // The ped pre-render (mount_placement.h): mov rax,rsp; mov [rax+10h],rbx;
+        // push rbp, rsi, rdi, r12..r15; lea rbp,[rax-5Fh]; sub rsp,0B0h;
+        // mov r8,[rip+...].
+        const sig::Signature kMountPedPreRender{"mount_ped_prerender",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 56 41 57 48 8D 68 A1 48 81 EC B0 00 00 00 4C 8B 05 ?? ?? ?? "
+            "??",
+            0xCC9698};
+        // The ped constructor stores the ped vtable, then the entity type 4.
+        const sig::Signature kMountPedCtorVtable{"mount_ped_ctor_vtable",
+            "48 8D 05 ?? ?? ?? ?? 48 8B CB 48 89 03 C6 43 30 04", 0xCC4820};
+        const sig::Signature kMountPedVtable{"mount_ped_vtable", kMountPedCtorVtable, sig::Rel32{3, 7}, "", 0x342EB80};
+        // What the writes rely on. GET_ENTITY_MATRIX's handler reads the entity
+        // matrix: +0x70 (the position and its cells, decoded), +0x40, +0x50,
+        // +0x60.
+        const sig::Signature kMountGetEntityMatrix{"mount_get_entity_matrix",
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 49 8B D9 49 8B F8 48 8B F2 E8 ?? ?? ?? ?? 48 85 C0 74 3E F3 0F "
+            "6F 40 70 0F 10 60 40 0F 10 50 50 0F 10 58 60 66 0F 69 C0 66 0F 72 E0 10 0F 5B C0 66 0F 70 C8 EE 0F 59 0D ?? "
+            "?? ?? ?? 0F 58 48 70 48 8B 44 24 50 0F 11 16 0F 11 27 0F 11 1B 0F 11 08 48 8B 5C 24 30 48 8B 74 24 38 48 83 "
+            "C4 20 5F C3",
+            0xF9744C};
+        // The fragment cache entry builds its skeleton (+0x160) with the parent
+        // matrix [entry+0xE8]+0x40, which the skeleton init keeps at +0x08: the
+        // matrix the skeleton walk reaches and the follow writes.
+        const sig::Signature kMountFragmentSkeleton{"mount_fragment_skeleton",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 20 48 8B 81 E8 00 00 00 45 33 F6",
+            0x29727E8};
+        const sig::Signature kMountSkeletonParentArg{"mount_skeleton_parent_arg", kMountFragmentSkeleton, sig::Offset{0x5E},
+            "4C 8B 83 E8 00 00 00 48 8B D6 F3 0F 10 9B F0 01 00 00 49 83 C0 40 48 8B C8 48 89 83 60 01 00 00 E8 ?? ?? ?? ??",
+            0x2972846};
+        const sig::Signature kMountSkeletonInit{"mount_skeleton_init", kMountSkeletonParentArg, sig::Rel32{0x21, 0x25},
+            "48 83 EC 28 4C 89 41 08 4C 8D 44 24 30 48 89 54 24 30 BA 01 00 00 00 F3 0F 11 99 10 01 00 00 E8 ?? ?? ?? ?? 48 "
+            "83 C4 28 C3",
+            0x2646150};
+
         // Every placed puppet (the ped pool has 150 places, plus
         // horses are peds, plus the vehicle puppets).
         constexpr std::uint32_t kMaxEntries = 256;
@@ -129,10 +166,9 @@ namespace replay::mount
         std::atomic<std::uint64_t> g_freshAtEntry{0};
         bool g_physicsFilterNote = false;
         std::atomic<std::int32_t> g_inFlight{0};
-        std::atomic<bool> g_enabled{false};
         std::atomic<bool> g_inTick{false};
         std::atomic<std::uint64_t> g_callsDuringTick{0};
-        std::uint64_t g_pedVtable = 0; // base + kPedVtableRva, set before the hook goes on
+        std::uint64_t g_pedVtable = 0; // kMountPedVtable, set before the hook goes on
 
         using PreRenderFn = std::uint64_t(__fastcall*)(void*, std::uint64_t, std::uint64_t, std::uint64_t);
         std::atomic<PreRenderFn> g_original{nullptr};
@@ -225,37 +261,12 @@ namespace replay::mount
             input.mountPlaced = entry.mountPlaced;
             input.riderPlaced = entry.riderPlaced;
             input.offset = entry.offset;
-            // Under FrameEnd the mount is set back to its own
-            // placement at its own pre-render (in an order we do not know),
-            // so following the pushed mount would put the jolt back: the
-            // rider goes to his placement (PlacePuppet) and this only measures.
-            input.enabled = g_enabled.load(std::memory_order_relaxed) && !g_frameEnd.load(std::memory_order_relaxed);
+            // Measured only (the same reads, no write): under FrameEnd the mount
+            // is set back to its own placement at its own pre-render (in an order
+            // we do not know), so following the pushed mount would put the jolt
+            // back; the rider goes to his placement (PlacePuppet).
+            input.enabled = false;
             record.plan = PlanFollow(input, kLimits);
-            if (!record.plan.write)
-                return;
-            // The rider puppet's entity matrix, then its skeleton
-            // parent (the physics instance matrix), every w lane kept.
-            float out[16]{};
-            std::memcpy(out, riderEntity, sizeof(out));
-            EncodeKeepingCells(record.plan.right, record.plan.forward, record.plan.up, record.plan.position,
-                input.rider.cellX, input.rider.cellY, out);
-            if (!replay::mem::Put(riderMatrix, out, kMatrixBytes))
-            {
-                record.writeFail = true;
-                return;
-            }
-            if (separateParent)
-            {
-                std::memcpy(out, riderParent, sizeof(out));
-                EncodeKeepingCells(record.plan.right, record.plan.forward, record.plan.up, record.plan.position,
-                    input.rider.cellX, input.rider.cellY, out);
-                if (!replay::mem::Put(static_cast<std::uintptr_t>(entry.riderParent), out, kMatrixBytes))
-                {
-                    record.writeFail = true;
-                    return;
-                }
-            }
-            record.wrote = true;
         }
 
         std::uint32_t Slot(std::uint64_t address)
@@ -406,7 +417,7 @@ namespace replay::mount
             g_inFlight.fetch_sub(1, std::memory_order_seq_cst);
         }
 
-        // CPed pre-render (vtable 0x342EB80 slot 0x258), every ped of the
+        // CPed pre-render (the ped vtable's slot 0x258), every ped of the
         // pre-render lists, every frame: one count load when no pair is
         // published, the original always.
         std::uint64_t __fastcall PedPreRenderDetour(void* ped, std::uint64_t a2, std::uint64_t a3, std::uint64_t a4)
@@ -490,8 +501,6 @@ namespace replay::mount
         }
     }
 
-    void SetEnabled(bool on) { g_enabled.store(on, std::memory_order_relaxed); }
-    bool Enabled() { return g_enabled.load(std::memory_order_relaxed); }
     // Set at load (WriteLogHeader), before any playback.
     void SetFrameEnd(bool on) { g_frameEnd.store(on, std::memory_order_relaxed); }
     bool FrameEnd() { return g_frameEnd.load(std::memory_order_relaxed); }
@@ -522,28 +531,33 @@ namespace replay::mount
     {
         if (g_target)
             return true;
-        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        const std::uintptr_t target = base + kPedPreRenderRva;
-        std::uint8_t prologue[sizeof(kPedPreRenderSignature)] = {};
-        if (!replay::mem::Copy(prologue, target, sizeof(prologue)) ||
-            std::memcmp(prologue, kPedPreRenderSignature, sizeof(prologue)) != 0)
+        const std::uintptr_t target = sig::Find(kMountPedPreRender);
+        if (!target)
         {
             error = "ped_prerender_signature_mismatch";
             g_hookState = "signature_mismatch";
             return false;
         }
+        // The matrices written: the entity's and the skeleton parent's.
+        if (!sig::Find(kMountGetEntityMatrix) || !sig::Find(kMountSkeletonInit))
+        {
+            error = "ped_matrix_layout_signature_mismatch";
+            g_hookState = "signature_mismatch";
+            return false;
+        }
         // The CPed vtable's pre-render slot holds it, and the same vtable's
         // fragment getter is the ped one (the vtable the horse check uses).
+        const std::uintptr_t vtable = sig::Find(kMountPedVtable);
         std::uint64_t slot = 0;
         std::uint64_t getter = 0;
         std::uint8_t getterBytes[sizeof(skeleton::walk::kPedGetter)] = {};
-        if (!replay::mem::Read(base + kPedVtableRva + kPreRenderSlot, slot) || slot != target)
+        if (!vtable || !replay::mem::Read(vtable + kPreRenderSlot, slot) || slot != target)
         {
             error = "ped_vtable_slot_mismatch";
             g_hookState = "vtable_mismatch";
             return false;
         }
-        if (!replay::mem::Read(base + kPedVtableRva + kFragmentGetterSlot, getter) ||
+        if (!replay::mem::Read(vtable + kFragmentGetterSlot, getter) ||
             !replay::mem::Copy(getterBytes, static_cast<std::uintptr_t>(getter), sizeof(getterBytes)) ||
             std::memcmp(getterBytes, skeleton::walk::kPedGetter, sizeof(getterBytes)) != 0)
         {
@@ -567,7 +581,7 @@ namespace replay::mount
             g_hookState = "minhook_failed";
             return false;
         }
-        g_pedVtable = base + kPedVtableRva;
+        g_pedVtable = vtable;
         g_original.store(reinterpret_cast<PreRenderFn>(trampoline), std::memory_order_release);
         status = replay::hooks::Enable(targetPointer);
         if (status != MH_OK)
@@ -740,7 +754,7 @@ namespace replay::mount
         g_publishBlocked = false;
         if (g_totals.Ticks() != 0)
         {
-            log << g_totals.Summary(Enabled(), g_hookState);
+            log << g_totals.Summary(false, g_hookState);
             log.flush();
         }
         if (g_puppetTotals.Ticks() != 0)

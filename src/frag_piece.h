@@ -2,12 +2,12 @@
 
 // A loose piece of a fragment object (the board that came off a crate) is
 // a new object of the whole object's model; the engine's piece carries
-// only the groups that broke off (the PartsBrokeOff 0x6EAE68 bitset; its
+// only the groups that broke off (the PartsBrokeOff bitset; its
 // own cache entry has the broken group as its root). Built from the model
 // alone, a whole crate would follow the board's track. So the piece keeps
 // the groups it carries (section FPCE) and playback breaks a piece off a
 // whole object of the model the way the engine made it (its root group,
-// BreakOffAboveGroup 0x2965F2C) and then takes off the groups under that
+// BreakOffAboveGroup) and then takes off the groups under that
 // root it no longer had. Pure rules; the engine side is frag_observer.h
 // (ReadObjectFrag, BreakOffObjectGroup) and replay_objects.cpp.
 

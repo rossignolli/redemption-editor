@@ -1,36 +1,21 @@
 #pragma once
 
-// The per-frame entity cache.
+// The per-frame entity cache: one pass over the engine's pools instead of
+// the same ScriptHook questions asked by several modules every frame.
 //
-// Asking the ScriptHook the same questions about the same entities every
-// frame from several modules (DOES_ENTITY_EXIST, getScriptHandleBaseAddress,
-// IS_ENTITY_A_PED, GET_ENTITY_COORDS, _HAS_PED_TAKEN_GORE_DAMAGE x9) costs
-// ~1,700 to 2,000 calls per recording frame with 56 peds. A replay recorder
-// is better off reading its entities in one pass over the engine's pools.
+// The script handle pool header is decoded once per script tick
+// (BeginFrame); every answer is then read fresh by guarded memory reads, so
+// an entity deleted earlier in the same frame is already gone. Values only a
+// native gives (frozen) are cached per frame in a table that the code which
+// changes them updates.
 //
-// Here: the script handle pool (fwScriptGuid, entity_pools.h) is decoded
-// once per script tick (BeginFrame); a handle then resolves the way the
-// engine's GetAt 0x2B09388 does, by reading memory only: the slot's flag
-// byte must equal the handle's low byte, the guid's +0x08 is the entity,
-// the entity's +0x30 its type and +0x70 its position (all signature-checked
-// by pools::Check). Every answer is read fresh (three or four guarded
-// reads, no ScriptHook call), so an entity deleted earlier in the same
-// frame is already gone: the only thing kept across a frame is the decoded
-// header. Values that only a native gives (frozen) are cached per frame in
-// a table that the code which changes them updates.
+// Safety: the first 512 resolves of a session, and one in 64 after that, are
+// compared with the natives; three mismatches switch the memory path off for
+// the session (ENTITY_CACHE,status=disabled). Off the script thread the
+// natives are used.
 //
-// Safety: every read is a guarded copy; the first 512 resolves of a
-// session, and one in 64 after that, are compared with the natives
-// (DOES_ENTITY_EXIST, getScriptHandleBaseAddress, GET_ENTITY_COORDS); three
-// mismatches switch the memory path off for the session (log line
-// ENTITY_CACHE,status=disabled) and everything goes back to the natives.
-// Off the script thread, or with EntityPoolReader=0, the natives are used.
-//
-// Gore: the engine's per-ped gore entry (table pointer at 0x497CB80, u16 count
-// at 0x497CB88, entries of 0x20: +0x00 ped, +0x18 mask) read once per frame;
-// _HAS_PED_TAKEN_GORE_DAMAGE's core 0xFD66F4 is `bt [entry+0x18], limb`, i.e.
-// bit (limb & 31) of the 32-bit mask (limb 37 is bit 5). Getter 0xB4498C and
-// core 0xFD66F4 signature-checked.
+// Evidence: offline dump, layout signature-checked by pools::Check.
+// Research: docs/research/entities-pools.md
 //
 // The pure parts below (the guid resolve, the cross-check policy, the
 // frame table, the gore table) are unit tested (tests/entity_cache_tests.cpp).
@@ -189,7 +174,7 @@ namespace replay::entities
         return true;
     }
 
-    // _HAS_PED_TAKEN_GORE_DAMAGE's core 0xFD66F4: `bt eax, ebx` on the
+    // _HAS_PED_TAKEN_GORE_DAMAGE's core: `bt eax, ebx` on the
     // dword, so the bit is limb mod 32.
     inline bool GoreHas(std::uint32_t mask, int limb)
     {

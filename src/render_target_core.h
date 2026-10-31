@@ -6,21 +6,13 @@
 // script, and the UI app SHOP_BROWSING draws into it; a replay without these
 // events shows the render target's placeholder (grey grid) on the clone.
 //
-// Engine model (build 1491.50):
-//   register 0x1056800 (name, bool) -> bool, the only callee of the
-//     REGISTER_NAMED_RENDERTARGET handler 0x1046C2C; owner = the calling
-//     script's id (0xEE5A10()+8); manager 0x4077A70.
-//   link 0x1055280 (model hash), the LINK_NAMED_RENDERTARGET handler 0x1045EB4
-//     jumps to it: marks the model info (+0xA4 |= 4, +0x98 = script id) and
-//     links the model's render target texture to the script's target.
-//   release 0x1056880 (name) -> bool, the only callee of the
-//     RELEASE_NAMED_RENDERTARGET handler 0x1046C58; same manager.
-//   UI app launch 0x109B178 (const u32* app, const u32* entry) -> int, called
-//     by the LAUNCH_UIAPP* handlers (0x106D8D8 with entry) and two engine
-//     helpers (0x109B138, 0x109B158).
-// The link's target is not read (the texture name inside the model); a link
-// is filed with the name of the latest accepted register before it (the camp
-// scripts register then link at once; hypothesis for other scripts).
+// Engine model (build 1491.50, offline dump): detours on the engine's
+// register, link and release of named render targets and on the UI app
+// launch, each the callee of its native's handler. The link's target is not
+// read; a link is filed with the name of the latest accepted register before
+// it (the camp scripts register then link at once; hypothesis for other
+// scripts).
+// Research: docs/research/recording-render-targets.md
 //
 // Pure data and rules here (unit tested in tests/render_target_tests.cpp); the
 // engine side is render_target.cpp.
@@ -365,52 +357,10 @@ namespace replay::rendertarget
     enum class Mode : std::uint8_t
     {
         Off = 0,      // nothing played (the events stay in the clip)
-        Relink = 1,   // (c) re-register and relink only
-        UiApp = 2,    // (a) (c) plus the UI app relaunched with its entry during its span
+        Relink = 1,   // (c) re-register and relink (the UI app relaunch, mode 2, gone)
     };
-    inline Mode ModeFromInt(int value) { return value <= 0 ? Mode::Off : value == 1 ? Mode::Relink : Mode::UiApp; }
-    inline const char* ModeName(Mode mode)
-    {
-        return mode == Mode::Off ? "off" : mode == Mode::Relink ? "relink" : "uiapp";
-    }
-
-    // An app span overlaps a target: the only apps (a) relaunches (an app
-    // with no render target of the clip alive during its span draws on the
-    // screen, not on a model).
-    inline bool AppDrawsTarget(const Track& track, std::uint32_t app, std::uint32_t timeMs)
-    {
-        // The app's span around timeMs: from its open <= timeMs to the next close.
-        std::uint32_t openMs = 0;
-        bool open = false;
-        std::uint32_t closeMs = 0xFFFFFFFFu;
-        for (const Event& e : track.events)
-        {
-            if (e.hash != app || (e.kind != kAppOpen && e.kind != kAppClose))
-                continue;
-            if (e.timeMs <= timeMs)
-            {
-                open = e.kind == kAppOpen;
-                openMs = e.timeMs;
-            }
-            else if (open && e.kind == kAppClose)
-            {
-                closeMs = e.timeMs;
-                break;
-            }
-        }
-        if (!open)
-            return false;
-        State state;
-        for (const Event& e : track.events)
-        {
-            if (e.timeMs > closeMs)
-                break;
-            state.Apply(e);
-            if (e.timeMs >= openMs && !state.targets.empty())
-                return true;
-        }
-        return false;
-    }
+    inline Mode ModeFromInt(int value) { return value <= 0 ? Mode::Off : Mode::Relink; }
+    inline const char* ModeName(Mode mode) { return mode == Mode::Off ? "off" : "relink"; }
 
     // What to do to go from what the replay applied (`have`) to the clip's
     // state at the playhead (`want`). Order: close apps, release targets,
@@ -502,38 +452,4 @@ namespace replay::rendertarget
         return hash;
     }
 
-    // "SHOP_BROWSING,0x1234ABCD, OTHER": names hashed, 0x numbers taken as
-    // they are; empty items skipped; at most kMaxApps.
-    inline std::vector<std::uint32_t> ParseAppList(const std::string& text)
-    {
-        std::vector<std::uint32_t> out;
-        std::string item;
-        const auto flush = [&]() {
-            std::size_t a = 0, b = item.size();
-            while (a < b && (item[a] == ' ' || item[a] == '\t'))
-                ++a;
-            while (b > a && (item[b - 1] == ' ' || item[b - 1] == '\t'))
-                --b;
-            const std::string word = item.substr(a, b - a);
-            item.clear();
-            if (word.empty() || out.size() >= kMaxApps)
-                return;
-            std::uint32_t hash = 0;
-            if (word.size() > 2 && word[0] == '0' && (word[1] == 'x' || word[1] == 'X'))
-                hash = static_cast<std::uint32_t>(std::strtoul(word.c_str() + 2, nullptr, 16));
-            else
-                hash = Joaat(word.c_str());
-            if (hash && std::find(out.begin(), out.end(), hash) == out.end())
-                out.push_back(hash);
-        };
-        for (const char c : text)
-        {
-            if (c == ',' || c == ';')
-                flush();
-            else
-                item.push_back(c);
-        }
-        flush();
-        return out;
-    }
 }

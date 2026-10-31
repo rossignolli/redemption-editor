@@ -34,8 +34,8 @@ namespace
         for (const auto& known : replay::pedaudiostate::kKnownVariables)
             labelled = labelled || (known.name == kSpeedVariable && std::string(known.label) == "speed");
         Check(labelled, "the PED_VARS label of the speed");
-        Check(replay::pedaudiostate::kUpdatePedVariablesRva == 0x31A3ABC &&
-                  replay::pedaudiostate::kSpeedStoreRva == 0x31A3F7A && replay::pedaudiostate::kSpeedSourceRva == 0x31A3EF4,
+        Check(replay::pedaudiostate::kUpdatePedVariables.rva == 0x31A3ABC &&
+                  replay::pedaudiostate::kSpeedStore.rva == 0x31A3F7A && replay::pedaudiostate::kSpeedSource.rva == 0x31A3EF4,
             "UpdatePedVariables and its speed sites");
         Check(replay::pedaudiostate::kMaxSpeedTargets >= 128, "room for every puppet");
         Check(Plausible(0.0f) && Plausible(9.2f) && !Plausible(-0.1f) && !Plausible(NAN) && !Plausible(1000.0f), "plausible");
@@ -354,8 +354,8 @@ namespace
             if (site.part == Part::Wrapper)
                 ++wrapperSites;
             // No probe site on the prologue the speed override hooks.
-            Check(site.rva + site.size <= replay::pedaudiostate::kUpdatePedVariablesRva ||
-                      site.rva >= replay::pedaudiostate::kUpdatePedVariablesRva + 5u,
+            Check(site.rva + site.size <= replay::pedaudiostate::kUpdatePedVariables.rva ||
+                      site.rva >= replay::pedaudiostate::kUpdatePedVariables.rva + 5u,
                 (std::string("site on UpdatePedVariables' prologue: ") + site.name).c_str());
         }
         Check(wrapperSites == 15, "fifteen wrapper sites (eight, and the seven of the pairs' slot)");

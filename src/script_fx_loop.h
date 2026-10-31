@@ -3,37 +3,37 @@
 // The looped particle effects a script starts (START_PARTICLE_FX_LOOPED_ON_ENTITY_BONE
 // and the other looped starts) and the request that keeps them alive every frame.
 //
-// Build 1491.50:
-//   - the script fx object constructor 0xEB6704 calls the script looped start
-//     0x2C4FFD8, which gets or creates the registered entry through the
-//     wrapper 0x2C3A1C0 with the owner key 0x10000000 (mov ecx, 0x10000000 at
-//     0x2C50048) and the script slot id ([slot+0x20]), the effect hash and the
-//     asset; the registered core 0x2C49B08 is the one the fx observer detours,
-//     and the site it records for this start is 0xEB6816 (the return into the
-//     constructor, two frames above the wrapper);
-//   - every frame 0x2C526F4 (called by 0x1472AD4, recorded site 0x1472AF7)
-//     walks the active script slots and gets each entry again through the
-//     same wrapper with the same owner key and id but a hash and an asset of
-//     0 (mov dword [rsp+0x80], 0 at 0x2C5276C): the call only marks the entry
-//     as got this frame (+0x28), which keeps it playing (registry update
-//     0x2C52554 stops an entry not got). STOP_PARTICLE_FX_LOOPED clears the
-//     slot and the entry is not got any more.
-// Dropping the calls without an effect hash would record only the start of a
-// script looped effect (e.g. the dynamite fuse, proj_dynamite_trail). A call
-// without a hash counts for the live key it gets (same owner and id), with
-// that key's effect; a key not live yet (a script effect started before the
-// recording) takes the effect the instance holds (rule +0x200, the same read
-// GuardedClearBit compares with the track's hash).
+// The engine keeps a script looped effect playing only while the script slot
+// walk gets its registered entry again every frame (same owner key 0x10000000
+// and id, hash and asset 0). Dropping the calls without an effect hash would
+// record only the start (e.g. the dynamite fuse, proj_dynamite_trail). So a
+// call without a hash counts for the live key it gets, with that key's effect;
+// a key not live yet (started before the recording) takes the effect the
+// instance holds (rule +0x200). Offline dump, build 1491.50.
+// Research: docs/research/fx-fires-decals-effects.md
 //
 // Pure (no game).
+
+#include "game_sig_core.h"
 
 #include <cstdint>
 
 namespace replay::scriptfx
 {
     constexpr std::uint64_t kScriptOwner = 0x10000000;   // registered owner key of script looped effects
-    constexpr std::uint32_t kStartSite = 0xEB6816;       // recorded site of their start
-    constexpr std::uint32_t kKeepAliveSite = 0x1472AF7;  // recorded site of the per-frame get (hash 0)
+    // The calls whose return addresses are the recorded sites of their start
+    // and of the per-frame get (hash 0): fx_observer.h ScriptLoopStartSite and
+    // ScriptLoopKeepAliveSite.
+    inline const sig::Signature kScriptFxCtor{"fx_script_loop_ctor",
+        "48 89 5C 24 10 55 56 57 48 83 EC 60 33 ED 48 8D 05 ?? ?? ?? ?? 66 89 69 08 49 8B F9 48 89 69 0C", 0xEB6704};
+    inline const sig::Signature kScriptFxStartCall{"fx_script_loop_start_call", kScriptFxCtor, sig::Offset{0x10D},
+        "E8 ?? ?? ?? ?? 89 43 10 48 8B C3", 0xEB6811};
+    inline const sig::Signature kScriptFxKeepAlive{"fx_script_loop_keep_alive",
+        "40 53 48 83 EC 20 80 B9 F4 6A 00 00 00 48 8B D9 74 1E 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? F3 "
+        "0F 10 83 F0 6A 00 00",
+        0x1472AD4};
+    inline const sig::Signature kScriptFxKeepAliveCall{"fx_script_loop_keep_alive_call", kScriptFxKeepAlive,
+        sig::Offset{0x1E}, "E8 ?? ?? ?? ?? F3 0F 10 83 F0 6A 00 00", 0x1472AF2};
 
     // How a registered call without an effect hash was resolved.
     enum class Hashless : std::uint8_t
@@ -91,7 +91,7 @@ namespace replay::scriptfx
         return result;
     }
 
-    // Playback check of the script looped tracks (site kStartSite): how long
+    // Playback check of the script looped tracks (site kScriptFxStartCall): how long
     // each one was played against how long it was recorded.
     struct LoopTrackPlay
     {

@@ -2,10 +2,10 @@
 
 // The player's weapon bank during a replay. Live, the weapon audio plays the
 // local player's shot from the player's equipped-weapon wave slots
-// (0x5B82B70, read at 0x2EFAB77 in the fire player 0x2EFA7E0 when the shooter
+// (a static object the fire play reads when the shooter
 // answers "player"), which the engine fills with the bank of the weapon the
 // player has equipped. In a replay the player's puppet answers "player"
-// (detour 0x2F02F8C) but the slots hold the banks of the hidden live player's
+// (the weapon predicate's detour) but the slots hold the banks of the hidden live player's
 // weapons: a shot whose bank is not there loses its body (-11 to -16 dB,
 // more under 160 Hz). So the hidden live player equips the weapon of the
 // recorded player's next shot, ahead of it, and the engine loads its bank.

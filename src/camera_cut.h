@@ -2,25 +2,13 @@
 
 // The replay's cameras without a camera cut on every frame.
 //
-// SET_CAM_COORD and SET_CAM_ROT always set the cut bits 0x40 (position) and
-// 0x80 (orientation) of the camera frame's flags [cam+0xEC] (build 1491.50:
-// handlers 0xF7515C and 0xF75520). The frame is copied to the final rendered
-// frame (flags at 0x3EA0C4C), whose "cut" test 0x174AE8 feeds the post
-// process: the TAA drops its history on a cut frame. Placed with those two
-// natives every tick, every frame would render as a cut (a jagged and
-// shimmering picture).
-//
-// SET_CAM_PARAMS with duration 0 (0x31A4A0) sets the same position, rotation
-// and FOV and raises the cut bits only when its p12 is true. Its rotation is
-// applied when [cam+0x538] == 3 and [cam+0x520] == 0: the base camera
-// constructor 0x2EC6BC writes 3 and 0 (0x2EC748, 0x2EC71D), only the
-// POINT_CAM_AT_* paths write 1 or 2 (0x313DA3, 0x313C3F) and STOP_CAM_POINTING
-// writes 3 back (0x2F8F53); the replay's cameras never point. Its position is
-// applied when [cam+0x498] == 0 (not written by that constructor; its role and
-// default are not proven, hypothesis: an attach target). The script still
-// checks the first placements of each camera with GET_CAM_ROT / GET_CAM_COORD
-// and falls back to the plain natives when they did not take
-// (CAMERA_CUT_MODE,phase=fallback).
+// SET_CAM_COORD and SET_CAM_ROT always raise the camera's cut bits, and the
+// TAA drops its history on a cut frame, so placing the camera with them every
+// tick renders every frame as a cut (a jagged, shimmering picture).
+// SET_CAM_PARAMS with duration 0 places the camera the same way and raises
+// the cut bits only when its p12 is true. The script still checks the first
+// placements of each camera with GET_CAM_ROT / GET_CAM_COORD and falls back
+// to the plain natives when they did not take (CAMERA_CUT_MODE,phase=fallback).
 //
 // As a replay editor usually does it (a cut only where the recording had one),
 // the cut flag is passed only on a real cut: the camera's first placement, a
@@ -28,12 +16,16 @@
 // marker boundary without blend, a recorded cut crossed, or a camera that moved
 // farther than any real speed in one tick.
 //
-// The cut rate: the word at the final frame's flags, read once a tick (rung 2,
-// guarded) at the address the signature of 0x174AE8 gives (mov eax,0xC0; test
-// word [rip+disp],ax; seta al; ret), counted per second (CAMERA_CUT_RATE, kept
-// with Debug=0).
+// The cut rate is read once a tick from the final frame's flags (guarded) and
+// logged per second (CAMERA_CUT_RATE, kept with Debug=0).
+//
+// Evidence: offline dump; the SET_CAM_PARAMS position condition is a
+// hypothesis, guarded by the fallback above.
+// Research: docs/research/camera-cut.md
 //
 // Pure: unit tested in tests/lod_doors_camera_tests.cpp.
+
+#include "game_sig_core.h"
 
 #include <cmath>
 #include <cstddef>
@@ -53,46 +45,36 @@ namespace replay::camcut
         Bits = 2,
     };
 
-    inline Mode ModeFromIni(const char* text)
-    {
-        if (!text)
-            return Mode::Bits;
-        char lower[16]{};
-        for (std::size_t n = 0; n + 1 < sizeof(lower) && text[n]; ++n)
-            lower[n] = static_cast<char>(text[n] >= 'A' && text[n] <= 'Z' ? text[n] + 32 : text[n]);
-        if (std::strcmp(lower, "legacy") == 0)
-            return Mode::Legacy;
-        if (std::strcmp(lower, "params") == 0)
-            return Mode::Params;
-        return Mode::Bits; // "bits", "clearbits", anything else
-    }
     inline const char* ModeName(Mode mode)
     {
         return mode == Mode::Legacy ? "legacy" : mode == Mode::Params ? "params" : "bits";
     }
 
-    // ---- the camera object (build 1491.50) -----------------------------------
-    // The camera behind a script handle: 0x1739DC(handle), the lookup every CAM
-    // native starts with (SET_CAM_COORD's core 0xF7515C, SET_CAM_ROT's 0xF75520,
-    // SET_CAM_PARAMS' 0xF753FC and 0x31A4A0, GET_CAM_COORD's 0xF6DA60): it
-    // decrypts the camera pool pointer (0x3EC3248..0x3EC3258) and returns the pool
-    // slot (0x2B09388); no write, no lock. Called at rung 4: its whole body is
-    // compared first. On that object SET_CAM_COORD writes the position at +0x50
-    // and ORs 0x40 into the word at +0xEC (0xF751BE, 0xF751C2); SET_CAM_ROT writes
-    // the matrix at +0x20 and ORs 0x80. The frame copy 0x170028 carries that word
-    // to the final frame (0x3EA0C4C), whose test 0x174AE8 feeds the TAA.
-    inline constexpr std::uint32_t kCamLookupRva = 0x1739DC;
-    inline constexpr std::uint8_t kCamLookup[] = {
-        0x48, 0x83, 0xEC, 0x28, 0x45, 0x33, 0xC0, 0x44, 0x8B, 0xC9, 0x85, 0xC9, 0x78, 0x51, 0x8A, 0x05, 0x58, 0xF8,
-        0xD4, 0x03, 0x84, 0xC0, 0x74, 0x39, 0x48, 0x8B, 0x0D, 0x5D, 0xF8, 0xD4, 0x03, 0x48, 0x8B, 0x15, 0x4E, 0xF8,
-        0xD4, 0x03, 0x48, 0xC1, 0xC1, 0x20, 0x48, 0xC1, 0xC9, 0x03, 0x48, 0x33, 0xD1, 0x8B, 0xC1, 0x83, 0xE0, 0x1F,
-        0xFF, 0xC0, 0x8A, 0xC8, 0x8A, 0x05, 0x2C, 0xF8, 0xD4, 0x03, 0x48, 0xD3, 0xC2, 0x48, 0xC1, 0xC2, 0x20, 0x84,
-        0xC0, 0x74, 0x06, 0x4C, 0x8B, 0xC2, 0x49, 0xF7, 0xD0, 0x41, 0x8B, 0xD1, 0x49, 0x8B, 0xC8, 0xE8, 0x50, 0x59,
-        0x99, 0x02, 0x4C, 0x8B, 0xC0, 0x49, 0x8B, 0xC0, 0x48, 0x83, 0xC4, 0x28, 0xC3};
+    // ---- the camera object -----------------------------------------------------
+    // The camera behind a script handle: the lookup (kCameraLookup, handle) every
+    // CAM native starts with (SET_CAM_COORD's core kCameraSetCoord, SET_CAM_ROT's,
+    // SET_CAM_PARAMS' two, GET_CAM_COORD's): it decrypts the camera pool pointer
+    // and returns the pool slot; no write, no lock. Called at rung 4: its whole
+    // body is compared first. On that object SET_CAM_COORD writes the position at
+    // +0x50 and ORs 0x40 into the word at +0xEC (kCameraCoordCutBit); SET_CAM_ROT
+    // writes the matrix at +0x20 and ORs 0x80. The frame copy carries that word to
+    // the final frame (kCameraFinalFrameFlags), whose test (kCameraCutTest) feeds
+    // the TAA.
+    inline const sig::Signature kCameraSetCoord{"camera_set_coord",
+        "48 8B C4 48 89 58 08 57 48 83 EC 50 0F 29 70 E8 8B F9 F3 0F 10 32 0F 29 78 D8", 0xF7515C};
+    inline const sig::Signature kCameraLookup{"camera_lookup", kCameraSetCoord, sig::Rel32{0x2B, 0x2F},
+        "48 83 EC 28 45 33 C0 44 8B C9 85 C9 78 51 8A 05 ?? ?? ?? ?? 84 C0 74 39 48 8B 0D ?? ?? ?? ?? 48 8B 15 ?? ?? ?? "
+        "?? 48 C1 C1 20 48 C1 C9 03 48 33 D1 8B C1 83 E0 1F FF C0 8A C8 8A 05 ?? ?? ?? ?? 48 D3 C2 48 C1 C2 20 84 C0 74 "
+        "06 4C 8B C2 49 F7 D0 41 8B D1 49 8B C8 E8 ?? ?? ?? ?? 4C 8B C0 49 8B C0 48 83 C4 28 C3",
+        0x1739DC};
+    // movups [rbx+50h],xmm3; or word [rbx+0ECh],40h: the position written and
+    // the cut bit the replay clears.
+    inline const sig::Signature kCameraCoordCutBit{"camera_coord_cut_bit", kCameraSetCoord, sig::Offset{0x62},
+        "0F 11 5B 50 66 83 8B EC 00 00 00 40", 0xF751BE};
     inline constexpr std::uint32_t kCamPositionOffset = 0x50; // float x, y, z (SET_CAM_COORD)
     inline constexpr std::uint32_t kCamFlagsOffset = 0xEC;    // u16, cut bits 0x40 | 0x80
-    // Read for the fallback line only (SET_CAM_PARAMS' conditions, 0x31A51B
-    // .. 0x31A548; GET_CAM_COORD's frame choice, 0xF6DA78).
+    // Read for the fallback line only (SET_CAM_PARAMS' conditions;
+    // GET_CAM_COORD's frame choice).
     inline constexpr std::uint32_t kCamAttachOffset = 0x498;  // qword, position applied only when 0
     inline constexpr std::uint32_t kCamPointOffset = 0x520;   // qword, rotation applied only when 0
     inline constexpr std::uint32_t kCamModeOffset = 0x538;    // dword, rotation applied only when 3
@@ -117,28 +99,12 @@ namespace replay::camcut
         return static_cast<std::uint16_t>(flags & ~0xC0u); // kCutBits
     }
 
-    // Offline dump 1491.50.
-    inline constexpr std::uint32_t kFinalFrameCutTestRva = 0x174AE8;
-    inline constexpr std::uint32_t kFinalFrameFlagsRva = 0x3EA0C4C;
+    // The final frame's cut test: mov eax,0xC0 / test word [rip+disp32],ax /
+    // seta al / ret; the disp32 is the final frame's flags.
+    inline const sig::Signature kCameraCutTest{"camera_cut_test", "B8 C0 00 00 00 66 85 05 ?? ?? ?? ?? 0F 97 C0 C3", 0x174AE8};
+    inline const sig::Signature kCameraFinalFrameFlags{"camera_final_frame_flags", kCameraCutTest, sig::Rel32{8, 12}, "",
+        0x3EA0C4C};
     inline constexpr std::uint16_t kCutBits = 0xC0;
-    // mov eax,0xC0 / test word [rip+disp32],ax / seta al / ret: bytes 8..11 are the disp.
-    inline constexpr std::uint8_t kCutTestHead[] = {0xB8, 0xC0, 0x00, 0x00, 0x00, 0x66, 0x85, 0x05};
-    inline constexpr std::uint8_t kCutTestTail[] = {0x0F, 0x97, 0xC0, 0xC3};
-    inline constexpr std::size_t kCutTestBytes = sizeof(kCutTestHead) + 4 + sizeof(kCutTestTail);
-
-    // The flags' RVA the code at kFinalFrameCutTestRva reads (0 when the
-    // bytes are not that function's).
-    inline std::uint32_t FlagsRvaFromCode(const std::uint8_t* code, std::uint32_t codeRva)
-    {
-        if (!code || std::memcmp(code, kCutTestHead, sizeof(kCutTestHead)) != 0 ||
-            std::memcmp(code + sizeof(kCutTestHead) + 4, kCutTestTail, sizeof(kCutTestTail)) != 0)
-            return 0;
-        std::int32_t disp = 0;
-        std::memcpy(&disp, code + sizeof(kCutTestHead), 4);
-        const std::int64_t next = static_cast<std::int64_t>(codeRva) + static_cast<std::int64_t>(sizeof(kCutTestHead)) + 4;
-        const std::int64_t target = next + disp;
-        return target > 0 && target < 0x7FFFFFFF ? static_cast<std::uint32_t>(target) : 0u;
-    }
 
     // A real speed never moves the camera this far in one tick: a cut.
     inline constexpr float kCutSpeedMps = 50.0f;   // the motion blur's own "a cut is not speed"

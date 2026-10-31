@@ -5,44 +5,20 @@
 // and restore it, applied to the category stage of every voice. Pure part (no
 // game); unit tested in tests/category_state_tests.cpp.
 //
-// Engine layout (build 1491.50):
-//   - the resolved volume of category i (table [0x5338488], stride 0x48, +0
-//     in dB, what the volume probe calls cat_db) is written by the resolver
-//     0x251C310(category, u16, use meta) on the mixer side: meta (+0, only
-//     with the third argument set) plus the controllers' sum (+0x48, read at
-//     0x251C348) plus the parent's resolved value (+0xB0 the parent's index,
-//     unless +0xE4 bit 0), stored at the category's own index (+0xB2,
-//     0x251C374..0x251C380). It is called for the root by 0x2539654 at
-//     0x25396AD (use meta 1), for each dynamic hierarchy at 0x2539714 and
-//     recursively for the children at 0x251C9C8, so a parent's value is
-//     final before its children read it;
-//   - the controllers' sum of every static category ([0x5338630] of them, the
-//     category pool [0x5338490]: +8 base, +0x10 count, +0x20 stride, +0x38
-//     the allocated bits) is written by the controller manager 0x25394C8
-//     (manager [0x5338518], game side, its own lock +0x840): +0x48 volume dB,
-//     +0x4C and +0x54 (multipliers), +0x88 pitch, +0x8A low pass, +0x8C high
-//     pass (0x25395BA..0x25395E7), and 0, 1, 1, 0, 20000, 0 for a category
-//     without a controller (0x25395F0..0x253960C). A controller comes from a
-//     mixer scene's patch (0x3278B6C, 0x32756F4 -> 0x2526258) or from code:
-//     the sliders SFX_SLIDER and MUSIC_SLIDER and the music categories
-//     INTERACTIVE_MUSIC and MUSIC_ONESHOT (0x2EFF0DC -> 0x2526258);
-//   - a category by hash: the map at 0x5338590 (+0xA4 count, +0xA8 entries of
-//     16 bytes {category pointer, hash}, sorted by hash, 0x252A3D0); the
-//     pool index of a category is (pointer - base) / stride (0x252634D).
-// Without this, the category stage (d_cat) differs from the recording by
-// about +4 dB on scripted speech and +2 to +6 dB on ambient speech, ambience
-// and weather, from mixer scenes the replay session has and the recording did
-// not (and the other way round): the conversation duck, the hidden live
-// player's state scenes, duplicated permanent scenes.
+// Why: mixer scenes the replay session has and the recording did not (and the
+// other way round) move the category stage (d_cat) by about +2 to +6 dB.
 //
 // The mechanism: the recording keeps, for every static category (by hash),
 // the values the controller manager wrote (first sight and every change, at
 // most once per kMinIntervalMs per category); the playback, while the replay
-// owns the world, puts the recorded volume (or every field) into the
-// category right before the resolver reads it (a detour of 0x251C310 that
-// forwards every call), so the resolved value is the recording's whatever
-// scenes the session has. The sliders, the music categories and BASE stay
-// live (CategoryStateKeepLive).
+// owns the world, puts the recorded volume (or every field) into the category
+// right before the resolver reads it (a forwarding detour of the resolver), so
+// the resolved value is the recording's whatever scenes the session has. The
+// sliders, the music categories and BASE stay live (CategoryStateKeepLive).
+// Evidence: offline dump; the signatures below hold the bytes.
+// Research: docs/research/audio-mix-scenes.md
+
+#include "game_sig_core.h"
 
 #include <algorithm>
 #include <cmath>
@@ -56,13 +32,92 @@
 
 namespace replay::catstate
 {
-    // ---- engine layout (build 1491.50) ----
-    constexpr std::uint32_t kResolverRva = 0x251C310;      // (category, u16, use meta)
-    constexpr std::uint32_t kResolvedTableRva = 0x5338488; // [ ]: resolved values, stride 0x48
-    constexpr std::uint32_t kStaticCountRva = 0x5338630;   // u32: static categories
-    constexpr std::uint32_t kCategoryPoolRva = 0x5338490;  // [ ]: the category pool
-    constexpr std::uint32_t kCategoryMapRva = 0x5338590;   // the map object (hash -> category)
-    constexpr std::uint32_t kMapLookupRva = 0x252A3D0;
+    // ---- engine layout ----
+
+    // The resolver's prologue up to the first read of +0x48 (61 bytes): mov
+    // rax,rsp; four saves; push r14; sub rsp,20h; movzx r11d,[rcx+0B0h]; mov
+    // sil,r8b; movzx ebp,dx; mov r9,rcx; test r8b,r8b; je; movss xmm0,[rcx];
+    // jmp; xorps; addss xmm0,[rcx+48h]. Its read of the resolved table, its
+    // store at the category's own index and its call for the children.
+    inline const sig::Signature kResolver{"category_resolver",
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 48 89 78 20 41 56 48 83 EC 20 44 0F B7 99 B0 00 00 00 41 8A F0 0F "
+        "B7 EA 4C 8B C9 45 84 C0 74 06 F3 0F 10 01 EB 03 0F 57 C0 F3 0F 58 41 48",
+        0x251C310};
+    inline const sig::Signature kResolvedTableRead{"category_resolved_table_read", kResolver, sig::Offset{0x3D},
+        "48 8B 15 ?? ?? ?? ??", 0x251C34D};
+    inline const sig::Signature kResolvedTable{"category_resolved_table", kResolvedTableRead, sig::Rel32{0x03, 0x07},
+        "", 0x5338488};
+    inline const sig::Signature kResolvedIndexStore{"category_resolved_index_store", kResolver, sig::Offset{0x64},
+        "49 0F BF 81 B2 00 00 00 48 8D 0C C0 F3 0F 11 04 CA", 0x251C374};
+    inline const sig::Signature kCallChildren{"category_call_children", kResolver, sig::Offset{0x6B8}, "E8 ?? ?? ?? ??",
+        0x251C9C8};
+    inline const sig::Signature kCallChildrenTarget{"category_call_children_target", kCallChildren,
+        sig::Rel32{0x01, 0x05},
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 48 89 78 20 41 56 48 83 EC 20 44 0F B7 99 B0 00 00 00 41 8A F0 0F "
+        "B7 EA 4C 8B C9 45 84 C0 74 06 F3 0F 10 01 EB 03 0F 57 C0 F3 0F 58 41 48",
+        0x251C310};
+    // The resolve of every hierarchy: the pool's allocated bits, the call for
+    // the root and for each dynamic hierarchy.
+    inline const sig::Signature kResolveAll{"category_resolve_all",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8D B1 C8 00 00 00", 0x2539654};
+    inline const sig::Signature kPoolBitsSite{"category_pool_bits", kResolveAll, sig::Offset{0x37}, "48 8B 41 38",
+        0x253968B};
+    inline const sig::Signature kCallRoot{"category_call_root", kResolveAll, sig::Offset{0x59}, "E8 ?? ?? ?? ??",
+        0x25396AD};
+    inline const sig::Signature kCallRootTarget{"category_call_root_target", kCallRoot, sig::Rel32{0x01, 0x05},
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 48 89 78 20 41 56 48 83 EC 20 44 0F B7 99 B0 00 00 00 41 8A F0 0F "
+        "B7 EA 4C 8B C9 45 84 C0 74 06 F3 0F 10 01 EB 03 0F 57 C0 F3 0F 58 41 48",
+        0x251C310};
+    inline const sig::Signature kCallDynamic{"category_call_dynamic", kResolveAll, sig::Offset{0xC0}, "E8 ?? ?? ?? ??",
+        0x2539714};
+    inline const sig::Signature kCallDynamicTarget{"category_call_dynamic_target", kCallDynamic, sig::Rel32{0x01, 0x05},
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 48 89 78 20 41 56 48 83 EC 20 44 0F B7 99 B0 00 00 00 41 8A F0 0F "
+        "B7 EA 4C 8B C9 45 84 C0 74 06 F3 0F 10 01 EB 03 0F 57 C0 F3 0F 58 41 48",
+        0x251C310};
+    // The controller manager: the static count, the category pool, its store
+    // of the volume and of the other fields (CategoryStateFields=all writes
+    // those).
+    inline const sig::Signature kControllerManager{"category_controller_manager",
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 54 41 56 41 57 48 83 EC 40 44 8B 35 ?? ?? ?? ??",
+        0x25394C8};
+    inline const sig::Signature kStaticCountRead{"category_static_count_read", kControllerManager, sig::Offset{0x1D},
+        "44 8B 35 ?? ?? ?? ??", 0x25394E5};
+    inline const sig::Signature kStaticCount{"category_static_count", kStaticCountRead, sig::Rel32{0x03, 0x07}, "",
+        0x5338630};
+    inline const sig::Signature kCategoryPoolRead{"category_pool_read", kControllerManager, sig::Offset{0x45},
+        "4C 8B 15 ?? ?? ?? ??", 0x253950D};
+    inline const sig::Signature kCategoryPool{"category_pool", kCategoryPoolRead, sig::Rel32{0x03, 0x07}, "",
+        0x5338490};
+    inline const sig::Signature kControllerVolumeStore{"category_controller_volume_store", kControllerManager,
+        sig::Offset{0xF2}, "F3 0F 11 43 48", 0x25395BA};
+    inline const sig::Signature kControllerFieldsStore{"category_controller_fields_store", kControllerManager,
+        sig::Offset{0xF7},
+        "F3 0F 10 44 24 28 F3 0F 11 43 54 F3 0F 11 4B 4C 66 89 83 88 00 00 00 0F B7 44 24 2E 66 89 83 8A 00 00 00 0F "
+        "B7 44 24 30 66 89 83 8C 00 00 00",
+        0x25395BF};
+    // A controller's creation: the category map, its lookup by hash, the
+    // pool index of a category.
+    inline const sig::Signature kControllerCreate{"category_controller_create",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 83 EC 20 48 8D B1 40 08 00 00", 0x2526258};
+    inline const sig::Signature kMapObjectLea{"category_map_object", kControllerCreate, sig::Offset{0x40},
+        "48 8D 0D ?? ?? ?? ??", 0x2526298};
+    inline const sig::Signature kCategoryMap{"category_map", kMapObjectLea, sig::Rel32{0x03, 0x07}, "", 0x5338590};
+    inline const sig::Signature kMapLookupCall{"category_map_lookup_call", kControllerCreate, sig::Offset{0x47},
+        "E8 ?? ?? ?? ??", 0x252629F};
+    inline const sig::Signature kMapLookup{"category_map_lookup", kMapLookupCall, sig::Rel32{0x01, 0x05},
+        "48 89 5C 24 08 44 8B 81 A4 00 00 00", 0x252A3D0};
+    inline const sig::Signature kMapCountSite{"category_map_count", kMapLookup, sig::Offset{0x05},
+        "44 8B 81 A4 00 00 00", 0x252A3D5};
+    inline const sig::Signature kMapEntriesSite{"category_map_entries", kMapLookup, sig::Offset{0x25},
+        "48 8B 99 A8 00 00 00", 0x252A3F5};
+    inline const sig::Signature kMapHashSite{"category_map_hash", kMapLookup, sig::Offset{0x3C}, "44 3B 5C C3 08",
+        0x252A40C};
+    inline const sig::Signature kMapPointerSite{"category_map_pointer", kMapLookup, sig::Offset{0x59}, "4C 8B 14 CB",
+        0x252A429};
+    inline const sig::Signature kPoolBaseSite{"category_pool_base", kControllerCreate, sig::Offset{0xF5}, "4C 2B 59 08",
+        0x252634D};
+    inline const sig::Signature kPoolStrideSite{"category_pool_stride", kControllerCreate, sig::Offset{0xFC},
+        "48 F7 71 20", 0x2526354};
 
     constexpr std::uint32_t kResolvedStride = 0x48;
     constexpr std::uint32_t kCatMeta = 0x00;     // f32 dB (metadata)
@@ -88,73 +143,41 @@ namespace replay::catstate
     constexpr std::size_t kMaxCategories = 4096; // indices the snapshot covers (static count above: refused)
     constexpr std::size_t kMaxMapEntries = 8192;
 
-    // The resolver's prologue up to the first read of +0x48 (61 bytes):
-    // mov rax,rsp; four saves; push r14; sub rsp,20h; movzx r11d,[rcx+0B0h];
-    // mov sil,r8b; movzx ebp,dx; mov r9,rcx; test r8b,r8b; je; movss
-    // xmm0,[rcx]; jmp; xorps; addss xmm0,[rcx+48h].
-    constexpr std::uint8_t kResolverSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10,
-        0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78, 0x20, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x44, 0x0F, 0xB7, 0x99, 0xB0,
-        0x00, 0x00, 0x00, 0x41, 0x8A, 0xF0, 0x0F, 0xB7, 0xEA, 0x4C, 0x8B, 0xC9, 0x45, 0x84, 0xC0, 0x74, 0x06, 0xF3, 0x0F,
-        0x10, 0x01, 0xEB, 0x03, 0x0F, 0x57, 0xC0, 0xF3, 0x0F, 0x58, 0x41, 0x48};
-
-    // A code site: its bytes, and for a rip-relative operand or a call the
-    // offset of the disp32 inside the bytes, where that instruction ends and
-    // the target it must reach (ripAt < 0: bytes only).
+    // A code site as the log names it: the instruction, what its call or rip
+    // operand reaches, and what that must be too (the resolver its calls
+    // reach).
     struct Site
     {
         const char* name;
-        std::uint32_t rva;
-        std::uint8_t size;
-        std::uint8_t bytes[17];
-        std::int8_t ripAt;
-        std::uint8_t insnEnd;
-        std::uint32_t target;
+        const sig::Signature& at;
+        const sig::Signature* reach;
+        const sig::Signature* same;
     };
 
-    inline std::uint32_t SiteTarget(const Site& site)
-    {
-        if (site.ripAt < 0)
-            return 0;
-        const std::uint8_t* d = site.bytes + site.ripAt;
-        const std::int32_t disp = static_cast<std::int32_t>(static_cast<std::uint32_t>(d[0]) |
-            (static_cast<std::uint32_t>(d[1]) << 8) | (static_cast<std::uint32_t>(d[2]) << 16) |
-            (static_cast<std::uint32_t>(d[3]) << 24));
-        return static_cast<std::uint32_t>(static_cast<std::int64_t>(site.rva) + site.insnEnd + disp);
-    }
-
-    inline bool SiteMatches(const Site& site, const std::uint8_t* code)
-    {
-        for (std::uint8_t n = 0; n < site.size; ++n)
-            if (code[n] != site.bytes[n])
-                return false;
-        return true;
-    }
-
-    constexpr Site kSites[] = {
-        {"resolved_table", 0x251C34D, 7, {0x48, 0x8B, 0x15, 0x34, 0xC1, 0xE1, 0x02}, 3, 7, kResolvedTableRva},
-        {"resolved_index_store", 0x251C374, 17,
-            {0x49, 0x0F, 0xBF, 0x81, 0xB2, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x0C, 0xC0, 0xF3, 0x0F, 0x11, 0x04, 0xCA}, -1, 0, 0},
-        {"call_root", 0x25396AD, 5, {0xE8, 0x5E, 0x2C, 0xFE, 0xFF}, 1, 5, kResolverRva},
-        {"call_dynamic", 0x2539714, 5, {0xE8, 0xF7, 0x2B, 0xFE, 0xFF}, 1, 5, kResolverRva},
-        {"call_children", 0x251C9C8, 5, {0xE8, 0x43, 0xF9, 0xFF, 0xFF}, 1, 5, kResolverRva},
-        {"static_count", 0x25394E5, 7, {0x44, 0x8B, 0x35, 0x44, 0xF1, 0xDF, 0x02}, 3, 7, kStaticCountRva},
-        {"category_pool", 0x253950D, 7, {0x4C, 0x8B, 0x15, 0x7C, 0xEF, 0xDF, 0x02}, 3, 7, kCategoryPoolRva},
-        {"controller_volume_store", 0x25395BA, 5, {0xF3, 0x0F, 0x11, 0x43, 0x48}, -1, 0, 0},
-        {"map_object", 0x2526298, 7, {0x48, 0x8D, 0x0D, 0xF1, 0x22, 0xE1, 0x02}, 3, 7, kCategoryMapRva},
-        {"map_lookup_call", 0x252629F, 5, {0xE8, 0x2C, 0x41, 0x00, 0x00}, 1, 5, kMapLookupRva},
-        {"map_count", 0x252A3D5, 7, {0x44, 0x8B, 0x81, 0xA4, 0x00, 0x00, 0x00}, -1, 0, 0},
-        {"map_entries", 0x252A3F5, 7, {0x48, 0x8B, 0x99, 0xA8, 0x00, 0x00, 0x00}, -1, 0, 0},
-        {"map_hash", 0x252A40C, 5, {0x44, 0x3B, 0x5C, 0xC3, 0x08}, -1, 0, 0},
-        {"map_pointer", 0x252A429, 4, {0x4C, 0x8B, 0x14, 0xCB}, -1, 0, 0},
-        {"pool_base", 0x252634D, 4, {0x4C, 0x2B, 0x59, 0x08}, -1, 0, 0},
-        {"pool_stride", 0x2526354, 4, {0x48, 0xF7, 0x71, 0x20}, -1, 0, 0},
-        {"pool_bits", 0x253968B, 4, {0x48, 0x8B, 0x41, 0x38}, -1, 0, 0},
+    inline const Site kSites[] = {
+        {"resolved_table", kResolvedTableRead, &kResolvedTable, nullptr},
+        {"resolved_index_store", kResolvedIndexStore, nullptr, nullptr},
+        {"call_root", kCallRoot, &kCallRootTarget, &kResolver},
+        {"call_dynamic", kCallDynamic, &kCallDynamicTarget, &kResolver},
+        {"call_children", kCallChildren, &kCallChildrenTarget, &kResolver},
+        {"static_count", kStaticCountRead, &kStaticCount, nullptr},
+        {"category_pool", kCategoryPoolRead, &kCategoryPool, nullptr},
+        {"controller_volume_store", kControllerVolumeStore, nullptr, nullptr},
+        {"map_object", kMapObjectLea, &kCategoryMap, nullptr},
+        {"map_lookup_call", kMapLookupCall, &kMapLookup, nullptr},
+        {"map_count", kMapCountSite, nullptr, nullptr},
+        {"map_entries", kMapEntriesSite, nullptr, nullptr},
+        {"map_hash", kMapHashSite, nullptr, nullptr},
+        {"map_pointer", kMapPointerSite, nullptr, nullptr},
+        {"pool_base", kPoolBaseSite, nullptr, nullptr},
+        {"pool_stride", kPoolStrideSite, nullptr, nullptr},
+        {"pool_bits", kPoolBitsSite, nullptr, nullptr},
     };
     constexpr std::size_t kSiteCount = sizeof(kSites) / sizeof(kSites[0]);
 
     // ---- the values ----
 
-    // What the controller manager writes into a category (0x25394C8).
+    // What the controller manager writes into a category.
     struct Values
     {
         float volume = 0.0f;  // +0x48 dB
@@ -378,8 +401,8 @@ namespace replay::catstate
 
     // ---- the keep-live list ----
 
-    // SFX_SLIDER, MUSIC_SLIDER, INTERACTIVE_MUSIC, MUSIC_ONESHOT (the code
-    // controllers of 0x2EFF0DC) and BASE (the fades of loads and the pause).
+    // SFX_SLIDER, MUSIC_SLIDER, INTERACTIVE_MUSIC, MUSIC_ONESHOT (the
+    // controllers made by code) and BASE (the fades of loads and the pause).
     constexpr std::uint32_t kDefaultKeepLive[] = {0xBAD598C7u, 0xA4D158B0u, 0x5DB47EC6u, 0x20230050u, 0x44E21C90u};
     constexpr const char* kDefaultKeepLiveText = "0xBAD598C7,0xA4D158B0,0x5DB47EC6,0x20230050,0x44E21C90";
     // The categories of the volume probe's classes and their parents
@@ -390,17 +413,6 @@ namespace replay::catstate
     inline bool KeepLive(const std::vector<std::uint32_t>& keepLive, std::uint32_t hash)
     {
         return std::find(keepLive.begin(), keepLive.end(), hash) != keepLive.end();
-    }
-
-    // "volume" (default) or "all".
-    inline bool ParseFieldsAll(const char* text)
-    {
-        if (!text)
-            return false;
-        std::string t(text);
-        for (char& c : t)
-            c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-        return t == "all";
     }
 
     // ---- the evidence ----

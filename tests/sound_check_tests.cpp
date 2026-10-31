@@ -17,6 +17,21 @@ namespace
 {
     using namespace replay::census;
 
+    // The 1491.50 exe's call sites (audio::CensusCallSites in the game).
+    CallSites KnownSites()
+    {
+        CallSites s;
+        const std::uint32_t queue[kQueueFrames] = {0x258A469u, 0x2F1D23Eu, 0x2F1CEF8u, 0x2EE86B1u, 0x25A74DBu};
+        for (std::size_t n = 0; n < kQueueFrames; ++n)
+            s.queue[n] = queue[n];
+        s.speechWave = 0x2FA10CFu;
+        s.speechLayer = 0x2FA0DCCu;
+        s.creatorEntry = 0x251688Du;
+        s.byRefCore = 0x2589214u;
+        s.byHashCore = 0x25890E7u;
+        return s;
+    }
+
     int g_checkFailures = 0;
 
     void Check(bool condition, const char* message)
@@ -153,7 +168,7 @@ namespace
         }
         DiffResult Run(const IgnoreList& ignore = IgnoreList{}) const
         {
-            return Diff(rec.summary, play.summary, play.acc.Passes(), ignore);
+            return Diff(rec.summary, play.summary, play.acc.Passes(), ignore, KnownSites());
         }
     };
 
@@ -260,7 +275,7 @@ namespace
 
         // No census in the clip.
         Summary empty;
-        const DiffResult none = Diff(empty, p.play.summary, p.play.acc.Passes(), IgnoreList{});
+        const DiffResult none = Diff(empty, p.play.summary, p.play.acc.Passes(), IgnoreList{}, KnownSites());
         Check(!none.totals.recordedCensus && none.findings.empty(), "diff: a clip without census compares nothing");
     }
 
@@ -293,7 +308,8 @@ namespace
                 Has(line, ",covered_ms=") && Has(line, ",top=missing:train:0:912:0xfffff01170670"),
             "summary line: fields and the first finding");
         Summary empty;
-        const std::string old = FormatReport(Diff(empty, p.play.summary, p.play.acc.Passes(), IgnoreList{}), header);
+        const std::string old =
+            FormatReport(Diff(empty, p.play.summary, p.play.acc.Passes(), IgnoreList{}, KnownSites()), header);
         Check(Has(old, "without the sound census"), "report: a clip without census says so");
         Check(SpansText({{1000, 1250}, {2000, 3000}}) == "1.0 s; 2.0 s to 3.0 s", "report: time spans");
     }
@@ -330,8 +346,10 @@ namespace
         const std::uint32_t byRef[kPathDepth] = {0x251688D, 0x2589214, 0, 0x2F2A3F6, 0};
         const std::uint32_t byHash[kPathDepth] = {0x251688D, 0x25890E7, 0, 0, 0};
         const std::uint32_t queue[kPathDepth] = {0x2588EDA, 0x258A469, 0x2F1D23E, 0, 0};
-        Check(PersistentCorePath(byRef) && PersistentCorePath(byHash) && !PersistentCorePath(queue),
+        const CallSites sites = KnownSites();
+        Check(PersistentCorePath(byRef, sites) && PersistentCorePath(byHash, sites) && !PersistentCorePath(queue, sites),
             "capture: the persistent cores the entity sound track watches");
+        Check(!PersistentCorePath(byRef, CallSites{}), "capture: no core path when the sites were not found");
 
         // Where the audio entity hangs off the entity.
         std::uint8_t entity[0x1400] = {};
@@ -409,7 +427,7 @@ namespace
         const auto diffStart = std::chrono::steady_clock::now();
         Summary rec;
         s.CutInto(rec, 0, 140000);
-        const DiffResult d = Diff(rec, play.summary, play.acc.Passes(), DefaultIgnoreList());
+        const DiffResult d = Diff(rec, play.summary, play.acc.Passes(), DefaultIgnoreList(), KnownSites());
         const double diffMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - diffStart).count();
         std::printf("Sound check report: %.2f ms to compare 140 s (%zu findings)\n", diffMs, d.findings.size());
@@ -421,6 +439,7 @@ namespace
     // the recorder writes for this build, with the vtable it has there.
     void TestImageAudio()
     {
+        const ImageAudioTable known = KnownImageAudioTable();
         // What the 116 QA clips name: every SNDS globalAudio
         // (kind 3 impacts) and ESND audioRva, and the (RVA, vtable) pairs of
         // their Image based SGEN creates. All of them must stay playable.
@@ -430,38 +449,54 @@ namespace
         for (const std::uint32_t rva : named)
         {
             std::uint32_t vtable = 0;
-            all = all && KnownImageAudio(rva, vtable) && vtable != 0;
+            all = all && KnownImageAudio(rva, vtable, known);
         }
         Check(all, "image audio: every static audio the QA clips name is known");
         const ImageAudio recorded[] = {{0x5CA7BB0u, 0x383F010u}, {0x5C10540u, 0x3832238u}, {0x5C7CE90u, 0x3832148u},
             {0x5C90070u, 0x383D3B0u}, {0x5C0F880u, 0x3834948u}, {0x5B9F960u, 0x3833708u}, {0x5C9A660u, 0x383ECF0u},
             {0x5C505C0u, 0x3832418u}, {0x5C81C20u, 0x383D4A8u}, {0x5C79E80u, 0x38326C8u}, {0x5C77390u, 0x3833618u},
             {0x5C500B0u, 0x3832328u}};
+        // The vtable of each is the one the recorder stored (SGEN), but the
+        // 5th's and the 9th's: known in the game only (their own, read there).
         bool same = true;
         for (const ImageAudio& pair : recorded)
         {
             std::uint32_t vtable = 0;
-            same = same && KnownImageAudio(pair.rva, vtable) && vtable == pair.vtableRva;
+            const bool live = pair.rva == 0x5C500B0u || pair.rva == 0x5C7CE90u;
+            same = same && KnownImageAudio(pair.rva, vtable, known) && vtable == (live ? 0u : pair.vtableRva);
         }
         Check(same, "image audio: the vtable of each is the one the recorder stored (SGEN)");
         // Each entry: in the image's .data (0x3917000..0x5CB16F8), its vtable in
-        // .rdata (0x32D8000..0x39163FF), 8-byte aligned, no duplicate.
+        // .rdata (0x32D8000..0x39163FF), 8-byte aligned, no duplicate; each
+        // object found by its vtable (an Instance of it).
         bool shaped = true;
-        for (std::size_t n = 0; n < sizeof(kImageAudio) / sizeof(kImageAudio[0]); ++n)
+        for (std::size_t n = 0; n < kImageAudioCount; ++n)
         {
-            const ImageAudio& a = kImageAudio[n];
-            shaped = shaped && a.rva >= 0x3917000u && a.rva < 0x5CB16F8u && a.vtableRva >= 0x32D8000u &&
-                a.vtableRva < 0x3916400u && (a.rva & 7u) == 0 && (a.vtableRva & 7u) == 0;
+            const ImageAudio& a = known.entry[n];
+            const ImageAudioSignatures& s = kImageAudioSignatures[n];
+            shaped = shaped && a.rva >= 0x3917000u && a.rva < 0x5CB16F8u && (a.rva & 7u) == 0;
+            if (s.vtable)
+                shaped = shaped && a.vtableRva >= 0x32D8000u && a.vtableRva < 0x3916400u && (a.vtableRva & 7u) == 0 &&
+                    s.object->via == replay::sig::Via::Instance && s.object->parent == s.vtable;
+            else
+                shaped = shaped && a.vtableRva == 0 && s.object->via == replay::sig::Via::Rel32 && s.method &&
+                    s.slot == 0x10;
             for (std::size_t m = 0; m < n; ++m)
-                shaped = shaped && kImageAudio[m].rva != a.rva;
+                shaped = shaped && known.entry[m].rva != a.rva;
         }
         Check(shaped, "image audio: entries are statics of .data with a vtable in .rdata");
         // Anything else is refused: a vtable, code, another static, 0.
         std::uint32_t vtable = 1;
-        Check(!KnownImageAudio(0x3430988u, vtable) && vtable == 0 && !KnownImageAudio(0x2589A40u, vtable) &&
-                  !KnownImageAudio(0x5C10548u, vtable) && !KnownImageAudio(0, vtable) &&
-                  !KnownImageAudio(0x140000000ull + 0x5C10540u, vtable),
+        Check(!KnownImageAudio(0x3430988u, vtable, known) && vtable == 0 && !KnownImageAudio(0x2589A40u, vtable, known) &&
+                  !KnownImageAudio(0x5C10548u, vtable, known) && !KnownImageAudio(0, vtable, known) &&
+                  !KnownImageAudio(0x140000000ull + 0x5C10540u, vtable, known),
             "image audio: an RVA the recorder does not write is refused");
+        // An object the game does not have names nothing (its entry stays 0).
+        ImageAudioTable partial = known;
+        partial.entry[3] = ImageAudio{};
+        Check(!KnownImageAudio(0x5C10540u, vtable, partial) && !KnownImageAudio(0, vtable, ImageAudioTable{}) &&
+                  KnownImageAudio(0x5CA7BB0u, vtable, partial),
+            "image audio: an object not found is refused, the others stay");
     }
 }
 

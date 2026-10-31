@@ -453,9 +453,14 @@ namespace
         Check(Label(recorded.voice, recorded.context, 3) == Label(recorded.voice, recorded.context, 3) &&
                 Label(recorded.voice, recorded.context, 3) != Label(recorded.voice, recorded.context, 4),
             "the label follows the variation");
-        Check(std::string(PathName(0x2F9FB46)) == "ai" && std::string(PathName(0x2FA130E)) == "direct_ctx" &&
-                std::string(PathName(1)) == "other",
+        const CorePaths paths = KnownCorePaths();
+        Check(paths.ai == 0x2F9FB46 && paths.direct == 0x2FA12B0 && paths.directCtx == 0x2FA130E,
+            "core paths of 1491.50 (call + 5)");
+        Check(std::string(PathName(0x2F9FB46, paths)) == "ai" && std::string(PathName(0x2FA12B0, paths)) == "direct" &&
+                std::string(PathName(0x2FA130E, paths)) == "direct_ctx" && std::string(PathName(1, paths)) == "other",
             "core paths by return address");
+        Check(std::string(PathName(0, CorePaths{})) == "other" && std::string(PathName(0x2F9FB46, CorePaths{})) == "other",
+            "a path the game does not have names nothing");
     }
 
     void TestSpeechTiming()
@@ -495,38 +500,6 @@ namespace
         Check(!ShouldPose(false, 64, 20, kCapacity, 64), "at most kCapacity objects");
         Check(!ShouldPose(false, 64, 64 - kBodyReserve, 0, 64), "the places kept for bodies are not taken");
         Check(ShouldPose(false, 64, 64 - kBodyReserve - 2, 1, 64), "the last free place outside the reserve is used");
-    }
-
-    // A busy scene: the recorder holds 61 bodies, 56 of them in the full ped
-    // class, and the pelt (61 bones) must still get a place.
-    void TestObjectPosePlaces()
-    {
-        using namespace replay::object_pose;
-        // places 0: no place is given up, so this case never passes.
-        Check(!ShouldPose(false, 61, 56, 0, 0, 56, 61, 64), "places 0: 61 bodies leave the pelt no place");
-        Check(ShouldPose(false, 61, 20, 0, 0, 56, 25, 64), "places 0: a quiet scene still poses it");
-        // places 4: the ped class gives a place up; while it is full the
-        // object waits (it reserves the place the next scan frees).
-        Check(!ShouldPose(false, 61, 56, 0, 4, 56, 61, 64), "places 4: a full ped class first gives a place up");
-        Check(ShouldPose(false, 61, 55, 0, 4, 56, 60, 64), "places 4: one ped left, the pelt starts");
-        Check(ShouldPose(false, 61, 52, 3, 4, 56, 60, 64), "the fourth object starts");
-        Check(!ShouldPose(false, 61, 52, 4, 4, 56, 60, 64), "a fifth object is refused");
-        Check(!ShouldPose(false, 61, 54, 2, 4, 56, 62, 64), "never more than the ped class can give");
-        Check(!ShouldPose(false, 61, 55, 0, 4, 56, 64, 64), "never more than the 64 capture places");
-        Check(!ShouldPose(true, 61, 20, 0, 4, 56, 25, 64), "a weapon object is not posed");
-        Check(!ShouldPose(false, 1, 20, 0, 4, 56, 25, 64), "nor a rigid prop");
-        Check(ClampPlaces(12) == kMaxPlaces && ClampPlaces(4) == 4, "places clamped to kMaxPlaces");
-        Check(!ShouldPose(false, 61, 20, 8, 12, 56, 25, 64), "at most kMaxPlaces objects");
-
-        Check(PedPlaces(56, 4) == 52 && PedPlaces(56, 0) == 56 && PedPlaces(56, 20) == 48, "ped class capacity");
-        Check(PedPlaces(4, 8) == 0, "never below zero");
-        Check(ReservedPlaces(4, 0, 0) == 0, "no object: the ped class keeps every place");
-        Check(ReservedPlaces(4, 0, 1) == 1 && ReservedPlaces(4, 1, 0) == 1, "a waiting or posed object takes one");
-        Check(ReservedPlaces(4, 3, 3) == 4, "at most the object places");
-        Check(ReservedPlaces(0, 2, 2) == 0, "places 0 reserves nothing");
-        // The classes never hold more than 64: ped class + vehicles + posed.
-        for (std::size_t posed = 0; posed <= 4; ++posed)
-            Check(PedPlaces(56, ReservedPlaces(4, posed, 0)) + 8 + posed <= 64, "the three classes fit in 64 places");
     }
 
     // The pelt that leaves the hand goes on as a dropped weapon
@@ -870,6 +843,57 @@ namespace
             "compose restores the child rotation");
     }
 
+    // The crowd torch of the Klan1 clip (31/10/2026): attached through its
+    // bone 1 (object rotation 84 degrees, translation -3.7/-1.7/-3.0 cm) to
+    // the hand bone with zero offsets. Recorded, the torch sat at
+    // hand * inverse(bone 1); the bare frame (identity) misses by 84 degrees
+    // and 5 cm, the folded frame puts it back.
+    void TestAttachChildBoneFold()
+    {
+        replay::pose::WorldTransform childBone;
+        childBone.position = {-0.0366f, -0.0167f, -0.0299f};
+        childBone.rotation = replay::pose::Normalize({0.6408f, -0.1265f, 0.1445f, 0.7433f});
+        replay::pose::WorldTransform hand;
+        hand.position = {0.31f, 0.42f, 1.18f};
+        hand.rotation = replay::pose::Normalize({0.2f, -0.5f, 0.3f, 0.79f});
+        const replay::pose::WorldTransform identity{};
+        // Where the engine put the torch, in the ped's frame.
+        const replay::pose::WorldTransform recorded =
+            ComposeTransform(hand, RelativeTransform(childBone, identity));
+
+        const FrameAgreement bare = AttachFrameAgreement(hand, identity, recorded);
+        Check(bare.angleDeg > 80.0f && bare.angleDeg < 88.0f, "bare torch frame misses by ~84 degrees");
+        Check(bare.distanceM > 0.04f && bare.distanceM < 0.06f, "bare torch frame misses by ~5 cm");
+        Check(!AttachFrameAgrees(bare), "bare torch frame is judged wrong");
+
+        const replay::pose::WorldTransform folded = FoldChildBone(identity, childBone);
+        Check(std::fabs(folded.position.x - 0.0460f) < 0.002f && std::fabs(folded.position.y - 0.0159f) < 0.002f &&
+                std::fabs(folded.position.z + 0.0123f) < 0.002f,
+            "folded offset is the inverse of the child bone (the recorded 4.6/1.6/-1.2 cm)");
+        const FrameAgreement good = AttachFrameAgreement(hand, folded, recorded);
+        Check(good.angleDeg < 0.05f && good.distanceM < 0.0005f, "folded torch frame lands where recorded");
+        Check(AttachFrameAgrees(good), "folded torch frame is judged right");
+
+        // A non-zero offset: the child bone lands on hand * offset.
+        replay::pose::WorldTransform offset;
+        offset.position = {0.05f, -0.02f, 0.01f};
+        offset.rotation = replay::pose::Normalize({0.0f, 0.0f, 0.38268343f, 0.92387953f});
+        const replay::pose::WorldTransform childOrigin =
+            ComposeTransform(hand, FoldChildBone(offset, childBone));
+        const replay::pose::WorldTransform boneThere = ComposeTransform(childOrigin, childBone);
+        const replay::pose::WorldTransform wanted = ComposeTransform(hand, offset);
+        Check(std::fabs(boneThere.position.x - wanted.position.x) < 1e-4f &&
+                std::fabs(boneThere.position.y - wanted.position.y) < 1e-4f &&
+                std::fabs(boneThere.position.z - wanted.position.z) < 1e-4f &&
+                replay::pose::AngleBetween(boneThere.rotation, wanted.rotation) < 1e-3f,
+            "folded offset puts the child bone on the parent bone and offset");
+
+        // The shoulder strap case: right angle, 4.4 cm off the bare frame.
+        replay::pose::WorldTransform strapped = hand;
+        strapped.position.z += 0.044f;
+        Check(AttachFrameAgrees(AttachFrameAgreement(hand, identity, strapped)), "a strap's few cm keep the frame");
+    }
+
     void TestRelativeTrackRateAndSample()
     {
         RelativeTrack track(30);
@@ -945,7 +969,6 @@ int RunEntityLifecycleTests()
     TestSpeechTiming();
     TestAnimalLineRetry();
     TestObjectPoseChoice();
-    TestObjectPosePlaces();
     TestObjectPoseContinuation();
     TestSpawnedObjectRule();
     TestSelectionShrinksToCapacity();
@@ -957,6 +980,7 @@ int RunEntityLifecycleTests()
     TestRegisteredFxFrameAt();
     TestDecalTrackRange();
     TestRelativeTransformRoundTrip();
+    TestAttachChildBoneFold();
     TestSeatPlacementError();
     TestRelativeTrackRateAndSample();
     return g_lifecycleFailures;

@@ -23,24 +23,16 @@ namespace replay::recorder
 
     // The engine animates a ped's hat fit, face and hat brim only while the
     // ped is on screen (the face only near the camera), so a ped recorded
-    // behind the camera has the hat 10 cm high and a frozen face.
-    // prerender/forceAnim/lodMultiplier (off by default): the recorded humans
-    // within radiusM of the camera get SET_ENTITY_ALWAYS_PRERENDER,
-    // FORCE_PED_AI_AND_ANIMATION_UPDATE every tick and a LOD multiplier,
-    // given back when they leave the radius or the recording. None of the
-    // three keeps the face, hat fit or brim computed off screen (the LOD
-    // multiplier fixes distance only). animVisible (on by default) sets the
+    // behind the camera has the hat 10 cm high and a frozen face (the
+    // always-prerender, forced animation update and LOD multiplier natives
+    // did not fix it). animVisible (on by default) sets the
     // engine's own "animate as if visible" byte of every recorded ped and
-    // animal (anim_visible.h) while it is recorded, whatever the radius.
+    // animal (anim_visible.h) while it is recorded.
     struct FullAnimConfig
     {
-        bool prerender = false;
-        bool forceAnim = false;
-        std::uint32_t lodMultiplier = 0; // 0: not touched
-        float radiusM = 40.0f;
         bool animVisible = true;
         // The recorded peds' anim directors get LOD 0 and visible through the
-        // detour of 0x2BD410C (anim_lod_hook.h): covers distance too, and
+        // detour of the LOD setter (anim_lod_hook.h): covers distance too, and
         // touches nothing but the animation.
         bool animLod0 = true;
     };

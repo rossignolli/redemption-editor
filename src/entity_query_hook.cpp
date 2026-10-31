@@ -1,6 +1,7 @@
 #include "entity_query.h"
 #include "entity_query_track.h"
 
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "hook_batch.h"
 #include "mod_clock.h"
@@ -14,20 +15,13 @@
 #include <algorithm>
 #include <atomic>
 
-// The detour on the ped audio entity's sound query 0x31947D0 (see
+// The detour on the ped audio entity's sound query, the resolver (see
 // entity_query.h).
 
 namespace replay::entityquery
 {
     namespace
     {
-        // Prologue (30 bytes, unique in .text): mov [rsp+8],rbx; push rbp,
-        // rsi, rdi, r12, r13, r14, r15; mov rbp,rsp; sub rsp,40h; cmp dword
-        // [r8],0EB69052Eh (the first head of its switch).
-        constexpr std::uint8_t kResolverSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-            0x48, 0x8B, 0xEC, 0x48, 0x83, 0xEC, 0x40, 0x41, 0x81, 0x38, 0x2E, 0x05, 0x69, 0xEB};
-
         using ResolverFn = std::uint64_t*(__fastcall*)(void*, std::uint64_t*, const std::uint32_t*, std::uint32_t, void*);
 
         constexpr std::uint32_t kRing = 2048;
@@ -38,10 +32,13 @@ namespace replay::entityquery
         std::atomic<std::int32_t> g_inFlight{0};
         void* g_target = nullptr;
         bool g_installed = false;
-        std::uintptr_t g_base = 0;
+        // Found at install (0: not in this game).
+        enginesig::Pool g_pool; // the component table, as the mount link reads it
+        std::uintptr_t g_holderVtables[sizeof(kHolderVtables) / sizeof(kHolderVtables[0])] = {};
+        std::uintptr_t g_nullName = 0;
+        bool g_answerUse = false; // the engine's read of the answer (where a recorded one is written)
         std::atomic<bool> g_logging{false};
         std::atomic<bool> g_relation{true};
-        std::atomic<bool> g_logWanted{true};
         std::atomic<std::uint32_t> g_scriptThread{0};
         Slot g_ring[kRing];
         std::atomic<std::uint64_t> g_next{0};
@@ -123,8 +120,8 @@ namespace replay::entityquery
             std::uintptr_t vtable = 0;
             if (!holder || !Read(holder, &vtable, sizeof(vtable)))
                 return false;
-            for (const std::uintptr_t rva : kHolderVtableRvas)
-                if (vtable == g_base + rva)
+            for (const std::uintptr_t expected : g_holderVtables)
+                if (expected && vtable == expected)
                     return true;
             return false;
         }
@@ -132,7 +129,8 @@ namespace replay::entityquery
         std::uint32_t NullNameNow()
         {
             std::uint32_t name = 0;
-            Read(g_base + kNullNameRva, &name, sizeof(name));
+            if (g_nullName)
+                Read(g_nullName, &name, sizeof(name));
             return name;
         }
 
@@ -169,7 +167,7 @@ namespace replay::entityquery
             {
                 std::uintptr_t ped = 0;
                 if (Read(holderAddress + kHolderPedOffset, &ped, sizeof(ped)))
-                    engineMount = EngineMountOf(g_base, ped, Read);
+                    engineMount = EngineMountOf(g_pool, ped, Read);
                 mountHolder = PublishedMount(holderAddress);
             }
             std::uint64_t* result = nullptr;
@@ -181,7 +179,7 @@ namespace replay::entityquery
             const std::uint32_t chainCopy = n < kMaxChain ? n : kMaxChain;
             const bool chainRead = refs && n >= 1 && n <= kMaxChain &&
                 Read(reinterpret_cast<std::uintptr_t>(refs), chainNow, chainCopy * sizeof(std::uint32_t));
-            if (outermost && out && chainRead && g_replayAnswers.load(std::memory_order_relaxed) &&
+            if (outermost && out && chainRead && g_answerUse && g_replayAnswers.load(std::memory_order_relaxed) &&
                 g_answers[g_activeAnswers.load(std::memory_order_acquire) & 1u].count.load(std::memory_order_relaxed))
             {
                 std::uint64_t answer = 0;
@@ -192,13 +190,15 @@ namespace replay::entityquery
                     recorded = true;
                 }
             }
-            if (!recorded && mountChain && original && g_relation.load(std::memory_order_relaxed) &&
+            // Without the mount link the engine's link is unknown: the engine
+            // answers.
+            if (!recorded && mountChain && original && g_relation.load(std::memory_order_relaxed) && g_pool.Found() &&
                 ForwardsToMount(head, n, engineMount, mountHolder, IsPedAudioHolder(mountHolder)))
             {
-                // The engine's own mount branch (0x3194DD2..0x3194E42): the
-                // rest of the chain to the mount's audio entity, same out and
-                // top-level sound. Its slot +0x68 is this function in all three
-                // vtables, so the trampoline is the same call.
+                // The resolver's own mount branch: the rest of the chain to the
+                // mount's audio entity, same out and top-level sound. Its slot
+                // +0x68 is this function in all three vtables, so the
+                // trampoline is the same call.
                 result = original(reinterpret_cast<void*>(mountHolder), out, refs + 1, n - 1, top);
                 forwarded = true;
             }
@@ -257,10 +257,13 @@ namespace replay::entityquery
     {
         if (g_installed)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        g_base = reinterpret_cast<std::uintptr_t>(base);
-        void* target = base + kResolverRva;
-        if (!replay::mem::Matches(target, kResolverSignature, sizeof(kResolverSignature)))
+        g_pool = {sig::Find(kMountLinkBaseIndex), sig::Find(kMountLinkTable)};
+        for (std::size_t n = 0; n < sizeof(kHolderVtables) / sizeof(kHolderVtables[0]); ++n)
+            g_holderVtables[n] = sig::Find(*kHolderVtables[n]);
+        g_nullName = sig::Find(kNullName);
+        g_answerUse = sig::Find(kAnswerUse) != 0;
+        void* target = reinterpret_cast<void*>(sig::Find(kResolver));
+        if (!target)
         {
             error = "entity_query_signature_mismatch";
             return false;
@@ -313,8 +316,6 @@ namespace replay::entityquery
     void SetLogging(bool on) { g_logging.store(on, std::memory_order_release); }
     void SetRelation(bool on) { g_relation.store(on, std::memory_order_release); }
     bool RelationOn() { return g_relation.load(std::memory_order_relaxed); }
-    void SetLogWanted(bool on) { g_logWanted.store(on, std::memory_order_relaxed); }
-    bool LogWanted() { return g_logWanted.load(std::memory_order_relaxed); }
     void SetReplayAnswers(bool on) { g_replayAnswers.store(on, std::memory_order_relaxed); }
     bool ReplayAnswersOn() { return g_replayAnswers.load(std::memory_order_relaxed); }
     void SetRecordAnswers(bool on) { g_recordAnswers.store(on, std::memory_order_relaxed); }
@@ -343,7 +344,7 @@ namespace replay::entityquery
         buffer.sequence.fetch_add(1, std::memory_order_release); // even: done
         g_activeAnswers.store(next, std::memory_order_release);
     }
-    std::uint32_t NullName() { return g_base ? NullNameNow() : 0; }
+    std::uint32_t NullName() { return g_nullName ? NullNameNow() : 0; }
     std::uint32_t ScriptThread() { return g_scriptThread.load(std::memory_order_relaxed); }
     void SetScriptThread(std::uint32_t thread) { g_scriptThread.store(thread, std::memory_order_relaxed); }
 

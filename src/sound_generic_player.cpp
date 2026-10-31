@@ -48,7 +48,6 @@ namespace replay::soundgeneric
 {
     namespace
     {
-        bool g_originSkip = true; // SoundGenericOriginSkip
         using census::AudioBase;
         using census::OwnerKind;
 
@@ -205,12 +204,7 @@ namespace replay::soundgeneric
             std::uint64_t worldLiveYields = 0; // world packets the live world already plays
             std::uint64_t censusOursLate = 0;
             std::uint64_t lateOursNear = 0; // of lateOurs, born within 10 ticks of the row // rows held back that turned out ours (not taken for another's)
-            std::uint64_t directFull = 0;   // direct creates with the track's params whole
-            std::uint64_t directFields = 0; // ... and without a row (the packet's fields)
             std::uint64_t mutedByKey = 0;   // SoundGenericMute
-            std::uint64_t playerRouted = 0; // ... SoundGenericPlayerRoute: on the live player's audio
-            std::uint64_t playerRouteFailed = 0;
-            std::uint64_t directCategory = 0; // ... SoundGenericDirectParams=2: the row's category only
             std::uint64_t queueNetStops = 0; // S13 of the safety net (pause, scrub, jump, end)
             std::uint64_t queueByHash = 0;     // c by hash: no queue entry, made as a
             // The steals by rule (owner_cap of an owned packet, world_cap of a
@@ -314,25 +308,11 @@ namespace replay::soundgeneric
         class EngineImpl : public player::Engine
         {
         public:
-            void SetDirectParams(int mode) { m_directParams = mode; }
-            void SetEnvRules(bool queue, bool weaponHolder)
-            {
-                m_queueEnv = queue;
-                m_weaponHolderEnv = weaponHolder;
-                replay::audio::SetQueueEnvGroup(queue);
-            }
+            void SetEnvRules(bool weaponHolder) { m_weaponHolderEnv = weaponHolder; }
             void SetMute(const player::TraceWindow& mute) { m_mute = mute; }
-            void SetPlayerRoute(bool on) { m_playerRoute = on; }
-            void SetCoreBByRef(bool on) { m_coreBByRef = on; }
-            // SoundGenericWorldCap (1: a world packet counts the cap with the
-            // instances of its own sound; 0: with every world packet) and
-            // SoundGenericWorldCapCount.
-            void SetWorldCap(bool perSound, std::uint32_t count)
-            {
-                m_worldPerSound = perSound;
-                m_worldCapCount = count;
-            }
-            bool WorldPerSound() const { return m_worldPerSound; }
+            // SoundGenericWorldCapCount: a world packet counts the cap with the
+            // instances of its own sound.
+            void SetWorldCapCount(std::uint32_t count) { m_worldCapCount = count; }
             std::uint32_t WorldCapCount() const { return m_worldCapCount; }
             // The evidence lines of this tick (SOUND_GENERIC_STEAL, SOUND_GENERIC_YIELD_LOST).
             std::vector<std::string> TakeEvidence()
@@ -369,7 +349,7 @@ namespace replay::soundgeneric
                         m_evidence.push_back(soundworld::FormatLostYield(l));
             }
 
-            // SoundGenericKeepLoops: a live sound goes on across a jump when
+            // Loops kept: a live sound goes on across a jump when
             // the engine still holds it, it is not a queued request (mode c's
             // net stops those) and the packet's owner has the same puppet it
             // was made on (a jump that rebuilt the puppet leaves the old sound
@@ -391,10 +371,9 @@ namespace replay::soundgeneric
                 return keep;
             }
 
-            void Begin(Context& context, std::uint32_t slots, bool envGroups, EntityMode mode)
+            void Begin(Context& context, std::uint32_t slots, EntityMode mode)
             {
                 m_context = &context;
-                m_envGroups = envGroups;
                 m_mode = mode;
                 m_slots = slots > kMaxSlots ? kMaxSlots : slots < 1 ? 1 : slots;
                 m_stale = player::StaleCounters{}; // per playback
@@ -709,10 +688,6 @@ namespace replay::soundgeneric
                         meta.used = false;
                         continue;
                     }
-                    // Mode b, the latest recorded values back
-                    // over what the owner's audio entity computed this frame.
-                    if (meta.modeApplied && meta.mode == EntityMode::Override)
-                        Reapply(n);
                     if (!slots[n])
                         continue; // mode c: the game places its sound
                     if (!meta.follow || meta.owner == census::kNoOwner)
@@ -728,27 +703,6 @@ namespace replay::soundgeneric
             }
 
             // ---- player::Engine ----
-
-            // Mode b's write back of one sound.
-            void Reapply(std::size_t slot)
-            {
-                const std::uint64_t sound = Slots()[slot];
-                if (!sound)
-                    return;
-                const player::OverrideState& state = m_override[slot];
-                std::uint64_t ok = 0, failed = 0;
-                for (std::size_t v = 0; v < state.VariableCount(); ++v)
-                {
-                    const Variable& var = state.VariableAt(v);
-                    ++(std::strcmp(replay::audio::WriteSoundVariableWhy(sound, var.hash, var.value), "ok") == 0 ? ok : failed);
-                }
-                ++(replay::audio::SetSoundVolume(sound, state.volume) ? ok : failed);
-                ++(replay::audio::SetSoundPitch(sound, state.pitch) ? ok : failed);
-                m_counters.overrideWrites += ok;
-                m_counters.overrideFailed += failed;
-                ++m_counters.overrideTicks;
-                ++m_meta[slot].reapplies;
-            }
 
             void SetCreateFamily(soundowner::Family family) override { m_family = family; }
 
@@ -833,22 +787,7 @@ namespace replay::soundgeneric
                 const bool detached = modeApplied && mode != EntityMode::Override;
                 bool fallback = false;
                 std::uint64_t audio = 0;
-                // SoundGenericPlayerRoute=1, the recorded player's sounds on
-                // the hidden live player's own audio entity (the player's sound
-                // sets came 7 to 8 dB under on the puppet, an NPC rider's did
-                // not), placed on the puppet every tick.
-                bool viaLivePlayer = false;
-                if (m_playerRoute && packet.ownerClass == census::OwnerClass::Player && packet.audioKnown && puppet)
-                {
-                    const Ped live = PLAYER::PLAYER_PED_ID();
-                    void* liveAddress = live ? replay::entities::AddressOf(live) : nullptr;
-                    std::string why;
-                    if (liveAddress)
-                        audio = AudioOfPed(packet, liveAddress, reinterpret_cast<std::uint64_t>(liveAddress), why);
-                    viaLivePlayer = audio != 0;
-                    ++(viaLivePlayer ? m_counters.playerRouted : m_counters.playerRouteFailed);
-                }
-                if (packet.audioKnown && !audio)
+                if (packet.audioKnown)
                     audio = AudioOf(packet, puppet, address, status);
                 if (!audio)
                 {
@@ -865,8 +804,6 @@ namespace replay::soundgeneric
                 }
                 if (detached && !fallback)
                     follow = false;
-                if (viaLivePlayer)
-                    follow = true; // on the puppet, not where the live player stands
                 // The slot (the entity sound track's policy).
                 const Vector3 camera = Camera(m_context->transport.PlayheadMs() > 0xFFFFFFFFull
                         ? 0xFFFFFFFFu : static_cast<std::uint32_t>(m_context->transport.PlayheadMs()));
@@ -884,12 +821,12 @@ namespace replay::soundgeneric
                     views[n].longSound = m_meta[n].longSound;
                     views[n].capKey = m_meta[n].capKey;
                 }
-                // SoundGenericWorldCap: a world packet counts the cap with the
+                // A world packet counts the cap with the
                 // other instances of its own sound, not with every ownerless
                 // packet (a gallop loop could be stolen by wind gusts).
                 const std::uint64_t soundKey = soundowner::PacketSoundKey(packet.stableId, packet.rawRef);
                 const std::uint64_t capKey =
-                    replay::soundslots::CapKeyOf(packet.owner, census::kNoOwner, soundKey, m_worldPerSound);
+                    replay::soundslots::CapKeyOf(packet.owner, census::kNoOwner, soundKey, true);
                 const bool worldKey = replay::soundslots::IsWorldCapKey(capKey);
                 // vehicle_sound_rule.h: the cap and the audible distance by
                 // owner class (a train car's sounds were stolen by the ped cap
@@ -977,24 +914,6 @@ namespace replay::soundgeneric
                 init.pitch = packet.params.pitch;
                 init.pan = packet.params.pan;
                 init.flags = packet.params.flags;
-                if (viaLivePlayer)
-                    init.flags = player::DetachedFlags(init.flags); // the live player's entity would move it to him
-                // Mode a, no update by the owner's audio entity; the position
-                // is the packet's or the puppet's at the create, the recorded
-                // S16 move it.
-                if (modeApplied && mode == EntityMode::Detached)
-                {
-                    if (init.flags & kParamsFlagUpdateEntity)
-                        ++m_counters.detached;
-                    init.flags = player::DetachedFlags(init.flags);
-                    if (!init.hasPosition)
-                    {
-                        init.hasPosition = true;
-                        init.position[0] = at.x;
-                        init.position[1] = at.y;
-                        init.position[2] = at.z;
-                    }
-                }
                 init.variableCount = packet.params.variableCount;
                 for (std::size_t n = 0; n < kVariables; ++n)
                 {
@@ -1043,10 +962,10 @@ namespace replay::soundgeneric
                 else
                     ++m_counters.valuesNone;
                 // The environment group. The game gives one to
-                // every ped request it runs (queue 0x312D9B6: the owner's, else
+                // every ped request it runs (its request queue: the owner's, else
                 // one for the position) and to the creates the recorder saw with
                 // one; the player gives the owner puppet's.
-                const bool wantEnv = m_envGroups && owned && address &&
+                const bool wantEnv = owned && address &&
                     (packet.params.hasEnvGroup || packet.source == Source::Deferred);
                 init.envGroupEntity = wantEnv ? address : 0;
                 // A weapon's sound asks the ped that holds the weapon puppet
@@ -1067,11 +986,11 @@ namespace replay::soundgeneric
                 }
                 // The sound: the stable id back to this session's ref.
                 // sound_generic_core.h CreateRefOf a creator B packet carries
-                // the resolved ref: by ref (SoundGenericCoreBByRef).
+                // the resolved ref: by ref.
                 bool byHash = false;
                 const std::uint64_t ref =
-                    CreateRefOf(packet.idKind, packet.stableId, packet.rawRef, packet.core, m_coreBByRef, byHash);
-                const bool coreBByRef = m_coreBByRef && packet.core != 0;
+                    CreateRefOf(packet.idKind, packet.stableId, packet.rawRef, packet.core, true, byHash);
+                const bool coreBByRef = packet.core != 0;
                 if (coreBByRef)
                     ++m_counters.coreBByRef;
                 std::string error;
@@ -1106,28 +1025,6 @@ namespace replay::soundgeneric
                 }
                 else
                 {
-                    // SoundGenericDirectParams=1, the direct create with the
-                    // track's params whole when a row kept them.
-                    if (m_directParams && owned)
-                    {
-                        const FullParamsRow* full = FindFullParams(packet.owner, packet.rawRef, packet.timeMs);
-                        if (m_directParams == 3)
-                        {
-                            init.listParams = full ? full->params : nullptr;
-                            ++(full ? m_counters.directCategory : m_counters.directFields);
-                        }
-                        else if (m_directParams == 2)
-                        {
-                            if (full)
-                                std::memcpy(&init.category, full->params + 0xD8, sizeof(init.category));
-                            ++(init.category ? m_counters.directCategory : m_counters.directFields);
-                        }
-                        else
-                        {
-                            init.recordedParams = full ? full->params : nullptr;
-                            ++(full ? m_counters.directFull : m_counters.directFields);
-                        }
-                    }
                     census::ModScope mine; // the census marks it the mod's (not a puppet's own)
                     ok = replay::audio::CreateGenericSound(audio, ref, byHash, init, play, &slots[slot], error);
                 }
@@ -1202,8 +1099,6 @@ namespace replay::soundgeneric
                 meta.adjusts = 0;
                 meta.reapplies = 0;
                 meta.updatesWithEntity = !queueMode && m_lastSettings.find("update_entity=1") != std::string::npos;
-                if (modeApplied && mode == EntityMode::Override)
-                    m_override[slot].Seed(packet.params, haveVars ? &vars : nullptr);
                 if (m_ours.size() >= kOursMax)
                     m_ours.clear();
                 if (slots[slot])
@@ -1349,8 +1244,6 @@ namespace replay::soundgeneric
                 // Mode b keeps the latest values for the write
                 // back; mode c's sound is the one the queue made (none yet:
                 // the adjust is lost, "slot_gone").
-                if (m_meta[handleSlot].modeApplied && m_meta[handleSlot].mode == EntityMode::Override)
-                    m_override[handleSlot].Note(packet);
                 const std::uint64_t sound = SoundOf(handleSlot);
                 if (!sound)
                 {
@@ -1388,7 +1281,7 @@ namespace replay::soundgeneric
                     // that is not a world position (clip_area.h) is not
                     // applied; the sound keeps the one it was created with
                     // until the next sample.
-                    if (g_originSkip && !replay::cliparea::PositionValid(packet.value[0], packet.value[1], packet.value[2]))
+                    if (!replay::cliparea::PositionValid(packet.value[0], packet.value[1], packet.value[2]))
                     {
                         ++m_counters.adjustOriginSkipped;
                         m_lastAdjust = "origin_skipped";
@@ -1544,8 +1437,7 @@ namespace replay::soundgeneric
                 return AudioOfPed(packet, puppet ? replay::entities::AddressOf(puppet->clone) : nullptr, address, status);
             }
 
-            // The audio entity of the packet's base on a ped (the puppet, or
-            // for SoundGenericPlayerRoute the hidden live player).
+            // The audio entity of the packet's base on a ped (the puppet).
             std::uint64_t AudioOfPed(const CreatePacket& packet, void* ped, std::uint64_t address, std::string& status)
             {
                 std::uint64_t base = 0;
@@ -1595,14 +1487,9 @@ namespace replay::soundgeneric
             std::uint32_t m_cameraMs = 0xFFFFFFFFu;
             const char* m_lastAdjust = "";
             std::string m_lastSettings;
-            bool m_envGroups = true;    // SoundGenericEnvGroup
-            bool m_queueEnv = true;       // SoundQueueEnvGroup
             bool m_weaponHolderEnv = true; // ShotEnvGroupReplay
             std::uint32_t m_weaponEnvLines = 0;
             player::TraceWindow m_mute; // SoundGenericMute
-            bool m_playerRoute = false; // SoundGenericPlayerRoute
-            bool m_coreBByRef = true;   // SoundGenericCoreBByRef
-            int m_directParams = 0; // SoundGenericDirectParams (0, 1 whole, 2 category)
             // SoundGenericEntityMode, the family of the next create, mode c's
             // requests and mode b's values per slot.
             EntityMode m_mode = EntityMode::Detached;
@@ -1612,12 +1499,11 @@ namespace replay::soundgeneric
             // sounds the safety net stops.
             std::uint64_t m_birthCursor = 0;
             bool m_nextLong = false; // NoteNextLife
-            // SoundGenericWorldCap / SoundGenericWorldCapCount, the next
+            // SoundGenericWorldCapCount, the next
             // packet's recorded life (NoteNextLife), the evidence lines of the
             // tick and their budgets per playback, the yield watch.
             static constexpr std::uint32_t kStealLines = 200;
             static constexpr std::uint32_t kYieldLostLines = 100;
-            bool m_worldPerSound = true;
             std::uint32_t m_worldCapCount = replay::soundslots::kPerOwnerCap;
             std::uint32_t m_nextLifeMs = soundworld::kNeverMs;
             std::vector<std::string> m_evidence;
@@ -1667,7 +1553,6 @@ namespace replay::soundgeneric
             EngineLinks m_links;
             player::StaleCounters m_stale;
             std::uint32_t m_abandonedSlots = 0;
-            player::OverrideState m_override[kMaxSlots];
             std::string m_detail[kMaxSlots];
             std::unordered_set<std::uint32_t> m_tooFar;
             vehiclesound::ClassSlotTally m_classSlots;
@@ -1698,7 +1583,6 @@ namespace replay::soundgeneric
         std::unique_ptr<soundowner::PacketLives> g_lives[4];
         std::size_t g_livesNext = 0;
         bool g_blockAll = false;
-        bool g_stepSetGate = true;
         std::vector<census::Finding> g_lastFindings;
         std::uint64_t g_blockedCursor = 0;
         std::vector<replay::audio::BlockedPuppetCreate> g_blockedScratch;
@@ -1831,7 +1715,7 @@ namespace replay::soundgeneric
                 ";no_holder:" + std::to_string(c.weaponEnvNoHolder) + ",settings_check=" + MapText(c.settingsCheck) + ",bank_states=" + MapText(c.bankStates) +
                 ",update_entity=client_var:" + std::to_string(c.updateWithClientVar) + ";no_client_var:" +
                 std::to_string(c.updateNoClientVar);
-            out += ",entity_mode=" + std::string(EntityModeLetter(static_cast<EntityMode>(Configured().entityMode))) +
+            out += ",entity_mode=" + std::string(EntityModeLetter(EntityMode::GameQueue)) +
                 ",mode_creates=" + std::to_string(c.modeCreates) + ",detached=" + std::to_string(c.detached) +
                 ",override=ticks:" + std::to_string(c.overrideTicks) + ";writes:" + std::to_string(c.overrideWrites) +
                 ";failed:" + std::to_string(c.overrideFailed) + ",queue=requested:" + std::to_string(c.queueRequested) +
@@ -1839,15 +1723,14 @@ namespace replay::soundgeneric
                 ";born:" + std::to_string(c.queueBorn) + ";born_no_out:" + std::to_string(c.queueBornNoOut) +
                 ";never_born:" + std::to_string(c.queueNeverBorn) + ";bound:" + std::to_string(c.queueBound) +
                 ";unbound:" + std::to_string(c.queueUnbound) + ";late_ours:" + std::to_string(c.lateOurs) + ";stolen_long:" + std::to_string(c.stolenLong) + ";world_live_yields:" + std::to_string(c.worldLiveYields) + ";ours_held:" + std::to_string(c.censusOursLate) + ";late_ours_near:" + std::to_string(c.lateOursNear) + ";net_stops:" + std::to_string(c.queueNetStops) + ";by_hash_direct:" + std::to_string(c.queueByHash) +
-                ",direct_params=full:" + std::to_string(c.directFull) + ";fields:" + std::to_string(c.directFields) + ";category:" + std::to_string(c.directCategory) + ",muted_by_key=" + std::to_string(c.mutedByKey) +
-                ",player_route=" + std::to_string(c.playerRouted) + ";failed:" + std::to_string(c.playerRouteFailed);
+                ",muted_by_key=" + std::to_string(c.mutedByKey);
             // The steals by rule and the world yield watch.
             {
                 const soundworld::YieldCounters& y = g_engine.Yields();
                 out += ",steals=owner_cap:" + std::to_string(c.ownerCapSteals) + ";world_cap:" + std::to_string(c.worldCapSteals) +
                     ";farther:" + std::to_string(c.fartherSteals) + ";world_victims:" + std::to_string(c.worldVictims) +
                     ";lines:" + std::to_string(c.stealLines) + ";lines_dropped:" + std::to_string(c.stealLinesDropped) +
-                    ",world_cap=" + (g_engine.WorldPerSound() ? "sound:" + std::to_string(g_engine.WorldCapCount()) : std::string("shared")) +
+                    ",world_cap=sound:" + std::to_string(g_engine.WorldCapCount()) +
                     ",world_yields_long=" + std::to_string(c.worldYieldsLong) + ",yield_watch=tracked:" + std::to_string(y.tracked) +
                     ";untracked:" + std::to_string(y.untracked) + ";lost:" + std::to_string(y.lost) + ";outlived:" +
                     std::to_string(y.outlived) + ";cleared:" + std::to_string(y.cleared) + ";dropped:" + std::to_string(y.dropped);
@@ -1895,13 +1778,13 @@ namespace replay::soundgeneric
         player::Config pc;
         // Off while an export owns the clock, unless SoundGenericExport=1.
         const bool exporting = replay::exportprobe::Active();
-        pc.enabled = player::PlayAllowed(config.play, config.playInExport, exporting);
+        pc.enabled = player::PlayAllowed(true, kPlayInExport, exporting);
         pc.preloadMs = config.preloadMs;
         pc.preloadDelayMs = config.preloadDelayMs;
         pc.holdMs = config.holdMs;
         pc.skipMask = player::ParseSkip(config.skip);
         pc.entityDrivenMask = player::ParseSkip(config.entityDrivenSkip);
-        pc.detachedEntityMode = static_cast<EntityMode>(config.entityMode) == EntityMode::Detached;
+        pc.detachedEntityMode = false; // the entity mode is c (the game's queue)
         g_overrides = soundowner::ParseOverrides(config.take);
         // What the clip's specific tracks carry (the owner table's cover).
         soundowner::Cover cover;
@@ -1920,8 +1803,7 @@ namespace replay::soundgeneric
             g_feet.Add(step.entity.Packed(), step.timeMs, step.arg7);
         g_feet.Seal();
         // The recorded shots by weapon (a weapon audio packet of no named
-        // caller away from them is not remade by the shot track;
-        // SoundGenericWeaponOffShot=0 keeps the old rule).
+        // caller away from them is not remade by the shot track).
         g_shots.Clear();
         for (const replay::entity::ShotEvent& shot : context.clip.shots.Shots())
             g_shots.Add(shot.weapon.Packed(), shot.timeMs);
@@ -1956,21 +1838,19 @@ namespace replay::soundgeneric
         g_overrides.packets = config.packets;
         pc.packets = config.packets;
         g_blockAll = config.blockAll;
-        g_stepSetGate = config.stepSetGate;
-        const EntityMode entityMode = static_cast<EntityMode>(config.entityMode);
-        g_engine.SetDirectParams(config.directParams);
+        const EntityMode entityMode = EntityMode::GameQueue;
         g_engine.SetMute(player::ParseTraceWindow(config.mute));
-        g_engine.SetPlayerRoute(config.playerRoute);
-        g_engine.SetCoreBByRef(config.coreBByRef);
-        g_engine.SetWorldCap(config.worldCapPerSound, config.worldCapCount);
-        pc.keepLoops = config.keepLoops;
+        g_engine.SetWorldCapCount(config.worldCapCount);
+        pc.keepLoops = true;
         // SoundGenericVehicleBlock, packets mode only.
-        g_vehicleBlock = config.packets && config.vehicleBlock;
+        g_vehicleBlock = config.packets; // the puppet vehicles' own copies refused at the creators
         pc.vehicleBlock = g_vehicleBlock;
         replay::audio::SetVehicleOwnBlock(g_vehicleBlock);
-        g_engine.Begin(context, config.slots, config.envGroups, entityMode);
-        g_engine.SetEnvRules(config.queueEnvGroups, config.weaponHolderEnv);
-        g_player.Begin(track, pc, cover, g_overrides, firstMs, &g_feet, trace, config.weaponOffShot ? &g_shots : nullptr);
+        g_engine.Begin(context, config.slots, entityMode);
+        g_engine.SetEnvRules(config.weaponHolderEnv);
+        pc.code = replay::audio::GenericWrapperCode();
+        pc.callers = replay::audio::OwnerCallerRanges();
+        g_player.Begin(track, pc, cover, g_overrides, firstMs, &g_feet, trace, &g_shots);
         g_packets.Clear();
         g_owned.Clear();
         g_esndRows.clear();
@@ -2002,7 +1882,7 @@ namespace replay::soundgeneric
             // The slot about to be reused held the lives of four playbacks ago:
             // no detour still reads that one.
             g_lives[g_livesNext % 4] = std::move(lives);
-            replay::audio::SetBlockPacketLives(g_lives[g_livesNext % 4].get(), g_blockAll, g_stepSetGate);
+            replay::audio::SetBlockPacketLives(g_lives[g_livesNext % 4].get(), g_blockAll);
             ++g_livesNext;
             g_esndRows.assign(context.clip.entitySounds.size(), std::uint8_t{0});
             for (std::size_t row = 0; row < context.clip.entitySounds.size(); ++row)
@@ -2029,14 +1909,14 @@ namespace replay::soundgeneric
                     << ",trace=" << (trace.on ? config.trace : std::string("off")) << '\n';
         g_ports = replay::audio::GenericSoundPortStatus();
         const player::PlayStats& stats = g_player.Stats();
-        context.log << "SOUND_GENERIC_PLAYER,status=" << (pc.enabled ? "ready" : config.play ? "export_off" : "counting_only")
-                    << ",export=" << (exporting ? 1 : 0) << ",export_play=" << (config.playInExport ? 1 : 0) << ",packets=" << track.creates.size()
+        context.log << "SOUND_GENERIC_PLAYER,status=" << (pc.enabled ? "ready" : "export_off")
+                    << ",export=" << (exporting ? 1 : 0) << ",export_play=" << (kPlayInExport ? 1 : 0) << ",packets=" << track.creates.size()
                     << ",adjusts=" << track.adjusts.size() << ",ends=" << track.ends.size() << ",generic=" << stats.generic
                     << ",cover_rows=" << cover.Size() << ",slots=" << config.slots << ",preload_ms=" << config.preloadMs
                     << ",preload_delay_ms=" << config.preloadDelayMs << ",hold_ms=" << config.holdMs << ",table="
                     << soundowner::FormatTable(g_overrides) << ",rejected=" << (g_overrides.rejected.empty() ? "none" : g_overrides.rejected)
                     << ",ports=" << g_ports
-                    << ",world_cap=" << (config.worldCapPerSound ? "sound:" + std::to_string(config.worldCapCount) : std::string("shared"))
+                    << ",world_cap=sound:" << config.worldCapCount
                     << ",engine_writes=0\n";
         g_playing = true;
         g_lastPlayLogUs = replay::clock::NowUs();
@@ -2054,12 +1934,12 @@ namespace replay::soundgeneric
         {
             const Config config = Configured();
             const bool exporting = replay::exportprobe::Active();
-            if (g_player.SetEnabled(player::PlayAllowed(config.play, config.playInExport, exporting), g_engine))
+            if (g_player.SetEnabled(player::PlayAllowed(true, kPlayInExport, exporting), g_engine))
             {
                 // The ports follow (the puppets' own come back while the player is off).
                 replay::audio::SetBlockPuppetSounds(g_packetsMode && g_player.Configured().enabled);
                 context.log << "SOUND_GENERIC_PLAYER,phase=" << (exporting ? "export_start" : "export_end") << ",play="
-                            << (g_player.Configured().enabled ? 1 : 0) << ",export_play=" << (config.playInExport ? 1 : 0)
+                            << (g_player.Configured().enabled ? 1 : 0) << ",export_play=" << (kPlayInExport ? 1 : 0)
                             << ",playhead_ms=" << timeMs << ",engine_writes=0\n";
             }
         }
@@ -2081,7 +1961,6 @@ namespace replay::soundgeneric
         }
         const bool normal = context.hooks && context.hooks->NormalPlay();
         // The playhead against QPC, for the bench's audio capture.
-        if (Configured().clockLog)
         {
             ClockSample samples[2];
             const std::size_t n = g_playClock.Tick(timeMs, replay::clock::NowUs(), normal, samples);
@@ -2257,5 +2136,4 @@ namespace replay::soundgeneric
         return player::FormatSection(stats, g_overrides, g_ports) + player::FormatTallySection(g_player.Tally()) +
             player::FormatBlockedSection(g_blocked, g_packetsMode, 40, g_blockAll) + SettingsSection(g_engine.Counters());
     }
-    void SetOriginSkip(bool on) { g_originSkip = on; }
 }

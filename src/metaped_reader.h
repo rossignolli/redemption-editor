@@ -2,12 +2,12 @@
 
 // The engine side of the metaped look. Script thread only.
 //
-// Reads (guarded, layout in metaped_state.h): the ped's expression frame
+// Reads (guarded, layout in docs/research/peds-puppets.md): the ped's expression frame
 // (every expression the creature has, in one read) and the ped scale. The code of
 // every engine function the layout comes from is compared byte for byte
-// once a session (the getter chain 0xB44250 -> 0x2BDDE1C, 0xB32AD8,
-// 0x2BC96C4 -> 0x265FDBC -> 0x26580BC; the scale setter 0xFEF2FC and its
-// state test 0x8B70E8); the global addresses are taken from those bytes. A
+// once a session (the getter chain: getter -> creature lookup, frame
+// container, expression frame -> frame value -> DOF find; the scale setter
+// and its state test); the global addresses are taken from those bytes. A
 // mismatch turns the reader off (METAPED_READER,phase=config,status=off)
 // and the capture keeps the natives' part (layers, outfit, type,
 // cleanliness). The first reads of the session are cross-checked with
@@ -25,9 +25,6 @@
 
 namespace replay::metaped::engine
 {
-    // Ini MetapedRecord (the reader's part of the capture: expressions and
-    // scale) and MetapedApply (the playback side), both default 1.
-    void SetEnabled(bool record, bool apply);
 
     // Signatures checked once (first call); the log line of the result.
     bool ReaderOn();
@@ -51,8 +48,7 @@ namespace replay::metaped::engine
 
     // Everything the natives and the reader give, without the layers (they
     // stay in Appearance): outfit, metaped type, cleanliness, expressions,
-    // scale, the shop items and their wearable states (natives, read also
-    // with MetapedRecord=0). `state.timeMs` and `source` are the caller's.
+    // scale, the shop items and their wearable states (natives). `state.timeMs` and `source` are the caller's.
     void Capture(int ped, State& state);
 
     // The puppet side: the recorded state applied (only what differs from

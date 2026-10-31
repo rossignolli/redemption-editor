@@ -2,17 +2,17 @@
 
 // One producer at a time in the engine's decal request ring.
 //
-// The decal core 0x2C2EF08 takes the next entry of a ring of 0x400 entries
+// The decal core takes the next entry of a ring of 0x400 entries
 // (manager +0xB5D0, 0x330 bytes each) with a plain load, increment and store
 // of the write index (+0xD75D0) and of the pending count (+0xD75D8): no
 // atomic, no lock. The engine produces into it from the deferred decal job
-// (0xC1F450 -> drain 0x1431DD4 -> 0x14357D0 -> 0x125B97C -> 0x125F9EC ->
-// wrapper 0x2C2F054 -> core), on a worker of the task scheduler. The replay
+// (job -> drain -> request handler -> add path -> decal add ->
+// wrapper -> core), on a worker of the task scheduler. The replay
 // produces into the same ring from the script thread (AddDecal,
 // AddDecalWithId). Two producers at once can take the same entry or step the
 // index past the wrap; the entry recycled 0x400 adds later then carries a
 // registered-reference holder (+0x310 index, +0x318 entity pointer) that
-// nobody cleared, and the unlink 0x15E544 writes through it and crashes.
+// nobody cleared, and the unlink writes through it and crashes.
 //
 // This gate serialises the two producers: the drain detour holds it for the
 // whole engine drain, the replay's adds hold it around their call of the

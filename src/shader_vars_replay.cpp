@@ -55,21 +55,6 @@ namespace replay::muscles
             return cache.ok;
         }
 
-        // MuscleDebugForce: every track 0x17 lane of the layout at 1.0 (1) or 0.0 (2).
-        void ForcedValues(const sv::Layout& layout, std::uint8_t force, std::vector<std::pair<std::uint16_t, std::uint32_t>>& out)
-        {
-            out.clear();
-            const std::uint32_t bits = sv::BitsOf(force == 1 ? 1.0f : 0.0f);
-            for (std::size_t n = 0; n < layout.dofs.size(); ++n)
-            {
-                if (layout.dofs[n].track != sv::kTrackAnimatedNormalMaps)
-                    continue;
-                const std::uint32_t lanes = sv::LanesOf(layout.dofs[n].type);
-                for (std::uint32_t k = 0; k < lanes; ++k)
-                    out.emplace_back(static_cast<std::uint16_t>(layout.offsets[n] + k * 4u), bits);
-            }
-        }
-
         std::string BindingsOf(std::uintptr_t component)
         {
             std::string text;
@@ -244,9 +229,6 @@ namespace replay::muscles
         PhaseCounts g_phase[3]; // play, pause, scrub
         int g_lastPhase = 0;
         sve::Stats g_lastStats;
-        bool g_liveForced = false;
-        std::uint32_t g_liveLines = 0;
-        ULONGLONG g_liveLogAt = 0;
         bool g_playActive = false;
         bool g_installFailed = false;
         std::string g_installError = "none";
@@ -291,7 +273,7 @@ namespace replay::muscles
                 else
                     g_installError = "none";
             }
-            sve::SetReplace(!g_config.debugOverwrite);
+            sve::SetReplace(true); // the recorded values replace the engine's copy
             g_playBase = sve::Snapshot();
             g_lastStats = g_playBase;
             g_lastPhase = 0;
@@ -303,9 +285,7 @@ namespace replay::muscles
                       << ",writer=write_node,observer=" << (sve::ObserverInstalled() ? 1 : 0)
                       << ",observer_error=" << (g_observerError.empty() ? "none" : g_observerError.c_str())
                       << ",section=" << (track.Empty() ? "none" : "SHVR") << ",rec_horses=" << track.series.size()
-                      << ",rec_points=" << track.Points() << ",mode=" << (g_config.debugOverwrite ? "overwrite" : "replace")
-                      << ",debug_force=" << static_cast<int>(g_config.debugForce) << ",debug_sweat=" << g_config.debugSweat
-                      << '\n';
+                      << ",rec_points=" << track.Points() << ",mode=replace" << '\n';
         }
     }
 
@@ -346,7 +326,7 @@ namespace replay::muscles
 
     void TickRecord(std::uint32_t nowMs)
     {
-        if (!g_context || !g_config.record)
+        if (!g_context)
             return;
         if (g_recActive)
             g_recDurationMs = nowMs > g_recStartMs ? nowMs - g_recStartMs : 0;
@@ -520,7 +500,7 @@ namespace replay::muscles
         g_recActive = false;
         if (sve::Installed())
             sve::SetRecordTargets({});
-        Ctx().log << "MUSCLE_RECORD_END,enabled=" << (g_config.record ? 1 : 0) << ",init_error=" << g_recTotals.initError
+        Ctx().log << "MUSCLE_RECORD_END,init_error=" << g_recTotals.initError
                   << ",horses=" << g_rec.size() << ",track_horses=" << Ctx().clip.shaderVars.series.size()
                   << ",points=" << Ctx().clip.shaderVars.Points() << ",noted=" << g_recTotals.noted
                   << ",refused=" << g_recTotals.refused << ",no_component=" << g_recTotals.noComponent
@@ -590,9 +570,7 @@ namespace replay::muscles
                 ++g_playNoComponent;
                 continue;
             }
-            if (g_config.debugSweat >= 0.0f)
-                PED::SET_PED_SWEAT(puppet.clone, g_config.debugSweat);
-            else if (dofs && g_config.replay)
+            if (dofs && g_config.replay)
             {
                 // The recorded sweat (the lane kTrackSweat): the shader effect
                 // copies the graphics component's +0x488 every update; the
@@ -613,21 +591,7 @@ namespace replay::muscles
                     lane += sv::LanesOf(dof.type);
                 }
             }
-            if (g_config.debugForce && sve::Installed() && g_targets.size() < sve::kMaxTargets)
-            {
-                sve::PlayTarget target;
-                target.ped = ped;
-                if (sve::BufferOf(state.cache.component, target.buffer, target.bytes) == sve::Read::Ok)
-                {
-                    ForcedValues(state.cache.layout, g_config.debugForce, target.values);
-                    if (!target.values.empty())
-                    {
-                        g_targets.push_back(std::move(target));
-                        ++state.ticks;
-                    }
-                }
-            }
-            else if (dofs)
+            if (dofs)
             {
                 if (state.mappedFrom != *dofs || state.writes.empty())
                 {
@@ -785,72 +749,6 @@ namespace replay::muscles
         Summary("play", all);
 #endif
         g_play.clear();
-    }
-
-    void TickLive(bool playing)
-    {
-        if (!g_context || playing || g_playActive)
-            return;
-        if (!g_config.debugForce)
-        {
-            if (g_liveForced)
-            {
-                g_liveForced = false;
-                g_targets.clear();
-                sve::SetPlayTargets(g_targets);
-                Ctx().log << "MUSCLE_DEBUG_LIVE,force=0,released=1\n";
-            }
-            return;
-        }
-        if (!sve::Installed() && !g_installFailed)
-        {
-            std::string error;
-            if (!sve::Install(error, g_observerError))
-            {
-                g_installError = error.empty() ? "unknown" : error;
-                g_installFailed = error != "type_byte_not_ready";
-                return;
-            }
-        }
-        if (!sve::Installed())
-            return;
-        sve::SetReplace(!g_config.debugOverwrite);
-        const Ped player = PLAYER::PLAYER_PED_ID();
-        Ped horse = PED::GET_MOUNT(player);
-        if (!horse)
-            horse = PED::_GET_LAST_MOUNT(player);
-        g_targets.clear();
-        static ComponentCache cache;
-        sve::Read result = sve::Read::Ok;
-        sv::ParseResult parse = sv::ParseResult::Ok;
-        const std::uintptr_t ped = horse ? reinterpret_cast<std::uintptr_t>(replay::entities::AddressOf(horse)) : 0;
-        sve::PlayTarget target;
-        target.ped = ped;
-        if (ped && ReadComponent(ped, cache, result, parse) &&
-            sve::BufferOf(cache.component, target.buffer, target.bytes) == sve::Read::Ok)
-        {
-            ForcedValues(cache.layout, g_config.debugForce, target.values);
-            if (!target.values.empty())
-                g_targets.push_back(std::move(target));
-        }
-        sve::SetPlayTargets(g_targets);
-        g_liveForced = true;
-        const ULONGLONG now = GetTickCount64();
-        if (now >= g_liveLogAt && g_liveLines < 60)
-        {
-            g_liveLogAt = now + 5000;
-            ++g_liveLines;
-            std::vector<std::uint32_t> bits;
-            const bool read = ped && cache.ok && sve::ValuesOf(cache.component, cache.layout, bits) == sve::Read::Ok;
-            const sve::Stats s = sve::Snapshot();
-            Ctx().log << "MUSCLE_DEBUG_LIVE,force=" << static_cast<int>(g_config.debugForce)
-                      << ",mode=" << (g_config.debugOverwrite ? "overwrite" : "replace") << ",horse=" << horse
-                      << ",component=" << sve::ReadText(result) << ",values=" << g_targets.size()
-                      << ",nm=" << cache.layout.CountTrack(sv::kTrackAnimatedNormalMaps) << ",now="
-                      << (read ? LanesText(bits, 16) : std::string("-")) << ",hits=" << s.hits
-                      << ",shader_reads=" << s.shaderReads << ",shader_matched=" << s.shaderMatched << "/" << s.shaderLanes
-                      << ",bindings=" << (cache.ok ? BindingsOf(cache.component) : std::string("-")) << '\n';
-        }
     }
 
     void Shutdown()

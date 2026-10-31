@@ -4,19 +4,18 @@
 //
 // Every decal (bullet hole, blood splat, scorch, footprint, script decal)
 // ends in one rage function that takes a slot from the decal manager's
-// queue and copies a settings struct into it: build 1491.50 core 0x2C2EF08
-// (manager, entity, settings, id, flag) -> id or 0. Two callers: the
-// generic path 0x2C2F054 (allocates the id first; reached from the game's
-// decal manager 0x125F9EC by weapon impacts, explosions, blood and the
-// ADD_DECAL native) and an internal re-add 0x2C49168. A detour on the core
-// records each call after the original ran: entity, id, flag, result, the
-// caller return addresses and a copy of the settings (0x14C bytes, the
-// size the copy 0x2C2D144 reads).
+// queue and copies a settings struct into it: the core (manager, entity,
+// settings, id, flag) -> id or 0. Two callers: the generic wrapper (allocates
+// the id first; reached from the game's decal add by weapon impacts,
+// explosions, blood and the ADD_DECAL native) and an internal re-add. A
+// detour on the core records each call after the original ran: entity, id,
+// flag, result, the caller return addresses and a copy of the settings (0x14C
+// bytes, the size the core's settings copy reads).
 //
-// Playback adds a decal through the generic path 0x2C2F054 with a recorded
-// settings copy (its +0xB8 as recorded) and the puppet entity. Offline evidence:
+// Playback adds a decal through the generic wrapper with a recorded settings
+// copy (its +0xB8 as recorded) and the puppet entity. Offline evidence:
 // natives ADD_DECAL/REMOVE_DECAL/IS_DECAL_ALIVE handlers in the dump, the
-// manager pointer at 0x5B1F940. The detour never calls natives.
+// manager pointer the game's decal add loads. The detour never calls natives.
 
 #include <cstdint>
 #include <string>
@@ -29,22 +28,24 @@ namespace replay::decal
 {
     constexpr std::size_t kSettingsBytes = 0x150;
     constexpr std::uint32_t kCallerDepth = 3;
-    // Return address into the generic wrapper after its call of the core.
-    constexpr std::uint32_t kGenericReturn = 0x2C2F09A;
+    // The return address into the generic wrapper after its call of the core,
+    // as AddCall::callers records it: an RVA of the running exe. A return the
+    // game lacks gets a value above every RVA (never a recorded caller), its
+    // own; so do the two returns below.
+    std::uint32_t GenericReturn();
     constexpr std::size_t kSettingsAttachFlags = 0x13A; // bit 0: attached to the entity
-    // Word the game's path 0x125A000 computes with 0x14126F0 from its impact
-    // record (the 4th argument, never the entity): 0x14126F0 caches the id in
-    // that record (+0x70 = 1, +0x72 = id). Given an entity it writes those two
-    // fields into the entity: a stand-in deck tile jumped from x -775.473 to
-    // -768.000 (the wagon dynamite bench). Playback keeps the
-    // recorded word.
+    // Word the game's impact path computes from its impact record (the 4th
+    // argument, never the entity), caching the id in that record (+0x70 = 1,
+    // +0x72 = id). Given an entity it writes those two fields into the entity:
+    // a stand-in deck tile jumped from x -775.473 to -768.000 (the wagon
+    // dynamite bench). Playback keeps the recorded word.
     constexpr std::size_t kSettingsEntityId = 0xB8;
     // Settings +0x88 is a pointer to a decal info record (0x160 B) in the
-    // game's info table 0x3CE4F00 (every one of the 11 callers of the lookup
-    // 0x2C3A3D8 passes that table; the game's path 0x125A000 writes the
-    // lookup result at +0x88). A raw pointer does not survive a save load:
-    // reading the freed record through it crashes at RDR2.exe+0x2C2FFDE.
-    // The recording keeps (info hash, index); playback asks the table again.
+    // game's info table (every one of the 11 callers of the info lookup passes
+    // that table; the game's impact path writes the lookup result at +0x88). A
+    // raw pointer does not survive a save load: reading the freed record
+    // through it crashes the game's decal code. The recording keeps (info hash,
+    // index); playback asks the table again.
     constexpr std::size_t kSettingsInfo = 0x88;
     struct InfoKey
     {
@@ -73,8 +74,8 @@ namespace replay::decal
         std::uint8_t settings[kSettingsBytes] = {};
     };
 
-    // A removal by id (0x2C49FCC, the REMOVE_DECAL path and the engine's own
-    // expiry of pools that are re-added while they grow).
+    // A removal by id (the REMOVE_DECAL path and the engine's own expiry of
+    // pools that are re-added while they grow).
     struct RemoveCall
     {
         std::uint64_t timeUs = 0;
@@ -87,19 +88,19 @@ namespace replay::decal
     bool RemoveDecal(std::uint32_t id, std::string& error);
 
     // Projected decals: a second decal system that paints on entities only
-    // (scorch of explosions and fires on the deck slab). Add 0x140CF14:
-    // (manager 0x4F15040, &type hash, entity, int, &position, &direction,
-    // &side, size, u16, u8, int, int, owner*).
+    // (scorch of explosions and fires on the deck slab). The projected add:
+    // (the projected decal manager, &type hash, entity, int, &position,
+    // &direction, &side, size, u16, u8, int, int, owner*).
     // REMOVE_DECALS_IN_RANGE / FROM_OBJECT do not remove them.
     // The 13th argument is not a decal info. The add has two callers: the
-    // blood record finalize 0x1285DA4 passes the blood record (return 0x1285F50),
-    // and the rage decal callbacks (vtable 0x3472C00 slot +0x1E8, 0x124AC84,
-    // return 0x124AE3C) pass 0: the automatic mirror of a rage decal that
-    // landed on an entity (a bullet mark on a wooden deck). The engine makes
-    // that mirror again when the rage decal comes back with its entity.
-    constexpr std::uint32_t kRageMirrorProjReturn = 0x124AE3C;
-    // The pool add 0x125CCF4 returns here from the game's decal add 0x125F9EC.
-    constexpr std::uint32_t kPoolAddReturn = 0x125D332;
+    // blood record finalize passes the blood record (blood::FinalizeProjReturn),
+    // and the rage decal callback (a vtable slot +0x1E8) passes 0: the automatic
+    // mirror of a rage decal that landed on an entity (a bullet mark on a
+    // wooden deck). The engine makes that mirror again when the rage decal
+    // comes back with its entity. Its return, as ProjCall::caller records it:
+    std::uint32_t RageMirrorProjReturn();
+    // The blood pool add's return from its call of the game's decal add.
+    std::uint32_t PoolAddReturn();
     struct ProjCall
     {
         std::uint64_t timeUs = 0;
@@ -154,7 +155,7 @@ namespace replay::decal
     RingStale LastRingStale();
     bool IsDecalAlive(std::uint32_t id, std::string& error);
     // The producer gate between the engine's deferred decal job and the replay's adds. Installed means the
-    // drain 0x1431DD4 is hooked and DecalGate is not 0 in the ini; the
+    // job's drain is hooked and DecalGate is not 0 in the ini; the
     // counters say whether the two producers met (waits) and for how long.
     bool DrainGateInstalled();
     GateCounters GateStats();

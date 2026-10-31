@@ -2,24 +2,17 @@
 
 // The speed the ped audio of a puppet reads.
 //
-// Each ped audio holder owns a PED_VARIABLES block (ped_audio_state.h, part
-// b) that the sounds of that ped read by name. UpdatePedVariables 0x31A3ABC
-// writes its "speed" (0x8BAE9C31) every audio update from the movement
-// component (row +0x88 +0x5DC, read at 0x31A3EF4; the component writes it at
-// 0x8EC5D1 from a smoothed |physical velocity - ground velocity|) through the
-// block setter (0x31A3F7A: mov edx,8BAE9C31h; mov rcx,rbx; call 0x258A9B4).
-// The name appears nowhere else in the executable: only the sound metadata
-// reads it. A puppet is frozen and moved by the replay, so its component
-// keeps 0: every puppet's sounds would read speed 0 where the recording read
-// the ped's speed.
-//
-// As a replay editor usually does it (each ped's velocity in its packet, given
-// to the ped's audio entity at playback), the recording keeps each recorded
-// ped's (and horse's) block speed 4 times a second (section PSPD), and the
-// playback writes it into the puppet's block right after the engine's own
-// update (PedSpeedReplay, a detour on 0x31A3ABC that forwards every call). A
-// clip without the section gives the puppet the speed of its recorded motion
-// (its displacement over clip time).
+// The sounds of a ped read the "speed" variable (0x8BAE9C31) of its
+// PED_VARIABLES block (ped_audio_state.h), which the engine's
+// UpdatePedVariables writes every audio update from the movement component.
+// A puppet is frozen and moved by the replay, so its component keeps 0. The
+// recording keeps each recorded ped's and horse's block speed 4 times a second
+// (section PSPD), and playback writes it into the puppet's block right after
+// the engine's own update (PedSpeedReplay, a detour that forwards every call).
+// A clip without the section gives the puppet the speed of its recorded
+// motion (its displacement over clip time).
+// Evidence: offline dump (the name is read only by the sound metadata).
+// Research: docs/research/peds-puppets.md
 
 #include <algorithm>
 #include <cmath>
@@ -34,7 +27,7 @@ namespace replay::pedspeed
     // The block slot UpdatePedVariables fills from the movement speed. "speed" is
     // the mod's label from that source, not a proven name: joaat("speed") is
     // 0xF997622B.
-    constexpr std::uint32_t kSpeedVariable = 0x8BAE9C31u; // in PED_VARIABLES (0x31A3F7A)
+    constexpr std::uint32_t kSpeedVariable = 0x8BAE9C31u; // in PED_VARIABLES (the speed store)
     constexpr float kMaxSpeed = 150.0f;                   // m/s: anything past this is not a ped's speed
     constexpr std::uint32_t kSamplePeriodMs = 250;        // the recording's scan (PED_VARS)
     constexpr std::uint32_t kHoldMs = 750;                // a value holds this long past its point
@@ -245,8 +238,8 @@ namespace replay::pedspeed
     // A clip without the section: the speed of the puppet's recorded motion. The
     // replay puts the puppet where the recording had it at the playhead, so its
     // displacement over clip time is the recorded velocity (the engine's own value
-    // is |velocity - ground velocity| through the smoother 0x2521410, whose rates
-    // (0x39E9B60, 0x39E9B78: 1.0 per ms, no code writes them) do not smooth at ped
+    // is |velocity - ground velocity| through the smoother, whose rates
+    // (two static floats, 1.0 per ms, no code writes them) do not smooth at ped
     // speeds; a ped on a moving platform reads less live than this gives).
     // A warp of the puppet (a recorded teleport, a horse called to its rider, a
     // puppet put in place) is not a speed: a step of more than kWarpMetres at more

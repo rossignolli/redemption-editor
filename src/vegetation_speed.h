@@ -5,7 +5,7 @@
 // entity's physical speed; the flattened-grass stamp is sized by the same
 // speed. A puppet is frozen, so its physical speed is zero and the engine
 // ignores SET_ENTITY_VELOCITY on it. Both consumers read the speed through
-// 0xC32058(out, entity) (callers 0xC32108, 0xC489DC only). A detour,
+// the speed getter (out, entity), and nothing else calls it. A detour,
 // signature-checked, forwards every call and, for the puppets the script
 // thread publishes, writes their recorded speed squared instead. It never
 // calls natives and changes nothing for other entities. Build 1491.50.
@@ -35,9 +35,9 @@ namespace replay::vegetation
     // published.
     bool PublishedVelocity(std::uint64_t entity, float out[3]);
     // FxPuppetVelocity: a detour on the particle entity interface's velocity
-    // (vfunc +0xB0 of the vtable 0x3480CE0, 0x1405BA4; rdx the entity, r8 the
-    // float4 out, al = not zero). The attach update 0x2C52254 multiplies it by the
-    // step into the instance's +0x360 (0x2C523CE), the displacement the particles
+    // (vfunc +0xB0 of the interface's vtable; rdx the entity, r8 the
+    // float4 out, al = not zero). The attach update multiplies it by the
+    // step into the instance's +0x360, the displacement the particles
     // inherit; a frozen puppet has none. For a published puppet the detour returns
     // the published velocity; any other entity goes to the original. No natives; a
     // table read.

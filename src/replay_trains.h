@@ -38,11 +38,6 @@ namespace replay::trains
     // once; a failed one turns only its own use off. One log line.
     bool Check(std::string& error);
     std::string Describe();
-    // ini TrainPuppet: 0 vehicle, then object when refused or moved (default);
-    // 1 vehicle only; 2 object only. TrainWorldClear: 0 hide the world's
-    // trains (default); 1 also DELETE_ALL_TRAINS at playback start.
-    void SetPuppetMode(int mode);
-    void SetWorldClearMode(int mode);
 
     // Recording, called by the recorder core.
     void BeginRecording();

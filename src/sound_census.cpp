@@ -11,9 +11,11 @@
 #include "hook_batch.h"
 #include "module_lifetime.h"
 #include "event_ring.h"
+#include "game_sig.h"
 #include "profiler.h"
 #include "sound_generic.h"
 #include "soundfx_probe.h"
+#include "speech_identity.h" // the speech entities' vtables
 #include "version.generated.h"
 
 #include <windows.h>
@@ -36,23 +38,6 @@ namespace replay::census
 {
     namespace
     {
-        // The two sound instance creators (see sound_census_core.h). Both prologues
-        // are checked, and the call to the slot allocator 0x251BAC4 inside each (the
-        // fact that makes them the only creators).
-        constexpr std::uintptr_t kCreatorARva = 0x2516CAC;
-        constexpr std::uint8_t kCreatorASignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x4C, 0x89, 0x48, 0x20, 0x4C, 0x89, 0x40, 0x18, 0x55,
-            0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x68, 0xA9, 0x48, 0x81,
-            0xEC, 0xF0, 0x00, 0x00, 0x00, 0x4C, 0x8B, 0xF1, 0x4D, 0x8B, 0xF8};
-        constexpr std::uintptr_t kCreatorAAllocCall = 0x2516D2A;
-        constexpr std::uint8_t kCreatorAAllocCallBytes[] = {0xE8, 0x95, 0x4D, 0x00, 0x00};
-        constexpr std::uintptr_t kCreatorBRva = 0x2516900;
-        constexpr std::uint8_t kCreatorBSignature[] = {
-            0x4C, 0x89, 0x4C, 0x24, 0x20, 0x4C, 0x89, 0x44, 0x24, 0x18, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54,
-            0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24, 0xE9, 0x48, 0x81, 0xEC, 0xE8, 0x00,
-            0x00, 0x00, 0x48, 0x8D, 0x81, 0x28, 0xF8, 0x00, 0x00};
-        constexpr std::uintptr_t kCreatorBAllocCall = 0x2516973;
-        constexpr std::uint8_t kCreatorBAllocCallBytes[] = {0xE8, 0x4C, 0x51, 0x00, 0x00};
         // (manager, u64 ref, audEntity*, audSound** or null, init params or
         // null) -> audSound* or 0. Five arguments: both read their frame up
         // to entry rsp+0x28 only.
@@ -66,11 +51,12 @@ namespace replay::census
         int g_iniRead = 0;
         bool g_check = false;  // SoundCheck (default = Debug)
         bool g_full = false;   // SoundCensus (a line per sound)
-        int g_capture = 1;     // SoundCapture
+        // The capture mode: sounds of recorded vehicles, train cars and objects
+        // no track covers (CaptureClass).
+        constexpr int kCaptureMode = 1;
         // The on-screen notice of the report at the playback's stop, shown with
-        // Debug=0 too: at least this many MISSING, FEWER, EXTRA and MORE findings
-        // (SoundCheckNotice, default 3; 0: no notice).
-        std::uint32_t g_noticeMin = replay::census::kNoticeMinFindings;
+        // Debug=0 too: at least kNoticeMinFindings MISSING, FEWER, EXTRA and MORE
+        // findings.
         std::vector<Finding> g_extraFindings; // NoteExtraFindings
         // The check's reports, in the game folder, apart from the player's clips.
         constexpr wchar_t kReportFolder[] = L"ReplayDebug";
@@ -161,11 +147,6 @@ namespace replay::census
             return replay::mem::Copy(out, source, size, replay::mem::kGameHeapLowest);
         }
 
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size);
-        }
-
         void Push(std::uint8_t core, std::uint64_t ref, std::uint64_t audio, std::uint64_t out, std::uint64_t params,
             std::uint64_t sound)
         {
@@ -221,8 +202,8 @@ namespace replay::census
             replay::lifetime::DetourScope lifetime; // the whole call, first (audit C01)
             REPLAY_PROFILE_ZONE("detour.sound_census");
             // A puppet vehicle's own create the recording plays is refused as the creator
-            // refuses with its slot pool full (0x2516D42: 0 returned, the out slot
-            // untouched; vehicle_sound_rule.h). The mod's own creates never ask.
+            // refuses with its slot pool full (0 returned, the out slot untouched;
+            // vehicle_sound_rule.h). The mod's own creates never ask.
             if (t_modDepth == 0 && replay::audio::RefuseVehicleOwnCreate(0, audio, ref, out, ToRva(_ReturnAddress())))
                 return 0;
             const CreatorFn original = g_originalA.load(std::memory_order_acquire);
@@ -236,7 +217,7 @@ namespace replay::census
         {
             replay::lifetime::DetourScope lifetime; // the whole call, first (audit C01)
             REPLAY_PROFILE_ZONE("detour.sound_census");
-            // As creator A (0x251698B: the slot pool's refusal).
+            // As creator A (the slot pool's refusal).
             if (t_modDepth == 0 && replay::audio::RefuseVehicleOwnCreate(1, audio, ref, out, ToRva(_ReturnAddress())))
                 return 0;
             const CreatorFn original = g_originalB.load(std::memory_order_acquire);
@@ -245,16 +226,18 @@ namespace replay::census
             return sound;
         }
 
-        bool HookOne(std::uint8_t* base, std::uintptr_t rva, const std::uint8_t* signature, std::size_t size,
-            std::uintptr_t allocCall, const std::uint8_t* allocBytes, void* detour, std::atomic<CreatorFn>& original,
-            void*& target, const char* name, std::string& error)
+        // `alloc`: the creator's call of the slot allocator, found at the
+        // allocator (sound_census_core.h).
+        bool HookOne(const sig::Signature& creator, const sig::Signature& alloc, void* detour,
+            std::atomic<CreatorFn>& original, void*& target, const char* name, std::string& error)
         {
-            void* address = base + rva;
-            if (!GuardedCompare(address, signature, size) || !GuardedCompare(base + allocCall, allocBytes, 5))
+            const std::uintptr_t found = sig::Find(creator);
+            if (!found || !sig::Find(alloc))
             {
                 error += std::string(name) + "_signature_mismatch;";
                 return false;
             }
+            void* address = reinterpret_cast<void*>(found);
             void* trampoline = nullptr;
             if (MH_CreateHook(address, detour, &trampoline) != MH_OK || !trampoline)
             {
@@ -330,7 +313,7 @@ namespace replay::census
             if (shape == EntityShape::Vehicle)
             {
                 // [car+0x11E0] is the consist's engine car, not an audio entity (the whistle
-                // native 0x10F7A24 passes it to 0x154D500, which reads its +0x900 audio).
+                // native passes it to the train whistle, which reads its +0x900 audio).
                 if (const std::uint64_t audio = VehicleAudioOf(address))
                 {
                     Owner audioOwner = owner;
@@ -351,11 +334,11 @@ namespace replay::census
                     holderOwner.base = AudioBase::PedHolder;
                     g_owners.audio.push_back(holderOwner);
                 }
-                // The speech entity. The ped audio is one allocation (build 1491.50), 0x4A70
-                // bytes for an animal (0x89DAC8) and 0x4CB0 for a person (0x89E4F8): the
-                // component at +0, the holder at +0x250 and the speech entity at +0x48C0 =
-                // holder + 0x4670 ([holder + 0x4438], vtable 0x37FE430 animal, 0x37FD948
-                // person). The holder span (0x4820) ends at the animal's end, so a person's
+                // The speech entity. The ped audio is one allocation, 0x4A70 bytes for an
+                // animal and 0x4CB0 for a person (the two holder factories): the component
+                // at +0, the holder at +0x250 and the speech entity at +0x48C0 = holder +
+                // 0x4670 ([holder + 0x4438], speech_identity.h kAnimalSpeechVtable or
+                // kPersonSpeechVtable). The holder span (0x4820) ends at the animal's end, so a person's
                 // speech entity lies 0x240 bytes past it. That tail is the ped's too (base
                 // Entity with lo away from the entity: counted, never captured).
                 if (const std::uint64_t holder = replay::audio::PedAudioHolder(entity))
@@ -364,8 +347,10 @@ namespace replay::census
                     std::uint64_t vtable = 0;
                     if (speech && GuardedCopy(&vtable, reinterpret_cast<const void*>(speech), 8))
                     {
-                        const std::uint64_t image = g_base;
-                        const std::uint64_t size = vtable == image + 0x37FD948 ? 0x3F0 : vtable == image + 0x37FE430 ? 0x1B0 : 0;
+                        const std::uint64_t person = sig::Find(replay::speech::kPersonSpeechVtable);
+                        const std::uint64_t animal = sig::Find(replay::speech::kAnimalSpeechVtable);
+                        const std::uint64_t size =
+                            person && vtable == person ? 0x3F0 : animal && vtable == animal ? 0x1B0 : 0;
                         const std::uint64_t end = speech + size;
                         const std::uint64_t holderEnd = holder + replay::audio::kPedAudioSpan;
                         if (size && end > holderEnd)
@@ -650,21 +635,15 @@ namespace replay::census
         const std::string ini = replay::identity::IniPathIn(directory);
         g_full = replay::identity::DevIniInt("SoundCensus", 0, ini.c_str()) != 0;
         // The check and its report are the bench's (Debug=1) unless SoundCheck is set
-        // explicitly; the product keeps the hooks only for SoundCapture.
+        // explicitly; the product keeps the hooks for the sound capture.
         const int check = static_cast<int>(replay::identity::DevIniInt("SoundCheck", -1, ini.c_str()));
         g_check = check < 0 ? replay::identity::DevIniInt("Debug", 0, ini.c_str()) != 0 : check != 0;
-        g_capture = static_cast<int>(replay::identity::DevIniInt("SoundCapture", 1, ini.c_str()));
-        const int notice = static_cast<int>(replay::identity::DevIniInt("SoundCheckNotice",
-            static_cast<int>(kNoticeMinFindings), ini.c_str()));
-        g_noticeMin = notice < 0 ? 0u : static_cast<std::uint32_t>(notice);
-        if (g_capture < 0 || g_capture > 2)
-            g_capture = 1;
     }
 
     bool Enabled()
     {
         ReadIni();
-        return g_check || g_full || g_capture > 0; // the capture needs the hooks on its own
+        return true; // the capture needs the hooks on its own
     }
 
     bool CheckEnabled()
@@ -682,7 +661,7 @@ namespace replay::census
     int CaptureMode()
     {
         ReadIni();
-        return Enabled() ? g_capture : 0;
+        return kCaptureMode;
     }
 
     bool Install(std::string& error)
@@ -718,10 +697,10 @@ namespace replay::census
         }
         g_next.store(0, std::memory_order_release);
         g_cursor = 0;
-        HookOne(base, kCreatorARva, kCreatorASignature, sizeof(kCreatorASignature), kCreatorAAllocCall,
-            kCreatorAAllocCallBytes, reinterpret_cast<void*>(&CreatorADetour), g_originalA, g_targetA, "creator_a", error);
-        HookOne(base, kCreatorBRva, kCreatorBSignature, sizeof(kCreatorBSignature), kCreatorBAllocCall,
-            kCreatorBAllocCallBytes, reinterpret_cast<void*>(&CreatorBDetour), g_originalB, g_targetB, "creator_b", error);
+        HookOne(kCreatorA, kCreatorAAlloc, reinterpret_cast<void*>(&CreatorADetour), g_originalA, g_targetA, "creator_a",
+            error);
+        HookOne(kCreatorB, kCreatorBAlloc, reinterpret_cast<void*>(&CreatorBDetour), g_originalB, g_targetB, "creator_b",
+            error);
         // Both or nothing: with one creator only the census would report the
         // other's sounds as missing on both sides and prove nothing.
         if (!g_targetA || !g_targetB)
@@ -848,7 +827,7 @@ namespace replay::census
                 key.ref = row.ref;
                 for (std::uint32_t n = 0; n < kPathDepth; ++n)
                     key.path[n] = row.callers[n + 1];
-                ProxySpeechKey(playback && g_playerSpeechProxy, g_playerId, key);
+                ProxySpeechKey(playback && g_playerSpeechProxy, g_playerId, key, replay::audio::CensusCallSites());
                 acc.Add(tick.clipMs, key, row.sound == 0);
                 ++g_totals.counted;
             }
@@ -960,7 +939,8 @@ namespace replay::census
             return;
         REPLAY_PROFILE_ZONE("census.report");
         const std::uint64_t started = QpcUs();
-        const DiffResult diff = Diff(context.clip.soundCensus, g_playSummary, g_playAcc.Passes(), LoadIgnore());
+        const DiffResult diff = Diff(context.clip.soundCensus, g_playSummary, g_playAcc.Passes(), LoadIgnore(),
+            replay::audio::CensusCallSites());
         std::wstring clipPath = g_clipPathSource ? g_clipPathSource() : std::wstring();
         std::wstring reportPath;
         std::string clipName = "no-file";
@@ -1012,7 +992,7 @@ namespace replay::census
             for (Finding& extra : g_extraFindings)
                 noticeDiff.findings.push_back(std::move(extra));
             g_extraFindings.clear();
-            const std::string notice = FormatNotice(noticeDiff, g_noticeMin);
+            const std::string notice = FormatNotice(noticeDiff, kNoticeMinFindings);
             if (!notice.empty())
             {
                 replay::hud::ShowNotice(notice.c_str());

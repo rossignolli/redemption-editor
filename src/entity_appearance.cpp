@@ -92,9 +92,9 @@ namespace replay::entity::appearance
                 asset.material, asset.palette, asset.tint0, asset.tint1, asset.tint2);
         }
         // As the game's clothing routine ends, the active components marked
-        // updated before the variation update (handler 0xFBB904 -> 0xB569C0 ->
-        // 0xB56C04: applies the dressing object's pending shop item entries,
-        // then 0xB51E80; isMp unused).
+        // updated before the variation update (the handler -> its core -> the
+        // walk that applies the dressing object's pending shop item entries;
+        // isMp unused).
         PED::_SET_ACTIVE_META_PED_COMPONENTS_UPDATED(ped, FALSE);
         PED::_UPDATE_PED_VARIATION(ped, FALSE, TRUE, TRUE, TRUE, FALSE);
     }

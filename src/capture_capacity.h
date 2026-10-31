@@ -2,8 +2,8 @@
 
 // How many skeletons the recording captures at once, and the slot arrays
 // behind it. The bound is capture and playback cost, so the ped class has a
-// capacity (nearest first, entity_selection.h): the ini key PedCapacity, read
-// once at load before any recording; the vehicle class has 8 places.
+// capacity (nearest first, entity_selection.h), set once at load before any
+// recording (DefaultPedCapacity); the vehicle class has 8 places.
 // With WorldModel=gta the whole ped pool is recorded: the capacity accepts up
 // to the pool and defaults to the pool less 2 (the hidden real player and his
 // horse still hold pool slots while every recorded ped has its puppet). The
@@ -18,11 +18,11 @@ namespace replay::capacity
 {
     // The vehicle class with the GTA world model off.
     constexpr std::uint32_t kLegacyVehicleCapacity = 8;
-    // The vehicle pool of build 1491.50 ("CVehicle", pool at 0x500D850,
-    // entity_pools.h). Its creator 0x15A34CC sizes it with GetSizeOfPool
-    // 0x2B09CAC("CVehicle" 0xF820AAA9, default = the "Vehicles" 0x74B31BE3
-    // pool size, stored at 0x500CFE8 by 0x15D761C from 0xAA9C4B); its caller
-    // 0x155E0E4 asserts that default is at most 0x80. The size itself is
+    // The vehicle pool of build 1491.50 ("CVehicle", pool pointer G in
+    // entity_pools.h). Its creator sizes it with GetSizeOfPool
+    // ("CVehicle" 0xF820AAA9, default = the "Vehicles" 0x74B31BE3
+    // pool size, stored in a global by the pool size init); its caller
+    // asserts that default is at most 0x80. The size itself is
     // gameconfig data: the live header (+0x18) reads 80 in every session
     // (ENTITY_POOLS vehicles=n/80), like the ped pool's 150.
     constexpr std::uint32_t kVehiclePoolSlots = 80;
@@ -35,7 +35,7 @@ namespace replay::capacity
     constexpr std::uint32_t kLiveTargetSlots = 256 + kMaxVehicleCapacity - kLegacyVehicleCapacity;
     constexpr std::uint32_t kDefaultPedCapacity = 56;
     constexpr std::uint32_t kMinPedCapacity = 8;
-    // The ped pool of build 1491.50 (pool at 0x4A11F70, 150 slots).
+    // The ped pool of build 1491.50 (pool pointer G in entity_pools.h, 150 slots).
     constexpr std::uint32_t kPedPoolSlots = 150;
     // The limit with the GTA world model off (128 slots less the vehicles).
     constexpr std::uint32_t kLegacyMaxPedCapacity = 120;

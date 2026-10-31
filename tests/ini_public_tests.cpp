@@ -1,8 +1,10 @@
 // The public ini whitelist (src/ini_public.h), the developer reads
 // (mod_identity.h DevIniInt, DevIniString), the shipped ini written on the
 // first run, the clips a report takes (qa_report.h ReportClips) and the crash
-// notice decision (src/crash_notice.h).
+// notice decision (src/crash_notice.h) and the ReShade add-on check
+// (src/reshade_check.h).
 #include "crash_notice.h"
+#include "reshade_check.h"
 #include "editor_keys.h"
 #include "ini_public.h"
 #include "mod_identity.h"
@@ -113,9 +115,9 @@ namespace
             CheckKey(line && !line->commented && line->section == "RedemptionEditor", "a report key missing from the shipped ini", key);
         }
         // Research probes are never in the shipped ini nor support switches.
-        const char* const probes[] = {"VolumeProbe", "SoundFxProbe", "MixProbe", "WaterGridProbe", "SunProbe", "CaptureProbe",
-            "SpeechLevelProbe", "SoundCensus", "WorldSoundProbe", "CategoryStateLog", "HorseAudioEvidence", "ObjectLookEvidence",
-            "ClipSaveFailTest", "Debug", "SunOverride", "ReplayGameListener", "MixSceneReplay"};
+        const char* const probes[] = {"VolumeProbe", "SoundFxProbe", "MixProbe", "SunProbe", "CaptureProbe",
+            "SpeechLevelProbe", "SoundCensus", "WorldSoundProbe", "CategoryStateLog", "HorseAudioEvidence",
+            "ClipSaveFailTest", "Debug", "SunOverride"};
         for (const char* key : probes)
             CheckKey(replay::inipublic::Find(lines, "RedemptionEditor", key) == nullptr, "a developer key in the shipped ini", key);
         for (const char* key : probes)
@@ -350,6 +352,61 @@ namespace
         for (const char c : text.title + text.body)
             Check(static_cast<unsigned char>(c) < 0x80, "the notice is plain ASCII (the editor's font)");
     }
+    // Why the editor add-on is not loaded (src/reshade_check.h).
+    void TestReShadeCheck()
+    {
+        using namespace replay::reshadecheck;
+        // The line the standard ReShade 6.8 download wrote in a player's log.
+        const std::string standardLog =
+            "20:50:32:722 [12656] | INFO  | Searching for add-ons (*.addon, *.addon64) in 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Red Dead Redemption 2' ...\r\n"
+            "20:50:32:723 [12656] | WARN  | Skipped loading add-on from 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Red Dead Redemption 2\\RedemptionEditor.addon64' "
+            "because this build of ReShade has only limited add-on functionality.\r\n";
+        Check(LogSaysStandardBuild(standardLog), "the standard build's skip line is read");
+        Check(!LogSaysStandardBuild("WARN | Skipped loading add-on from 'x\\Other.addon64' because this build of ReShade has only limited add-on functionality.\n"),
+            "another add-on skipped is not ours");
+        Check(!LogSaysStandardBuild("INFO | Loading add-on from 'x\\RedemptionEditor.addon64' ...\n"), "a loaded add-on is not the standard build");
+
+        Check(IniTurnsAddonOff("[GENERAL]\nX=1\n[ADDON]\nDisabledAddons=Generic Depth,Redemption Editor@RedemptionEditor.addon64\n"),
+            "DisabledAddons with the file names the add-on");
+        Check(IniTurnsAddonOff("[ADDON]\r\nDisabledAddons= Redemption Editor \r\n"), "DisabledAddons with the name alone");
+        Check(!IniTurnsAddonOff("[ADDON]\nDisabledAddons=Generic Depth\n"), "another add-on off");
+        Check(!IniTurnsAddonOff("[OTHER]\nDisabledAddons=Redemption Editor\n"), "the key outside [ADDON]");
+        Check(!IniTurnsAddonOff(""), "no ReShade.ini");
+
+        Facts f;
+        f.addonLoaded = true;
+        f.log = standardLog;
+        Check(Classify(f) == State::Loaded, "the add-on module loaded wins over an old log");
+        f = Facts{};
+        f.log = standardLog;
+        f.addonFilePresent = true;
+        Check(Classify(f) == State::NoReShade, "no ReShade this session: its log is not read");
+        f.reshadeRunning = true;
+        Check(Classify(f) == State::StandardBuild, "the standard build");
+        f.log = "INFO | nothing about add-ons\n";
+        Check(Classify(f) == State::NotLoaded, "ReShade runs, the reason is not known");
+        f.addonFilePresent = false;
+        Check(Classify(f) == State::AddonMissing, "the add-on file is not in the game folder");
+        f.addonFilePresent = true;
+        f.ini = "[ADDON]\nDisabledAddons=Redemption Editor@RedemptionEditor.addon64\n";
+        Check(Classify(f) == State::AddonOff, "turned off in ReShade");
+
+        const replay::keys::Table keys = replay::keys::DefaultTable();
+        Check(NoticeText(State::Loaded, keys).empty(), "no notice when the add-on loaded");
+        const std::string standard = NoticeText(State::StandardBuild, keys);
+        Check(standard.find("editor (F2)") != std::string::npos && standard.find("full add-on support") != std::string::npos,
+            "the standard build notice names the editor key and the download");
+        replay::keys::Table remapped = replay::keys::DefaultTable();
+        remapped.Of(replay::keys::Action::Editor)[0] = {'J', false, false};
+        Check(NoticeText(State::NoReShade, remapped).find("editor (J)") != std::string::npos, "a remapped editor key is said");
+        for (const State s : {State::NoReShade, State::StandardBuild, State::AddonMissing, State::AddonOff, State::NotLoaded})
+        {
+            const std::string text = NoticeText(s, keys);
+            Check(!text.empty() && std::strcmp(Name(s), "?") != 0, "every cause has a notice and a log name");
+            for (const char c : text)
+                Check(static_cast<unsigned char>(c) < 0x80, "the notice is plain ASCII (the game's font)");
+        }
+    }
 }
 
 int RunIniPublicTests()
@@ -363,6 +420,7 @@ int RunIniPublicTests()
     TestWriteDefaultIni();
     TestReportClips();
     TestCrashNotice();
+    TestReShadeCheck();
     std::printf("ini public tests: %s (%d failures)\n", g_failures ? "FAILED" : "ok", g_failures);
     return g_failures;
 }

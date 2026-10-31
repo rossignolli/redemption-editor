@@ -63,9 +63,9 @@ namespace replay::camera
         // Marker model (API 8, CAMR v3).
         CameraMode cameraMode = CameraMode::Game; // default: Game Camera
         MarkerType markerType = MarkerType::Edit;
-        // Spline is the default blend of a new marker (it only blends
-        // between two Free cameras).
-        Blend blend = Blend::Spline;              // of the segment that STARTS here
+        // No Blend (a cut) is the default blend of a new marker; Spline
+        // and the others blend only between two Free cameras.
+        Blend blend = Blend::None;              // of the segment that STARTS here
         bool ease = true;
         std::uint32_t lookAtTarget = 0;           // packed replay id, 0 = None
         editor::Vec2 lookAtOffset{};              // -1..1 on screen
@@ -343,8 +343,13 @@ namespace replay::camera
     // A new marker inherits from the previous one (not the next). Keeps
     // fresh.id and fresh.timeMs. Returns true when the caller must take the
     // pose from the frame rendered at the new time (the previous marker is a
-    // Free camera): the copied world pose is only a placeholder then.
-    bool InheritFrom(Keyframe& fresh, const Keyframe& previous);
+    // Free camera): the copied world pose is only a placeholder then. The
+    // blend is No Blend, the default, unless the marker lands inside a blend
+    // (`insideBlend`, InsideBlend): then it keeps the previous Free marker's
+    // blend and ease, so the move it was added into plays as before.
+    bool InheritFrom(Keyframe& fresh, const Keyframe& previous, bool insideBlend = true);
+    // Whether a marker added at t lands inside a blend between two markers.
+    bool InsideBlend(const Track& track, std::uint64_t timeMs);
     // The defaults, keeping id and time (the last marker keeps its camera type).
     void ResetToDefault(Keyframe& marker, bool isLast);
     // The last (non Anchor) marker: when the one before it is a Free camera
@@ -556,6 +561,8 @@ namespace replay::camera
         int source = -1; // 0 markers, 1 events
         std::vector<editor::Vec3> points; // the camera at runStart + n x grid
         std::vector<std::uint8_t> known;  // points[n] evaluated
+        std::vector<std::int32_t> segment; // the marker segment at point n (SegmentPlan::current)
+        std::vector<std::uint8_t> blends;  // that segment blends into the next (no jump at its end)
         std::vector<double> sums;         // the coupling's cycles up to point n
         std::uint32_t rebuilds = 0;       // evidence
         void Clear()
@@ -565,6 +572,8 @@ namespace replay::camera
             source = -1;
             points.clear();
             known.clear();
+            segment.clear();
+            blends.clear();
             sums.clear();
         }
     };
@@ -702,8 +711,8 @@ namespace replay::camera
         AttachType anchorType = AttachType::Flexible;
         // A change of anchor re-expresses the springs' value and velocity in
         // the new frame (the camera stays where it was) instead of Reset() (a
-        // jump of smooth_lag_m in one frame). False: reset
-        // (ReplayCamSmoothReframe=0). Kept by Reset().
+        // jump of smooth_lag_m in one frame). False: reset (the tests' old
+        // rule). Kept by Reset().
         bool reframe = true;
         std::uint32_t reframes = 0; // anchor changes re-expressed (evidence)
         std::uint32_t resets = 0;   // anchor changes that reset (reframe off, or the old anchor not found)
@@ -833,7 +842,7 @@ namespace replay::camera
     };
 
     // The DOF lens (mm, 35 mm film: the engine turns a lens into a FOV with
-    // 12 mm over tan(fov / 2), 0x428370) for a FOV: the lens of that FOV
+    // 12 mm over tan(fov / 2)) for a FOV: the lens of that FOV
     // times a focal length multiplier, 2.0 at intensity 0 to 2.5 at 100, or
     // the marker's own lens when set. Held to kDofLensMin..kDofLensMax.
     float DofLensMm(float fovDegrees, float intensity, float lensOverride);
@@ -871,10 +880,10 @@ namespace replay::camera
 
     struct FocusConfig
     {
-        bool hysteresis = true;        // ReplayCamFocusHysteresis
+        bool hysteresis = true;        // focus hysteresis (false: the 0.186 rule, tests)
         bool holdLast = true;          // with hysteresis: Held instead of Engine
-        bool blend = true;             // ReplayCamDofBlend: interpolate inside a blend
-        float smoothOmega = 12.0f;     // ReplayCamFocusSmooth: spring on the focus distance (rad/s), 0 off
+        bool blend = true;             // interpolate inside a blend
+        float smoothOmega = 12.0f;     // spring on the focus distance (rad/s), 0 off
         float enter = kFocusEnterFrame;
         float leave = kFocusLeaveFrame;
         std::uint32_t graceMs = kFocusGraceMs;

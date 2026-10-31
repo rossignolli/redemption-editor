@@ -9,12 +9,11 @@
 //     [object+0x448]: the model components in the array at +0x390, count
 //     +0x3E0, and the decorations, materials, tints and engravings, in the
 //     hash table at +0x10, buckets +0x18, offline from the core of
-//     HAS_WEAPON_GOT_WEAPON_COMPONENT 0x10EABB4), as a sorted set;
+//     HAS_WEAPON_GOT_WEAPON_COMPONENT), as a sorted set;
 //   - the wear: degradation +0xD0, permanent degradation (rust) +0xD4, soot
 //     +0xD8, visual damage +0xDC, dirt +0xE0 and the sixth channel +0xE4
-//     (offline: the getters 0x10E9188/0x10E9584/0x10E90A0/0x1164FD0/
-//     0x10E94C0, the setters 0x119FFC0/0x11A21F8/0x11A1A58/0x119FED8/
-//     0x11A14E8/0x119F310, and the weapon create 0x1E0A6C0 that applies all
+//     (offline: the wear natives' getters and setters, the engine's own
+//     setters of +0xD4 and +0xE4, and the weapon create that applies all
 //     six from one struct).
 // A state is stored when the component set changes or one wear value moves
 // more than kWearStep; playback applies the state at the playhead and reads
@@ -50,10 +49,10 @@ namespace replay::weaponlook
     constexpr std::uint32_t kDamage = 0xDC;
     constexpr std::uint32_t kDirt = 0xE0;
     constexpr std::uint32_t kWearE4 = 0xE4;
-    // The dirt the drawing uses: the dirt setter (0x119FFC0 -> 0x11A0054)
+    // The dirt the drawing uses: the dirt setter
     // writes it into the weapon shader effect only when the drawable has one
     // ([[weapon+0xE8]+0x28]+0x18, type byte +0xA & 0x1F == 0x16), at
-    // [[effect+0x18]+0xC8] (0xB0F6B0). A weapon set before its drawable
+    // [[effect+0x18]+0xC8]. A weapon set before its drawable
     // exists keeps the field and not the drawn value.
     constexpr std::uint32_t kWeaponDrawHolder = 0xE8;
     constexpr std::uint32_t kDrawHolderDrawable = 0x28;

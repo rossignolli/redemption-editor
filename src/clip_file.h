@@ -22,11 +22,15 @@
 // BodyImpactEvent::definitionVtable, FireStartEvent desc +0xF0,
 // SoundEvent::globalAudio) are written as an offset from the image base (0
 // when outside the image) and rebased on load. The image range is a
-// parameter so the tests can give their own.
+// parameter so the tests can give their own. The game addresses the playback
+// compares (fx sites, callers, static audio objects, audio vtables) are
+// written as site ids (clip_sites.h, SetSiteMap): the same on every game
+// build; the rest of the image offsets are evidence.
 //
 // Pure data: no engine or native access, unit tested in ReplayCoreTests.
 
 #include "camera_track.h"
+#include "game_sig_site.h"
 #include "pose_stream.h"
 #include "replay_recording.h"
 
@@ -262,6 +266,12 @@ namespace replay::clipfile
     // another build is refused, since its image offsets would point wrong.
     // 0 (the default, tests) writes zeros and checks nothing.
     void SetBuildIdentity(std::uint32_t peTimestamp, std::uint64_t imageSize);
+
+    // The running game's site map (clip_sites.h BuildSiteMap with its
+    // addresses): the game addresses a clip names are written as site ids of
+    // it and read back as its RVAs. Unset (the 1491.50 exe, the tools, the
+    // tests): clip_sites.h KnownSiteMap. Before any save or load.
+    void SetSiteMap(const sig::SiteMap& map);
 
     // Name and version of each section in file order (docs, logs, tests).
     struct SectionInfo

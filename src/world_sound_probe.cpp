@@ -1,6 +1,7 @@
 #include "world_sound_probe.h"
 
 #include "game_listener_core.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "sound_census.h"
 #include "sound_world_core.h"
@@ -123,23 +124,21 @@ namespace replay::worldsoundprobe
             std::string failed;
             for (const sw::ProbeSite& site : sw::kProbeSites)
             {
-                std::uint8_t code[8]{};
-                if (g_base && mem::Copy(code, g_base + site.rva, site.size) && sw::ProbeSiteMatches(site, code))
+                if (g_base && replay::sig::Find(*site.site))
                     continue;
                 bool& on = site.part == sw::ProbePart::Ptfx ? g_ptfxOn : site.part == sw::ProbePart::Group ? g_groupOn : g_listenerOn;
                 if (on)
-                    log << "WORLD_SOUND_PROBE_CHECK,ok=0,part=" << sw::ProbePartName(site.part) << ",site=" << site.name
-                        << ",rva=" << Hex(site.rva) << ",note=part_disabled\n";
+                    log << "WORLD_SOUND_PROBE_CHECK,ok=0,part=" << sw::ProbePartName(site.part) << ",site=" << site.site->name
+                        << ",rva=" << Hex(site.site->rva) << ",note=part_disabled\n";
                 on = false;
             }
             if (g_listenerOn)
             {
-                for (const gl::Site& site : gl::kSites)
+                for (const replay::sig::Signature* site : gl::kSites)
                 {
-                    std::uint8_t code[16]{};
-                    if (!mem::Copy(code, g_base + site.rva, site.size) || !gl::SiteMatches(site, code))
+                    if (!replay::sig::Find(*site))
                     {
-                        log << "WORLD_SOUND_PROBE_CHECK,ok=0,part=listener,site=" << site.name << ",rva=" << Hex(site.rva)
+                        log << "WORLD_SOUND_PROBE_CHECK,ok=0,part=listener,site=" << site->name << ",rva=" << Hex(site->rva)
                             << ",note=part_disabled\n";
                         g_listenerOn = false;
                         break;
@@ -157,13 +156,15 @@ namespace replay::worldsoundprobe
             g_proof = g_ptfxOn || g_groupOn ? Proof::Proven : Proof::Failed;
             log << "WORLD_SOUND_PROBE_CHECK,ok=" << (g_proof == Proof::Proven ? 1 : 0) << ",sites=" << sw::kProbeSiteCount
                 << ",ptfx=" << (g_ptfxOn ? 1 : 0) << ",group=" << (g_groupOn ? 1 : 0) << ",listener=" << (g_listenerOn ? 1 : 0)
-                << ",ptfx_manager=" << Hex(sw::kPtfxManagerRva) << ",ptfx_slots=" << sw::kPtfxSlotCount
-                << ",group_manager_ptr=" << Hex(sw::kGroupManagerPtrRva) << ",groups=" << sw::kGroupCount
+                << ",ptfx_manager=" << Hex(g_ptfxOn ? replay::sig::Find(sw::kPtfxManager) - g_base : 0)
+                << ",ptfx_slots=" << sw::kPtfxSlotCount
+                << ",group_manager_ptr=" << Hex(g_groupOn ? replay::sig::Find(sw::kGroupManagerPtr) - g_base : 0)
+                << ",groups=" << sw::kGroupCount
                 << ",group_ms=" << g_cfg.groupMs << ",census=" << (census::Enabled() ? 1 : 0) << ",writes=0\n";
             return g_proof == Proof::Proven;
         }
 
-        // The listener points the particle slot's test reads (0x31DBE60):
+        // The listener points the particle slot's test reads (sw::kListenerTest):
         // both descriptions whose weights pass 1e-5, every volume point.
         struct Listener
         {
@@ -176,7 +177,9 @@ namespace replay::worldsoundprobe
             Listener l;
             if (!g_listenerOn)
                 return l;
-            const std::uintptr_t env = g_base + gl::kEnvironmentRva;
+            const std::uintptr_t env = replay::sig::Find(gl::kEnvironment);
+            if (!env)
+                return l;
             for (std::uint32_t d = 0; d < gl::kListenerCount; ++d)
             {
                 const std::uintptr_t desc = env + gl::ListenerOffset(d);
@@ -249,7 +252,9 @@ namespace replay::worldsoundprobe
 
         void TickPtfx(std::ostream& log, std::uint32_t clipMs, const Listener& listener)
         {
-            const std::uintptr_t mgr = g_base + sw::kPtfxManagerRva;
+            const std::uintptr_t mgr = replay::sig::Find(sw::kPtfxManager);
+            if (!mgr)
+                return;
             if (g_ptfxBuffer.size() != sw::kPtfxSlotCount * sw::kPtfxSlotStride)
                 g_ptfxBuffer.assign(sw::kPtfxSlotCount * sw::kPtfxSlotStride, 0);
             std::uint8_t bufferByte = 0;
@@ -260,7 +265,7 @@ namespace replay::worldsoundprobe
                 g_ptfx.Reset();
                 return;
             }
-            const std::uint32_t posIndex = static_cast<std::uint8_t>(bufferByte - 1) & 1u; // 0x32148E0..0x32148F8
+            const std::uint32_t posIndex = static_cast<std::uint8_t>(bufferByte - 1) & 1u; // sw::kPtfxBufferSite
             for (std::uint32_t n = 0; n < sw::kPtfxSlotCount; ++n)
             {
                 const std::uint8_t* slot = g_ptfxBuffer.data() + n * sw::kPtfxSlotStride;
@@ -341,7 +346,8 @@ namespace replay::worldsoundprobe
         void TickGroups(std::ostream& log, std::uint32_t clipMs, const Listener& listener)
         {
             std::uint64_t mgr = 0;
-            if (!mem::Read(g_base + sw::kGroupManagerPtrRva, mgr))
+            const std::uintptr_t mgrPtr = replay::sig::Find(sw::kGroupManagerPtr);
+            if (!mgrPtr || !mem::Read(mgrPtr, mgr))
             {
                 ++g_counters.groupReadFailed;
                 return;

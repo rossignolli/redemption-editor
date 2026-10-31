@@ -1,6 +1,7 @@
 #include "object_look.h"
 
 #include "entity_cache.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "object_check.h"
 #include "object_look_core.h"
@@ -26,37 +27,63 @@ namespace replay::objlook
         Context& Ctx() { return *g_context; }
 
         bool g_recordAndPlay = true;
-        bool g_evidence = false;
 
         // ---- build check (once) --------------------------------------
-        // Build 1491.50 (dump rdr2-1491.50-pid18760), object_look_core.h.
+        // object_look_core.h: the code that keeps the look's fields.
+        namespace sig = replay::sig;
+
+        // SET_CUSTOM_TEXTURES_ON_OBJECT's body (handle, txd, p2, p3) and its
+        // call of the setter with &txd, &p2, &p3.
+        const sig::Signature kObjectLookTxdNative{"object_look_txd_native",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 30 41 8B F1 41 8B E8 44 8B F2 8B D9 "
+            "E8 ?? ?? ?? ?? 41 B8 0F 00 00 00",
+            0x10CECE4};
+        const sig::Signature kObjectLookNativeCall{"object_look_native_call", kObjectLookTxdNative, sig::Offset{0x45},
+            "4C 8D 4C 24 20 89 74 24 20 4C 8D 44 24 24 89 6C 24 24 48 8D 54 24 28 44 89 74 24 28 48 8B CF E8 ?? ?? ?? ??",
+            0x10CED29};
+        // The setter (object, &txd, &p2, &p3).
+        const sig::Signature kObjectLookSetter{"object_look_setter", kObjectLookNativeCall, sig::Rel32{0x20, 0x24},
+            "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 38 41 83 CC FF 4C 8D 2D ?? ?? ?? ?? 33 DB 4D 8B F9 4D "
+            "8B F0 48 8B F2",
+            0x840A5C};
+        // cmp [rcx+0x420], ebx; je; mov [rcx+0x420], ebx (the setter clears the old txd)
+        const sig::Signature kObjectLookSetterClear{"object_look_setter_clear", kObjectLookSetter, sig::Offset{0x2D},
+            "39 99 20 04 00 00 74 4A 89 99 20 04 00 00", 0x840A89};
+        // mov ecx, [rsi]; mov [rdi+0x420], ecx (txd stored)
+        const sig::Signature kObjectLookSetterTxd{"object_look_setter_txd", kObjectLookSetter, sig::Offset{0x15C},
+            "8B 0E 89 8F 20 04 00 00", 0x840BB8};
+        // mov ecx, [r14]; mov [rdi+0x424], ecx (p2 stored)
+        const sig::Signature kObjectLookSetterP2{"object_look_setter_p2", kObjectLookSetter, sig::Offset{0x1C4},
+            "41 8B 0E 89 8F 24 04 00 00", 0x840C20};
+        // mov ecx, [r15]; mov [rdi+0x428], ecx (p3 stored)
+        const sig::Signature kObjectLookSetterP3{"object_look_setter_p3", kObjectLookSetter, sig::Offset{0x22D},
+            "41 8B 0F 89 8F 28 04 00 00", 0x840C89};
+        // SET_OBJECT_TINT_INDEX's body (handle, tint) and its call of the writer.
+        const sig::Signature kObjectLookTintNative{"object_look_tint_native",
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 8B F2 8B D9 E8 ?? ?? ?? ?? 41 B8 0F 00 00 00 8B D3 48 8B C8 48 8B "
+            "F8 E8 ?? ?? ?? ?? 84 C0 74 21 48 85 FF 74 1C 8B D6",
+            0x10D0650};
+        const sig::Signature kObjectLookTintCall{"object_look_tint_call", kObjectLookTintNative, sig::Offset{0x34},
+            "8B D6 48 8B CF E8 ?? ?? ?? ??", 0x10D0684};
+        // The tint writer: and [rcx+0xB8], 0xFFFFFE07; and edx, 0x3F; shl edx, 3;
+        // ...; or [rcx+0xB8], edx
+        const sig::Signature kObjectLookTintWriter{"object_look_tint_writer", kObjectLookTintCall, sig::Rel32{6, 10},
+            "48 83 EC 28 81 A1 B8 00 00 00 07 FE FF FF 83 E2 3F C1 E2 03 4C 8B C1 09 91 B8 00 00 00", 0xE5057C};
+
         struct Site
         {
-            std::uintptr_t rva;
-            std::uint8_t bytes[40];
-            std::size_t size;
+            const sig::Signature* signature;
             const char* name;
         };
+        // A call before what it reaches: the first failure names the cause.
         const Site kSites[] = {
-            // 0x840A89: cmp [rcx+0x420], ebx; je; mov [rcx+0x420], ebx (the setter clears the old txd)
-            {0x840A89, {0x39, 0x99, 0x20, 0x04, 0x00, 0x00, 0x74, 0x4A, 0x89, 0x99, 0x20, 0x04, 0x00, 0x00}, 14,
-                "look_setter_clear_signature_mismatch"},
-            // 0x840BB8: mov ecx, [rsi]; mov [rdi+0x420], ecx (txd stored)
-            {0x840BB8, {0x8B, 0x0E, 0x89, 0x8F, 0x20, 0x04, 0x00, 0x00}, 8, "look_setter_txd_signature_mismatch"},
-            // 0x840C20: mov ecx, [r14]; mov [rdi+0x424], ecx (p2 stored)
-            {0x840C20, {0x41, 0x8B, 0x0E, 0x89, 0x8F, 0x24, 0x04, 0x00, 0x00}, 9, "look_setter_p2_signature_mismatch"},
-            // 0x840C89: mov ecx, [r15]; mov [rdi+0x428], ecx (p3 stored)
-            {0x840C89, {0x41, 0x8B, 0x0F, 0x89, 0x8F, 0x28, 0x04, 0x00, 0x00}, 9, "look_setter_p3_signature_mismatch"},
-            // 0x10CED29: the native body's call of the setter with &txd, &p2, &p3 (call 0x840A5C)
-            {0x10CED29, {0x4C, 0x8D, 0x4C, 0x24, 0x20, 0x89, 0x74, 0x24, 0x20, 0x4C, 0x8D, 0x44, 0x24, 0x24, 0x89, 0x6C, 0x24, 0x24,
-                            0x48, 0x8D, 0x54, 0x24, 0x28, 0x44, 0x89, 0x74, 0x24, 0x28, 0x48, 0x8B, 0xCF, 0xE8, 0x0F, 0x1D, 0x77, 0xFF},
-                36, "look_native_body_signature_mismatch"},
-            // 0xE5057C: the tint writer: and [rcx+0xB8], 0xFFFFFE07; and edx, 0x3F; shl edx, 3; ...; or [rcx+0xB8], edx
-            {0xE5057C, {0x48, 0x83, 0xEC, 0x28, 0x81, 0xA1, 0xB8, 0x00, 0x00, 0x00, 0x07, 0xFE, 0xFF, 0xFF, 0x83, 0xE2, 0x3F, 0xC1,
-                           0xE2, 0x03, 0x4C, 0x8B, 0xC1, 0x09, 0x91, 0xB8, 0x00, 0x00, 0x00},
-                29, "look_tint_writer_signature_mismatch"},
-            // 0x10D0684: SET_OBJECT_TINT_INDEX's body calls the writer (call 0xE5057C)
-            {0x10D0684, {0x8B, 0xD6, 0x48, 0x8B, 0xCF, 0xE8, 0xEE, 0xFE, 0xD7, 0xFF}, 10, "look_tint_native_signature_mismatch"},
+            {&kObjectLookNativeCall, "look_native_body_signature_mismatch"},
+            {&kObjectLookSetterClear, "look_setter_clear_signature_mismatch"},
+            {&kObjectLookSetterTxd, "look_setter_txd_signature_mismatch"},
+            {&kObjectLookSetterP2, "look_setter_p2_signature_mismatch"},
+            {&kObjectLookSetterP3, "look_setter_p3_signature_mismatch"},
+            {&kObjectLookTintCall, "look_tint_native_signature_mismatch"},
+            {&kObjectLookTintWriter, "look_tint_writer_signature_mismatch"},
         };
         bool g_checked = false;
         bool g_checkOk = false;
@@ -67,21 +94,18 @@ namespace replay::objlook
             if (g_checked)
                 return g_checkOk;
             g_checked = true;
-            const auto base = reinterpret_cast<const std::uint8_t*>(GetModuleHandleW(nullptr));
-            g_checkOk = base != nullptr;
-            g_checkError = base ? "" : "look_no_module";
-            if (base)
-                for (const Site& site : kSites)
-                    if (!replay::mem::Matches(base + site.rva, site.bytes, site.size))
-                    {
-                        g_checkOk = false;
-                        g_checkError = site.name;
-                        break;
-                    }
+            g_checkOk = true;
+            g_checkError.clear();
+            for (const Site& site : kSites)
+                if (!sig::Find(*site.signature))
+                {
+                    g_checkOk = false;
+                    g_checkError = site.name;
+                    break;
+                }
             if (g_context)
                 Ctx().log << "OBJECT_LOOK,phase=check,status=" << (g_checkOk ? "enabled" : "disabled")
-                          << ",error=" << (g_checkError.empty() ? "none" : g_checkError) << ",record_play=" << (g_recordAndPlay ? 1 : 0)
-                          << ",evidence=" << (g_evidence ? 1 : 0) << '\n';
+                          << ",error=" << (g_checkError.empty() ? "none" : g_checkError) << ",record_play=" << (g_recordAndPlay ? 1 : 0) << '\n';
             return g_checkOk;
         }
 
@@ -143,9 +167,6 @@ namespace replay::objlook
             std::uint32_t sceneryChanges = 0;
         } g_rec;
         std::uint32_t g_recordLogs = 0;
-        std::uint32_t g_evidenceLogs = 0;
-        // Evidence: the last read logged per object (key | scenery bit 63).
-        std::unordered_map<std::uint64_t, ObjectLook> g_evidenceLast;
         // Scenery: the last read time per entry index.
         std::unordered_map<std::uint32_t, std::uint32_t> g_sceneryReadMs;
         replay::TrackIndex<ObjectLookTrack> g_objectIndex;
@@ -163,22 +184,6 @@ namespace replay::objlook
             ++g_rec.reads;
             g_rec.textured += look.txd ? 1u : 0u;
             g_rec.tinted += look.tint ? 1u : 0u;
-            if (g_evidence)
-            {
-                const std::uint64_t evidenceKey = (scenery ? (1ull << 63) : 0ull) | key;
-                const auto last = g_evidenceLast.find(evidenceKey);
-                const bool first = last == g_evidenceLast.end();
-                if ((first || last->second != look) && g_evidenceLogs < 256)
-                {
-                    ++g_evidenceLogs;
-                    Ctx().log << "OBJECT_LOOK_READ,phase=" << (first ? "first" : "change") << ",id=" << KeyText(scenery, key)
-                              << ",model=" << Hex(static_cast<std::uint32_t>(ENTITY::GET_ENTITY_MODEL(object))) << ','
-                              << LookText(look) << ",tint_word=" << Hex(tintWord)
-                              << ",address=0x" << std::hex << reinterpret_cast<std::uintptr_t>(replay::entities::AddressOf(object))
-                              << std::dec << ",time_ms=" << timeMs << '\n';
-                }
-                g_evidenceLast[evidenceKey] = look;
-            }
             if (!g_recordAndPlay)
                 return;
             bool created = false;
@@ -421,10 +426,8 @@ namespace replay::objlook
 
     void Attach(Context& context) { g_context = &context; }
     void SetRecordAndPlay(bool on) { g_recordAndPlay = on; }
-    void SetEvidence(bool on) { g_evidence = on; }
     bool RecordAndPlay() { return g_recordAndPlay; }
-    bool Evidence() { return g_evidence; }
-    bool Active() { return (g_recordAndPlay || g_evidence) && g_context && CheckBuild(); }
+    bool Active() { return g_recordAndPlay && g_context && CheckBuild(); }
 
     bool ReadLook(Object object, ObjectLook& look, std::uint32_t& tintWord)
     {
@@ -435,8 +438,6 @@ namespace replay::objlook
     {
         g_rec = {};
         g_recordLogs = 0;
-        g_evidenceLogs = 0;
-        g_evidenceLast.clear();
         g_sceneryReadMs.clear();
         if (g_context)
             Active(); // the check line once, at the first recording
@@ -447,12 +448,11 @@ namespace replay::objlook
         if (!g_context)
             return;
         Ctx().log << "OBJECT_LOOK,phase=record_end,enabled=" << (Active() ? 1 : 0) << ",record_play=" << (g_recordAndPlay ? 1 : 0)
-                  << ",evidence=" << (g_evidence ? 1 : 0) << ",reads=" << g_rec.reads << ",unread=" << g_rec.unread
+                  << ",reads=" << g_rec.reads << ",unread=" << g_rec.unread
                   << ",textured=" << g_rec.textured << ",tinted=" << g_rec.tinted << ",tracks=" << g_rec.tracks
                   << ",changes=" << g_rec.changes << ",scenery_tracks=" << g_rec.sceneryTracks
                   << ",scenery_changes=" << g_rec.sceneryChanges << ",clip_tracks=" << Ctx().clip.objectLooks.size()
                   << ",clip_scenery_tracks=" << Ctx().clip.sceneryObjectLooks.size() << ",faults=" << g_readFaults << '\n';
-        g_evidenceLast.clear();
         g_sceneryReadMs.clear();
     }
 

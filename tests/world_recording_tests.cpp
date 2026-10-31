@@ -84,30 +84,6 @@ namespace
         Check(c.limit == Limit::Memory && !ShortWindowNotice(c), "54 of 60 s is short but above 90 %: no notice");
     }
 
-    void TestAdaptive()
-    {
-        using namespace replay::buffercov;
-        constexpr std::size_t MB = 1024 * 1024;
-        AdaptiveConfig config;
-        config.baseMB = 128;
-        config.maxMB = 512;
-        config.reserveMB = 2048;
-        Budget b = AdaptiveBudget(config, 100 * MB, 16000);
-        Check(b.bytes == 128 * MB && !b.grown, "off: the configured budget");
-        config.enabled = true;
-        b = AdaptiveBudget(config, 100 * MB, 16000);
-        Check(b.bytes == 512 * MB && b.grown && !b.memoryLow, "on with plenty of memory: the cap");
-        b = AdaptiveBudget(config, 128 * MB, 1500);
-        Check(b.bytes == 128 * MB && b.memoryLow, "on below the reserve: the configured budget");
-        // 300 MB used (172 grown), 1976 MB free: it had 2148 before growing,
-        // room 100 above the reserve, so the cap is 228 MB.
-        b = AdaptiveBudget(config, 300 * MB, 1976);
-        Check(b.bytes == 228 * MB && b.grown && b.memoryLow, "growth limited by the free memory it already took");
-        config.maxMB = 64;
-        b = AdaptiveBudget(config, 0, 16000);
-        Check(b.bytes == 128 * MB && !b.grown, "a cap below the base keeps the base");
-    }
-
     void TestMegabytesFor()
     {
         using replay::buffercov::MegabytesFor;
@@ -131,57 +107,6 @@ namespace
         Check(StartWaitTimeoutMs(config, 8000) == 8000, "off: the old cap");
         config.worldWait = true;
         Check(StartWaitTimeoutMs(config, 8000) == 20000, "world wait: its cap");
-        config.stagger = true;
-        Check(StartWaitTimeoutMs(config, 8000) == 31000, "stagger: world cap + settle cap + preparation");
-    }
-
-    void TestGate()
-    {
-        using namespace replay::clipstart;
-        Config config;
-        Gate gate;
-        gate.Begin(1000, config);
-        Check(gate.CurrentPhase() == Phase::Off && !gate.Holding() && gate.CapBudget(4) == 4, "stagger off: nothing held");
-
-        config.stagger = true;
-        config.batch = 2;
-        gate.Begin(1000, config);
-        Check(gate.Holding() && gate.CapBudget(4) == 0, "held: no creates");
-        WorldFacts facts;
-        facts.iplsApplied = false;
-        Check(!gate.Feed(1100, facts).release, "IPLs pending: held");
-        facts.iplsApplied = true;
-        facts.collisionLoaded = false;
-        Check(!gate.Feed(1200, facts).release && gate.CurrentPhase() == Phase::WaitWorld, "no collision: held");
-        facts.collisionLoaded = true;
-        facts.streamingRequests = 40;
-        Check(!gate.Feed(1300, facts).release && gate.CurrentPhase() == Phase::Settle, "world ready: settle");
-        Check(!gate.Feed(1700, facts).release, "settle shorter than the minimum");
-        Check(!gate.Feed(1900, facts).release, "streaming busy past the minimum: still settling");
-        facts.streamingRequests = 3;
-        Step step = gate.Feed(1900, facts);
-        Check(step.release && !step.timedOut && gate.Batching(), "quiet streaming after the minimum: released");
-        Check(gate.CapBudget(4) == 2 && gate.CapBudget(1) == 1, "batches: the smaller of the two");
-        gate.PuppetsBuilt();
-        Check(gate.CurrentPhase() == Phase::Done && gate.CapBudget(4) == 4, "built: the normal budget");
-
-        gate.Begin(0, config);
-        facts.streamingRequests = 50;
-        gate.Feed(100, facts);
-        step = gate.Feed(3000, facts);
-        Check(!step.release, "the settle cap counts from the world ready, not from the begin");
-        step = gate.Feed(100 + config.settleCapMs, facts);
-        Check(step.release && !step.timedOut, "busy streaming: released at the settle cap");
-
-        gate.Begin(0, config);
-        facts.sceneLoaded = false;
-        Check(!gate.Feed(config.worldCapMs - 1, facts).release, "before the world cap");
-        step = gate.Feed(config.worldCapMs, facts);
-        Check(step.release && step.timedOut && gate.TimedOut(), "the world cap releases anyway");
-
-        gate.Begin(0, config);
-        gate.Reset();
-        Check(!gate.Holding() && !gate.Batching(), "a stop resets the gate");
     }
 
     void TestLogRule()
@@ -205,10 +130,8 @@ int RunWorldRecordingTests()
     TestPartNumbers();
     TestManualParts();
     TestCoverage();
-    TestAdaptive();
     TestMegabytesFor();
     TestWorldReady();
-    TestGate();
     TestLogRule();
     if (g_gmFailures == 0)
         std::puts("world recording tests passed.");

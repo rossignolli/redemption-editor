@@ -37,9 +37,8 @@ namespace replay::music
     // Music that stays on this long after the grace is music in the replay.
     inline constexpr std::uint64_t kPlayingAnomalyMs = 2000;
 
-    // MusicStop in RedemptionEditor.ini: 0 off, 1 public natives (default). 2 is
-    // reserved for the engine's StopAndReset (not built): it runs as 1 and says so
-    // in the log.
+    // The replay uses Natives (MusicStop left the ini); Off and
+    // ModeFromIni stay for the tests.
     enum class Mode : std::uint8_t
     {
         Off = 0,

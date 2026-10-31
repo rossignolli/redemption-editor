@@ -3,31 +3,10 @@
 // The mix probe, pure part (unit tested in ReplayCoreTests,
 // tests/mix_probe_tests.cpp).
 //
-// Why the replay can sound weaker than live ("no base", gunshots and horse
-// hooves weaker, most in gunfights). Six suspects, each answered from what the
-// probe records in both passes (record and play):
-// 1. listener: the distance from the sound's owner to the rendered camera
-//    (and to the live player ped, and the engine's own distance metric of
-//    the owner's ped audio) differs between the passes;
-// 2. player treatment: the engine treats the player's sounds apart (the
-//    player bit of the component row slot +0xB8, byte +0x40; the weapon
-//    audio predicate 0x2F02F8C and the mount predicate 0x8B69B0, which the
-//    replay's detours answer for the player's puppet and its horse; the
-//    movement audio 0x31815C4 reads the bit directly, not covered);
-// 3. variant: the engine picks another sound for the same owner and event
-//    (the NPC weapon sound chosen by distance);
-// 4. audio LOD: the ped audio holder's LOD (+0x45E8) drops components
-//    farther from the listener;
-// 5. music: the game's score plays live and is stopped in the replay
-//    (MusicStop=1, as a replay editor does);
-// 6. count: the replay makes far fewer sounds of a role and kind (hooves
-//    never created with the free camera): the five above only look at sounds
-//    that exist.
-//
-// Variants are matched by sound set (the ref's low dword), the ped steps
-// queued through S03 are steps (RequestFamilies), the LOD verdict looks both
-// ways, refused requests stay out of the counts and rates, and in the replay a
-// weapon's holder comes from the clip's WeaponPoint attachment (mix_probe.cpp).
+// Why the replay can sound weaker than live ("no base", gunshots and hooves
+// weaker, most in gunfights). Six suspects, each answered from what the probe
+// records in both passes: listener distance, the engine's player treatment,
+// the sound variant picked, audio LOD, music, and the count of sounds made.
 //
 // Each sound the census sees with a recorded owner is one Sample (owner,
 // role, kind, ref, distances, LOD, player flags); once a second a Listener
@@ -36,6 +15,7 @@
 // the probe ran), cut and trimmed with the clip. At the end of a playback
 // Compare puts both side by side over the clip time the playback covered.
 // Read only: nothing here changes what the game plays.
+// Research: docs/research/audio-listener.md
 
 #include "sound_owner_table.h" // Family, FamilyOfCaller, kWetHoofSet, census::kNoOwner
 
@@ -128,14 +108,15 @@ namespace replay::mixprobe
     }
 
     // The kind of a caller path: the innermost frame inside a function of a
-    // known system (sound_owner_table.h kCallerRanges, build 1491.50 .pdata
-    // extents).
-    inline bool KindOfCallers(const std::uint32_t* callers, std::size_t count, bool horseOwner, Kind& out)
+    // known system (sound_owner_table.h kCallerFunctions, `ranges`: the
+    // game's).
+    inline bool KindOfCallers(const std::uint32_t* callers, std::size_t count, bool horseOwner,
+        const soundowner::CallerRanges& ranges, Kind& out)
     {
         for (std::size_t n = 0; callers && n < count; ++n)
         {
             soundowner::Family family = soundowner::Family::Owned;
-            if (soundowner::FamilyOfCaller(callers[n], family) && KindOfFamily(family, horseOwner, out))
+            if (soundowner::FamilyOfCaller(callers[n], ranges, family) && KindOfFamily(family, horseOwner, out))
                 return true;
         }
         return false;
@@ -148,20 +129,20 @@ namespace replay::mixprobe
     // RequestFamilies); else generic.
     //
     // The ped steps reach the creator through the S03 create-and-play queue,
-    // so the census frames are the queue's drain (0x258a469/0x2f1d23e/
-    // 0x2ee86b1) and never the step's 0x318D0A0/0x318DAFE/0x318E828; the
+    // so the census frames are the queue's drain path (sound_check_core.h
+    // CallSites queue) and never the step's own calls; the
     // generic recorder finds the family on the queued request's frames
     // (sound_generic_core.h FamilyCaller of request.callers). The probe does
     // the same through `queued`.
     inline Kind KindOf(bool weaponOwner, bool horseOwner, std::uint64_t ref, const std::uint32_t* callers,
-        std::size_t count, const Kind* queued = nullptr)
+        std::size_t count, const soundowner::CallerRanges& ranges, const Kind* queued = nullptr)
     {
         if (weaponOwner)
             return Kind::Shot;
         if ((ref & 0xFFFFFFFFull) == soundowner::kWetHoofSet)
             return horseOwner ? Kind::HorseStep : Kind::Footstep;
         Kind kind = Kind::Generic;
-        if (KindOfCallers(callers, count, horseOwner, kind))
+        if (KindOfCallers(callers, count, horseOwner, ranges, kind))
             return kind;
         if (queued)
             return *queued;
@@ -189,14 +170,14 @@ namespace replay::mixprobe
         // The caller frames are kept raw: the horse rule is the owner's,
         // known only at the creator.
         void Note(std::uint64_t audio, std::uint64_t ref, std::uint64_t timeUs, const std::uint32_t* callers,
-            std::size_t count)
+            std::size_t count, const soundowner::CallerRanges& ranges)
         {
             soundowner::Family family = soundowner::Family::Owned;
             bool found = false;
             for (std::size_t n = 0; callers && n < count && !found; ++n)
             {
                 Kind probe = Kind::Generic;
-                found = soundowner::FamilyOfCaller(callers[n], family) && KindOfFamily(family, false, probe);
+                found = soundowner::FamilyOfCaller(callers[n], ranges, family) && KindOfFamily(family, false, probe);
             }
             if (!found)
                 return;

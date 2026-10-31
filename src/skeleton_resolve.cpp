@@ -26,7 +26,7 @@ namespace replay::skeleton
     // milliseconds on the large engine heaps, and the entity registry
     // resolves every recorded entity at the scan cadence.
     // The getter at vtable+0xB8 has three bodies (skeleton_walk.h); the
-    // generic one (0x65B6FC, every object vtable) is not called but read,
+    // generic one (in every object vtable) is not called but read,
     // field by field (rung 2): fragment = bit 6 of +0xB0 ? [+0x38] : null,
     // exactly what its 21 bytes do, so an object's walk reaches the fallback.
     bool GuardedPoseSkeletonWalk(ResolvedPoseSkeleton& result)
@@ -108,8 +108,8 @@ namespace replay::skeleton
 
     // Evidence for an entity whose skeleton walk failed (skeleton_walk.h):
     // which getter body, every pointer of both paths and whether the
-    // model's drawable has skeleton data at all (what CreateSkeleton,
-    // 0xE34A18, builds the skeleton from). The generic getter is read like
+    // model's drawable has skeleton data at all (what CreateSkeleton
+    // builds the skeleton from). The generic getter is read like
     // the resolver does; the ped getter is not called here.
     bool GuardedDescribeWalk(BYTE* entity, walk::Evidence& evidence)
     {

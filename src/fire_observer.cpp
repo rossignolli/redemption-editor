@@ -1,4 +1,6 @@
 #include "fire_observer.h"
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "mod_clock.h"
 #include "profiler.h"
@@ -20,7 +22,55 @@ namespace replay::fire
 {
     namespace
     {
-        constexpr std::uintptr_t kManagerRva = 0x4C3F1E0; // the fire manager object itself
+        namespace sig = replay::sig;
+
+        // StartFireCore(mgr, desc).
+        const sig::Signature kFireStart{"fire_start",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 56 48 8D A8 88 F9 FF FF 48 81 EC 60 07 00 00 48 8B F1 0F 29 70 "
+            "D8 48 8B CA",
+            0x12B5EA4};
+        // The fire shutdown (fire, instant, u8). For a map fire it passes the
+        // fire manager object itself to RemnantAdd.
+        const sig::Signature kFireStop{"fire_stop",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 20 57 41 54 41 55 41 56 41 57 48 81 EC 70 01 00 00 45 33 ED 0F "
+            "29 70 C8 83 B9 9C 00 00 00 0C 45 8A E0 0F 29 78 B8 44 8A FA",
+            0x12B2368};
+        const sig::Signature kFireStopRemnant{"fire_stop_remnant", kFireStop, sig::Offset{0x42},
+            "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ??", 0x12B23AA};
+        const sig::Signature kFireManager{"fire_manager", kFireStopRemnant, sig::Rel32{3, 7}, "", 0x4C3F1E0};
+        // RemnantAdd(mgr, fire) and RemnantRemove(mgr, entry, u8).
+        const sig::Signature kFireRemnantAdd{"fire_remnant_add",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 48 89 78 20 41 56 48 83 EC 20 48 8D A9 28 88 08 00",
+            0x126E6D8};
+        const sig::Signature kFireRemnantRemove{"fire_remnant_remove",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 57 41 56 41 57 48 83 EC 20 48 8D B1 28 88 08 00 48 8B D9 48 "
+            "8B CE 41 8A E8 48 8B FA",
+            0x12B31C4};
+        // TrySpread(fire, u8), called only by the fire update.
+        const sig::Signature kFireSpread{"fire_spread",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 56 41 57 48 8D A8 48 F3 FF FF",
+            0x12B3B54};
+        // The fire update (fire, dt): it adds the step to the fire's age
+        // (+0x188) and steps its effect seed (+0x1C8), the two fields
+        // WriteFireState writes.
+        const sig::Signature kFireUpdate{"fire_update",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 56 41 57 48 8D A8 F8 FD FF FF 48 81 EC D0 02 00 00 0F 29 70 "
+            "B8 48 8B F9 0F 29 78 A8 44 0F 29 40 98",
+            0x12BC2D4};
+        const sig::Signature kFireAgeStep{"fire_age_step", kFireUpdate, sig::Offset{0x6CB},
+            "F3 0F 58 87 88 01 00 00 F3 0F 11 87 88 01 00 00", 0x12BC99F};
+        const sig::Signature kFireSeedStep{"fire_seed_step", kFireUpdate, sig::Offset{0x104A},
+            "48 8B 8F C8 01 00 00 8B C1 48 69 D0 A7 FA DC 5C 48 C1 E9 20 48 03 D1 48 89 97 C8 01 00 00", 0x12BD31E};
+        // The area item update (item, &dt, out): the burnt radius (+0x64) set to
+        // the outer one (lane 3 of +0x30, +0x3C), the owner (+0xB8), the flags
+        // (+0xD0), the ember and glow (+0x80, +0x88).
+        const sig::Signature kFireItemUpdate{"fire_area_item_update",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 48 83 EC 30 8A 81 D1 00 00 00",
+            0x12C0B88};
+        const sig::Signature kFireItemBurnt{"fire_item_burnt", kFireItemUpdate, sig::Offset{0x136},
+            "66 0F 70 43 30 FF F3 0F 11 43 64 48 39 BB B8 00 00 00 75 13 F6 83 D0 00 00 00 02", 0x12C0CBE};
+        const sig::Signature kFireItemEmberGlow{"fire_item_ember_glow", kFireItemUpdate, sig::Offset{0x199},
+            "0F 2F 8B 80 00 00 00 72 09 0F 2F 8B 88 00 00 00", 0x12C0D21};
         constexpr std::size_t kFiresOffset = 0x10;
         constexpr std::size_t kRemnantsOffset = 0xF820;
         constexpr std::size_t kRemnantBytes = 0xF0;
@@ -30,24 +80,16 @@ namespace replay::fire
 
         struct Hook
         {
-            std::uintptr_t rva;
-            std::uint8_t signature[24];
+            const sig::Signature* signature;
             void* target = nullptr;
         };
-        Hook g_start{0x12B5EA4, {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x20, 0x55, 0x57, 0x41, 0x56, 0x48,
-                                 0x8D, 0xA8, 0x88, 0xF9, 0xFF, 0xFF, 0x48, 0x81}};
-        Hook g_stop{0x12B2368, {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x68, 0x18, 0x48, 0x89, 0x70, 0x20, 0x57,
-                                0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57}};
-        Hook g_remAdd{0x126E6D8, {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48,
-                                  0x89, 0x78, 0x20, 0x41, 0x56, 0x48, 0x83, 0xEC}};
-        Hook g_remRemove{0x12B31C4, {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
-                                     0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20}};
-        Hook g_fireUpdate{0x12BC2D4, {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-                                      0x41, 0x57, 0x48, 0x8D, 0xA8, 0xF8, 0xFD, 0xFF}};
-        Hook g_itemUpdate{0x12C0B88, {0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x48, 0x83,
-                                      0xEC, 0x30, 0x8A, 0x81, 0xD1, 0x00, 0x00, 0x00}};
-        Hook g_spread{0x12B3B54, {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-                                  0x41, 0x57, 0x48, 0x8D, 0xA8, 0x48, 0xF3, 0xFF}};
+        Hook g_start{&kFireStart};
+        Hook g_stop{&kFireStop};
+        Hook g_remAdd{&kFireRemnantAdd};
+        Hook g_remRemove{&kFireRemnantRemove};
+        Hook g_fireUpdate{&kFireUpdate};
+        Hook g_itemUpdate{&kFireItemUpdate};
+        Hook g_spread{&kFireSpread};
 
         using StartFn = void*(__fastcall*)(void*, void*);
         using StopFn = void(__fastcall*)(void*, std::uint8_t, std::uint8_t);
@@ -84,6 +126,7 @@ namespace replay::fire
         std::atomic<std::int32_t> g_inFlight{0};
         std::uintptr_t g_base = 0;
         std::uintptr_t g_imageEnd = 0;
+        std::uintptr_t g_manager = 0; // the fire manager, found at install
         LARGE_INTEGER g_frequency{};
         bool g_installed = false;
 
@@ -103,17 +146,12 @@ namespace replay::fire
             return replay::clock::NowUs(); // mod_clock.h (no 21-day overflow)
         }
 
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size); // guarded_memory.h
-        }
-
         bool GuardedRead(void* out, const void* source, std::size_t size)
         {
             return replay::mem::Copy(out, source, size); // guarded_memory.h
         }
 
-        std::uintptr_t Manager() { return g_base + kManagerRva; }
+        std::uintptr_t Manager() { return g_manager; }
 
         std::uint32_t CallerRva()
         {
@@ -125,6 +163,8 @@ namespace replay::fire
 
         int SlotOfAddress(std::uintptr_t fire)
         {
+            if (!Manager())
+                return -1;
             const std::uintptr_t first = Manager() + kFiresOffset;
             if (fire < first || fire >= first + kFireCount * kFireBytes || (fire - first) % kFireBytes)
                 return -1;
@@ -133,6 +173,8 @@ namespace replay::fire
 
         int RemnantOfAddress(std::uintptr_t entry)
         {
+            if (!Manager())
+                return -1;
             const std::uintptr_t first = Manager() + kRemnantsOffset;
             if (entry < first || entry >= first + kRemnantMax * kRemnantBytes || (entry - first) % kRemnantBytes)
                 return -1;
@@ -362,8 +404,8 @@ namespace replay::fire
 
         bool HookOne(Hook& hook, void* detour, void** trampoline, std::string& error, const char* name)
         {
-            void* target = reinterpret_cast<void*>(g_base + hook.rva);
-            if (!GuardedCompare(target, hook.signature, sizeof(hook.signature)))
+            void* target = reinterpret_cast<void*>(sig::Find(*hook.signature));
+            if (!target)
             {
                 error = std::string(name) + "_signature_mismatch";
                 return false;
@@ -394,55 +436,29 @@ namespace replay::fire
             hook.target = nullptr;
         }
 
-        int RecordException(EXCEPTION_POINTERS* pointers, std::uint32_t& code);
+        // The faulting address of the last guarded call (RVA when inside the
+        // game image), for the log: code alone does not say which call failed.
+        std::uintptr_t g_lastExceptionAddress = 0;
+        bool Fault(std::uint32_t& code)
+        {
+            g_lastExceptionAddress = engine::LastFaultAddress();
+            return engine::Failed(code);
+        }
+
         bool GuardedStart(StartFn fn, void* manager, std::uint8_t* desc, void*& fire, std::uint32_t& code)
         {
-            __try
-            {
-                fire = fn(manager, desc);
-                return true;
-            }
-            __except (RecordException(GetExceptionInformation(), code))
-            {
-                return false;
-            }
+            return engine::Call(engine::kFireStart, reinterpret_cast<std::uintptr_t>(fn), fire, manager, desc) || Fault(code);
         }
 
         bool GuardedStop(StopFn fn, void* fire, std::uint8_t instant, std::uint8_t arg3, std::uint32_t& code)
         {
-            __try
-            {
-                fn(fire, instant, arg3);
-                return true;
-            }
-            __except (RecordException(GetExceptionInformation(), code))
-            {
-                return false;
-            }
+            return engine::Call(engine::kFireStop, reinterpret_cast<std::uintptr_t>(fn), fire, instant, arg3) || Fault(code);
         }
 
         bool GuardedRemRemove(RemRemoveFn fn, void* manager, void* entry, std::uint32_t& code)
         {
-            __try
-            {
-                fn(manager, entry, 0);
-                return true;
-            }
-            __except (RecordException(GetExceptionInformation(), code))
-            {
-                return false;
-            }
-        }
-
-        // The faulting address of the last guarded call (RVA when inside the
-        // game image), for the log: code alone does not say which call failed.
-        std::uintptr_t g_lastExceptionAddress = 0;
-        int RecordException(EXCEPTION_POINTERS* pointers, std::uint32_t& code)
-        {
-            code = pointers && pointers->ExceptionRecord ? pointers->ExceptionRecord->ExceptionCode : 0;
-            g_lastExceptionAddress = pointers && pointers->ExceptionRecord
-                ? reinterpret_cast<std::uintptr_t>(pointers->ExceptionRecord->ExceptionAddress) : 0;
-            return EXCEPTION_EXECUTE_HANDLER;
+            return engine::Call(engine::kFireRemnantRemove, reinterpret_cast<std::uintptr_t>(fn), manager, entry, 0) ||
+                Fault(code);
         }
         std::string ExceptionText(std::uint32_t code)
         {
@@ -461,21 +477,24 @@ namespace replay::fire
         if (g_installed)
             return true;
         QueryPerformanceFrequency(&g_frequency);
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
+        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr)); // the image range, for the log
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
         g_base = reinterpret_cast<std::uintptr_t>(base);
         g_imageEnd = g_base + nt->OptionalHeader.SizeOfImage;
-        for (Hook* hook : {&g_start, &g_stop, &g_remAdd, &g_remRemove, &g_spread, &g_fireUpdate, &g_itemUpdate})
+        // The hooked functions, then the manager the detours place fires in.
+        for (const sig::Signature* signature : {g_start.signature, g_stop.signature, g_remAdd.signature,
+                 g_remRemove.signature, g_spread.signature, g_fireUpdate.signature, g_itemUpdate.signature, &kFireManager})
         {
-            if (!GuardedCompare(reinterpret_cast<void*>(g_base + hook->rva), hook->signature, sizeof(hook->signature)))
+            if (!sig::Find(*signature))
             {
                 char text[64]{};
-                std::snprintf(text, sizeof(text), "fire_signature_mismatch_0x%X", static_cast<unsigned>(hook->rva));
+                std::snprintf(text, sizeof(text), "fire_signature_mismatch_0x%X", static_cast<unsigned>(signature->rva));
                 error = text;
                 return false;
             }
         }
+        g_manager = sig::Find(kFireManager);
         const MH_STATUS init = MH_Initialize();
         if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED)
         {
@@ -762,24 +781,34 @@ namespace replay::fire
 
     namespace
     {
-        constexpr std::uintptr_t kAreaRva = 0x4E2F5B0;
-        constexpr std::uintptr_t kAreaClearRva = 0x12A35E4;
-        constexpr std::uint8_t kAreaClearSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x57,
-            0x48, 0x83, 0xEC, 0x60, 0x41, 0x0F, 0x28, 0x00, 0x49, 0x8B, 0xD8, 0x0F, 0x28, 0x0A, 0x4C, 0x8D};
-        using AreaClearFn = void(__fastcall*)(void*, const float*, const float*, std::uint8_t);
-
-        bool GuardedAreaClear(AreaClearFn fn, void* area, const float* center, const float* radius, std::uint32_t& code)
+        // The area fire system. A walk over its items loads the area object and
+        // its item storage (the pointer at area +0x58: 2048 items of 0xE0),
+        // divides by the item size and tests an item's bound (lane 3 of +0x40,
+        // +0x4C).
+        const sig::Signature kFireAreaWalk{"fire_area_walk",
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B 59 20 48 8B F2 48 85 DB 0F 84 ?? ?? ?? ?? "
+            "48 8D 2D ?? ?? ?? ?? 48 8B 3B 48 B8 25 49 92 24 49 92 24 49 48 8B CF 48 2B 0D ?? ?? ?? ?? 48 F7 E9 48 C1 FA "
+            "06 48 8B C2 48 C1 E8 3F 48 03 D0 0F B7 C2 8B D0 44 8B C0 48 C1 EA 05 41 83 E0 1F 8B 8C 95 D0 20 00 00 8B C1 "
+            "44 0F AB C0 44 0F A3 C1 89 84 95 D0 20 00 00 72 29 66 0F 70 47 40 FF",
+            0x129E354};
+        const sig::Signature kFireArea{"fire_area", kFireAreaWalk, sig::Rel32{0x27, 0x2B}, "", 0x4E2F5B0};
+        const sig::Signature kFireAreaItems{"fire_area_items", kFireAreaWalk, sig::Rel32{0x3E, 0x42}, "", 0x4E2F608};
+        // The region clear (area, &centre, &radius splat, full).
+        const sig::Signature kFireAreaClear{"fire_area_clear",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 48 83 EC 60 41 0F 28 00 49 8B D8 0F 28 0A 4C 8D 40 B8 48 "
+            "8B FA 41 8A F1 48 8D 50 C8 48 8B E9",
+            0x12A35E4};
+        // An area item's flame ring: its width (+0x6C) against the burnt
+        // radius (+0x64).
+        const sig::Signature kFireItemRing{"fire_item_ring",
+            "48 8B C4 48 89 58 08 57 48 83 EC 60 0F 29 70 E8 48 8B D9 8A 89 D0 00 00 00 49 8B F8 0F 29 78 D8 44 0F 29 40 "
+            "C8 44 0F 29 48 B8",
+            0x1280D1C};
+        const sig::Signature kFireItemWidth{"fire_item_width", kFireItemRing, sig::Offset{0x2E3},
+            "F3 0F 5C 7B 64 0F 57 C0 F3 0F 5E 7B 6C", 0x1280FFF};
+        bool GuardedAreaClear(std::uintptr_t fn, void* area, const float* center, const float* radius, std::uint32_t& code)
         {
-            __try
-            {
-                fn(area, center, radius, 1);
-                return true;
-            }
-            __except (RecordException(GetExceptionInformation(), code))
-            {
-                return false;
-            }
+            return engine::Call(engine::kFireAreaClear, fn, area, center, radius, 1) || Fault(code);
         }
     }
 
@@ -790,8 +819,9 @@ namespace replay::fire
             error = "fire_not_installed";
             return false;
         }
-        const auto* target = reinterpret_cast<const std::uint8_t*>(g_base + kAreaClearRva);
-        if (!GuardedCompare(target, kAreaClearSignature, sizeof(kAreaClearSignature)))
+        const std::uintptr_t clear = sig::Find(kFireAreaClear);
+        const std::uintptr_t area = sig::Find(kFireArea);
+        if (!clear || !area)
         {
             error = "area_clear_signature_mismatch";
             return false;
@@ -799,8 +829,7 @@ namespace replay::fire
         alignas(16) float c[4] = {center[0], center[1], center[2], 0.0f};
         alignas(16) float r[4] = {radius, radius, radius, radius};
         std::uint32_t code = 0;
-        if (!GuardedAreaClear(reinterpret_cast<AreaClearFn>(g_base + kAreaClearRva),
-                reinterpret_cast<void*>(g_base + kAreaRva), c, r, code))
+        if (!GuardedAreaClear(clear, reinterpret_cast<void*>(area), c, r, code))
         {
             error = ExceptionText(code);
             return false;
@@ -810,7 +839,6 @@ namespace replay::fire
 
     namespace
     {
-        constexpr std::size_t kAreaItemsPtr = 0x58;
         constexpr std::uint32_t kAreaItems = 2048;
         constexpr std::size_t kAreaItemBytes = 0xE0;
 
@@ -891,7 +919,9 @@ namespace replay::fire
         std::uintptr_t AreaItemStorage()
         {
             std::uintptr_t storage = 0;
-            GuardedRead(&storage, reinterpret_cast<void*>(g_base + kAreaRva + kAreaItemsPtr), sizeof(storage));
+            const std::uintptr_t pointer = sig::Find(kFireAreaItems);
+            if (pointer)
+                GuardedRead(&storage, reinterpret_cast<void*>(pointer), sizeof(storage));
             return storage;
         }
     }
@@ -920,7 +950,10 @@ namespace replay::fire
             error = "fire_not_installed";
             return false;
         }
-        const std::uintptr_t storage = AreaItemStorage();
+        // Only the fields the engine's item code is seen using.
+        static const bool proven = sig::Find(kFireAreaWalk) && sig::Find(kFireItemBurnt) &&
+            sig::Find(kFireItemEmberGlow) && sig::Find(kFireItemWidth);
+        const std::uintptr_t storage = proven ? AreaItemStorage() : 0;
         if (!storage || !GuardedWriteItems(storage, writes))
         {
             error = "area_items_unwritable";
@@ -931,12 +964,16 @@ namespace replay::fire
 
     std::uint64_t FireAddress(int slot)
     {
-        return slot < 0 ? 0 : static_cast<std::uint64_t>(Manager() + kFiresOffset + static_cast<std::uintptr_t>(slot) * kFireBytes);
+        return slot < 0 || !Manager()
+            ? 0
+            : static_cast<std::uint64_t>(Manager() + kFiresOffset + static_cast<std::uintptr_t>(slot) * kFireBytes);
     }
 
     std::uint64_t RemnantAddress(int index)
     {
-        return index < 0 ? 0 : static_cast<std::uint64_t>(Manager() + kRemnantsOffset + static_cast<std::uintptr_t>(index) * kRemnantBytes);
+        return index < 0 || !Manager()
+            ? 0
+            : static_cast<std::uint64_t>(Manager() + kRemnantsOffset + static_cast<std::uintptr_t>(index) * kRemnantBytes);
     }
 
     int SlotOf(const void* fire) { return SlotOfAddress(reinterpret_cast<std::uintptr_t>(fire)); }
@@ -955,7 +992,9 @@ namespace replay::fire
             error = "fire_not_installed"; // the layout gate: signatures verified
             return false;
         }
-        if (!data || !FireStateFieldAllowed(offset, size))
+        // A field the fire update itself uses (the age, the seed).
+        if (!data || !FireStateFieldAllowed(offset, size) ||
+            !sig::Find(offset == kFireAgeOffset ? kFireAgeStep : kFireSeedStep))
         {
             error = "fire_field_unknown";
             return false;

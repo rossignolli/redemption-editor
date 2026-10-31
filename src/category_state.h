@@ -4,13 +4,13 @@
 // engine side (the cause, the evidence and the layout are in
 // category_state_core.h).
 //
-// - Recording (CategoryStateRecord=1): every static category's values (the
+// - Recording: every static category's values (the
 //   controllers' sum the controller manager wrote: volume, the two
 //   multipliers, pitch, the filters), read by hash through the category map
 //   at most 20 times a second, stored on first sight and on change (clip
 //   section CATS).
 // - Playback (CategoryStateReplay=1): while the replay owns the world and the
-//   clip has CATS, a detour of the resolver 0x251C310 (prologue and sites
+//   clip has CATS, a detour of the resolver (prologue and sites
 //   checked, installed with the other hooks at load, forwards every call)
 //   writes the recorded volume (CategoryStateFields=all: every field) into
 //   the category right before the resolver reads it. The values at the
@@ -40,12 +40,10 @@ namespace replay::catstate
 {
     struct Config
     {
-        bool record = true;                 // CategoryStateRecord
         bool replay = true;                 // CategoryStateReplay
-        bool fieldsAll = false;             // CategoryStateFields=all
-        std::vector<std::uint32_t> keepLive; // CategoryStateKeepLive (hashes)
+        std::vector<std::uint32_t> keepLive; // kDefaultKeepLiveText (hashes)
         bool log = false;                   // CategoryStateLog
-        std::vector<std::uint32_t> watch;   // CategoryStateWatch (category indices)
+        std::vector<std::uint32_t> watch;   // kDefaultWatchText (category indices)
     };
     void Configure(const Config& config);
     const Config& GetConfig();

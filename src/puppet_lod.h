@@ -3,39 +3,22 @@
 // The ped and horse puppets kept at full detail and with their skeleton
 // updated while the replay plays them.
 //
-// The engine can draw a puppet at a low LOD (e.g. a hat as a white low polygon
-// block above the head) and, in those frames, the pose finalizer does not run
-// for it (the replay's pose is not written: POSE_JERK causes=not_written), so
-// the puppet blinks and jumps. Rung 1, on the replay's own puppets:
-//  - SET_PED_LOD_MULTIPLIER (0xDC2C5C242AAC342B; handler 0xFBEDFC ->
-//    0xFED924, writes the multiplier and the entity's LOD distance
-//    multiplier x 100) high, so the puppet keeps its high LOD far away;
-//  - SET_ENTITY_ALWAYS_PRERENDER (0xACAD101E1FB66689; 0xF8E744 -> 0xF9EFB8,
-//    the global list 0x3F2FB50): the pre-render (skeleton matrices for the
-//    draw) runs even off screen;
-//  - FORCE_PED_AI_AND_ANIMATION_UPDATE (0x2208438012482A1A; 0xFB3970 ->
-//    0xFAF2C0 -> 0xFCC720, reset flags of the ped's update) on a tick that
-//    finds no pose write since the last one (the frame in between rendered
-//    an old pose).
-// Undone when the puppet is deleted (prerender off before the entity goes,
-// so the global list never keeps it; multiplier back to 1).
+// The engine can draw a puppet at a low LOD and skip its animation update, so
+// the finalizer does not write the replay's pose (POSE_JERK
+// causes=not_written) and the puppet blinks and jumps. Rung 1, on the replay's
+// own puppets: SET_PED_LOD_MULTIPLIER high, SET_ENTITY_ALWAYS_PRERENDER, and
+// FORCE_PED_AI_AND_ANIMATION_UPDATE on a tick with no pose write since the
+// last one. Undone when the puppet is deleted (prerender off before the entity
+// goes, so the global list never keeps it; multiplier back to 1).
 //
-// No native tells the draw LOD chosen for a frame. A skipped finalizer is the
-// engine skipping the puppet's animation update (the finalizer is reached only
-// from the motion tree: no update, no call), not the draw LOD: it happens at
-// 2 m from the camera too, far more often when the hidden player stays far
-// from the scene, and FORCE_PED_AI_AND_ANIMATION_UPDATE on a stale tick does
-// not make the next tick write. As a replay writes the ped's skeleton every
-// frame whatever the animation passes do, a puppet the engine skipped gets the
-// published pose from the script thread every tick for kScriptPoseHoldTicks
-// after its last skipped tick (ApplyOverrideNow, the guarded write already
-// used at every arm and every tick for vehicles). Two counts: own writes (the
-// finalizer's: the engine updated the puppet) and any writes (own plus the
-// script's). A stale tick is a tick without an own write; an episode
-// (puppet_low_lod: the puppet shown with an old pose, on screen, for
-// kLowLodRunTicks ticks in a row while the playhead moved; one
-// POSE_V2_PUPPET_LOW_LOD line per episode) needs a run of ticks without any
-// write.
+// Because the forced update alone does not make the next tick write, a puppet
+// the engine skipped also gets the published pose from the script thread
+// every tick for kScriptPoseHoldTicks after its last skipped tick
+// (ApplyOverrideNow, the guarded write). Own writes (the finalizer's) and any
+// writes (own plus script) are counted apart; an episode (puppet_low_lod, one
+// POSE_V2_PUPPET_LOW_LOD line) is kLowLodRunTicks ticks in a row on screen
+// without any write while the playhead moved.
+// Research: docs/research/peds-puppets.md
 //
 // Pure: unit tested in tests/lod_doors_camera_tests.cpp.
 
@@ -44,14 +27,14 @@
 
 namespace replay::lod
 {
+    // The puppets' LOD multiplier (SET_PED_LOD_MULTIPLIER).
+    constexpr std::uint32_t kLodMultiplier = 10;
+
     struct Config
     {
-        std::uint32_t multiplier = 10; // PuppetLodMultiplier (0: native not called)
-        bool prerender = true;         // PuppetAlwaysPrerender
-        bool forceUpdate = true;       // PuppetForceAnimUpdate
         bool scriptPose = true;        // PuppetScriptPose
-        // PuppetAnimLod0: the puppet's anim director gets LOD 0 and visible
-        // through the detour of 0x2BD410C (anim_lod_hook.h), as the recorded
+        // RecordPedAnimLod0 (the same detour's support switch): the puppet's anim director gets LOD 0 and visible
+        // through the LOD setter's detour (anim_lod_hook.h), as the recorded
         // ped had while it was recorded. The skeleton is the replay's anyway;
         // what this keeps is the expressions that write more than bones (the
         // animated normal maps of a horse's muscles, track 0x17), which the
@@ -129,11 +112,8 @@ namespace replay::lod
             verdict.stale = true;
             ++state.staleTicks;
             ++state.skipRun;
-            if (config.forceUpdate)
-            {
-                verdict.force = true;
-                ++state.forcedTicks;
-            }
+            verdict.force = true;
+            ++state.forcedTicks;
             if (config.scriptPose)
                 state.scriptHold = kScriptPoseHoldTicks;
             if (state.skipRun >= kLowLodRunTicks && !state.inSkip)

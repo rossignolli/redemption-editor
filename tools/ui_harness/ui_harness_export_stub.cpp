@@ -49,11 +49,23 @@ namespace render_export
 
     std::string ExportController::ReShadeProblem() const { return stub::Get().reshadeProblem; }
 
-    bool ExportController::RequestExport(const replay::exportchannel::Settings&, const std::vector<Chapter>&, std::uint32_t& requestSeq)
+    bool ExportController::RequestExport(const replay::exportchannel::Settings&, const std::vector<Chapter>&, std::uint32_t& requestSeq,
+        const std::string&, const ResumeOffer*)
     {
         requestSeq = 0;
         return false;
     }
+
+    bool ExportController::FindResumable(const replay::exportchannel::Settings&, const std::string&, ResumeOffer& offer)
+    {
+        offer = {};
+        return false;
+    }
+
+    void ExportController::DropResumable(const ResumeOffer&) {}
+
+    // The export's memory probe (export_memory.cpp is not in the harness).
+    void MemoryProbe::Close() {}
 
     bool ExportController::RequestProjectExport(const replay::exportchannel::Settings&, const std::vector<std::string>&, std::uint32_t& requestSeq)
     {

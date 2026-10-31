@@ -14,6 +14,8 @@
     <ScriptHookRdr2SdkDir Condition="'$(ScriptHookRdr2SdkDir)'=='' and Exists('$(MSBuildThisFileDirectory)external\ScriptHookRDR2_SDK\inc\main.h')">$(MSBuildThisFileDirectory)external\ScriptHookRDR2_SDK\</ScriptHookRdr2SdkDir>
     <ScriptHookRdr2SdkDir Condition="'$(ScriptHookRdr2SdkDir)'==''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))</ScriptHookRdr2SdkDir>
     <ScriptHookRdr2SdkDir Condition="!HasTrailingSlash('$(ScriptHookRdr2SdkDir)')">$(ScriptHookRdr2SdkDir)\</ScriptHookRdr2SdkDir>
+    <!-- Third party headers are external: their warnings are not ours (ExternalWarningLevel). -->
+    <ExternalIncludePath>$(ScriptHookRdr2SdkDir)inc;$(ExternalIncludePath)</ExternalIncludePath>
     <!-- The game folder (where RDR2.exe is). No default: the build copies its output there only
          when it is set and DeployAfterBuild is not false. -->
     <RDR2GameDir Condition="'$(RDR2GameDir)'!='' and !HasTrailingSlash('$(RDR2GameDir)')">$(RDR2GameDir)\</RDR2GameDir>
@@ -24,9 +26,27 @@
          <VERSION>\<name>-<time>\. Empty (the default) keeps nothing. -->
     <ReplaySymbolsDir Condition="'$(ReplaySymbolsDir)'!='' and !HasTrailingSlash('$(ReplaySymbolsDir)')">$(ReplaySymbolsDir)\</ReplaySymbolsDir>
   </PropertyGroup>
+  <!-- Version information (src/version.rc) for the shipped binaries: a project opts in with
+       RedemptionVersionBinary (1 asi, 2 core, 3 add-on, 4 host); the numbers come from VERSION. -->
+  <PropertyGroup>
+    <RedemptionVersionText>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</RedemptionVersionText>
+    <RedemptionVersionNumbers>$([System.Text.RegularExpressions.Regex]::Match('$(RedemptionVersionText)', '^[0-9]+\.[0-9]+\.[0-9]+').Value)</RedemptionVersionNumbers>
+    <RedemptionVersionMajor>$([System.Version]::Parse('$(RedemptionVersionNumbers)').Major)</RedemptionVersionMajor>
+    <RedemptionVersionMinor>$([System.Version]::Parse('$(RedemptionVersionNumbers)').Minor)</RedemptionVersionMinor>
+    <RedemptionVersionPatch>$([System.Version]::Parse('$(RedemptionVersionNumbers)').Build)</RedemptionVersionPatch>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(RedemptionVersionBinary)'!=''">
+    <ResourceCompile>
+      <PreprocessorDefinitions>RE_BINARY=$(RedemptionVersionBinary);RE_VER_MAJOR=$(RedemptionVersionMajor);RE_VER_MINOR=$(RedemptionVersionMinor);RE_VER_PATCH=$(RedemptionVersionPatch);RE_VERSION_TEXT=$(RedemptionVersionText);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup Condition="'$(RedemptionVersionBinary)'!=''">
+    <ResourceCompile Include="$(MSBuildThisFileDirectory)src\version.rc" />
+  </ItemGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <AdditionalIncludeDirectories>$(ScriptHookRdr2SdkDir)inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
     </ClCompile>
   </ItemDefinitionGroup>
   <Target Name="RedemptionCheckScriptHookSdk" BeforeTargets="PrepareForBuild" Condition="'$(RedemptionUsesScriptHookSdk)'=='true'">

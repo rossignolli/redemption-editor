@@ -95,7 +95,10 @@ namespace
     void TestSpeechControllerRows()
     {
         using namespace replay::puppetaudio;
-        Check(SpeechControllerCaller(0x2FA10CF) && SpeechControllerCaller(0x2FA0DCC) && !SpeechControllerCaller(0x2588C2F),
+        // The speech controller's two calls as the 1491.50 exe returns from them.
+        const SpeechControllerCallers controller{0x2FA10CFu, 0x2FA0DCCu};
+        Check(SpeechControllerCaller(0x2FA10CF, controller) && SpeechControllerCaller(0x2FA0DCC, controller) &&
+                !SpeechControllerCaller(0x2588C2F, controller) && !SpeechControllerCaller(0, SpeechControllerCallers{}),
             "item 2: the speech controller's call sites");
         Check(SpeechRowRule(true, true, LineState::Played, 0, 250) == SpeechRow::LeaveToLine,
             "item 2: the line played: its sound is the line's");
@@ -112,6 +115,21 @@ namespace
     // ------------------------------------------------------------ variants
 
     using namespace replay::census;
+
+    // The 1491.50 exe's call sites (audio::CensusCallSites in the game).
+    CallSites KnownSites()
+    {
+        CallSites s;
+        const std::uint32_t queue[kQueueFrames] = {0x258A469u, 0x2F1D23Eu, 0x2F1CEF8u, 0x2EE86B1u, 0x25A74DBu};
+        for (std::size_t n = 0; n < kQueueFrames; ++n)
+            s.queue[n] = queue[n];
+        s.speechWave = 0x2FA10CFu;
+        s.speechLayer = 0x2FA0DCCu;
+        s.creatorEntry = 0x251688Du;
+        s.byRefCore = 0x2589214u;
+        s.byHashCore = 0x25890E7u;
+        return s;
+    }
 
     SummaryKey Key(std::uint32_t owner, OwnerClass cls, std::uint64_t ref, const std::uint32_t (&path)[kPathDepth])
     {
@@ -143,7 +161,7 @@ namespace
                 play.Cover(ms - 33 < from ? from : ms - 33, ms);
             }
         }
-        DiffResult Run() const { return Diff(recSummary, playSummary, play.Passes(), IgnoreList{}); }
+        DiffResult Run() const { return Diff(recSummary, playSummary, play.Passes(), IgnoreList{}, KnownSites()); }
     };
 
     const Finding* Find(const DiffResult& diff, FindingKind kind, std::uint32_t owner, std::uint64_t ref)
@@ -164,10 +182,13 @@ namespace
 
     void TestSameRequestVariant()
     {
-        Check(SameRequestPath(kWeaponPath, kWeaponPath), "item 3: the weapon fire path is one request");
-        Check(!SameRequestPath(kQueuePath, kQueuePath), "item 3: the shared create-and-play queue path is not");
+        const CallSites sites = KnownSites();
+        Check(SameRequestPath(kWeaponPath, kWeaponPath, sites), "item 3: the weapon fire path is one request");
+        Check(!SameRequestPath(kQueuePath, kQueuePath, sites), "item 3: the shared create-and-play queue path is not");
         std::uint32_t other[kPathDepth] = {0x2588eda, 0x2588db0, 0x2efaeaf, 0x2f0b883, 0x2f0deaa};
-        Check(!SameRequestPath(kWeaponPath, other), "item 3: another frame is another request");
+        Check(!SameRequestPath(kWeaponPath, other, sites), "item 3: another frame is another request");
+        Check(SameRequestPath(kQueuePath, kQueuePath, CallSites{}),
+            "item 3: the queue path is not told apart when its sites were not found");
         Check(SubstituteCounts(6.0, 6.0) && SubstituteCounts(5.0, 5.0) && !SubstituteCounts(6.0, 1.0) &&
                 !SubstituteCounts(2.0, 9.0) && !SubstituteCounts(0.0, 3.0),
             "item 3: about the same number");

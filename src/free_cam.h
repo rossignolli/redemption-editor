@@ -82,7 +82,7 @@ namespace replay::freecam
         float baseSpeed = 5.0f;        // m/s
         float fastSpeed = 15.0f;       // m/s with Shift
         float slowFactor = 0.25f;      // with Ctrl
-        float speedScale = 1.0f;       // the wheel: 0.25 .. 4
+        float speedScale = 1.0f;       // the wheel: 0.05 .. 4
         float turnRate = 75.0f;        // degrees/s, arrows and the pad's stick
         float rollRate = 37.5f;        // degrees/s
         float fovRate = 30.0f;         // degrees/s

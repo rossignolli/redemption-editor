@@ -3,38 +3,26 @@
 // Conversation (scripted) lines asked again the engine's own way: with the
 // recorded sound set and the recorded duck byte. Without them a replayed
 // scripted line plays in another category and ducks itself, a ramp per line
-// deeper the nearer the speaker is. Engine facts (build 1491.50):
-//   - the sound set: the line's data +0xE8..+0xF7 is params +0xC0..+0xCF
-//     (data init 0x2FA92C0 at 0x2FA9327): +0xE8 the set object, +0xF0 its
-//     name hash, +0xF4 its metadata ref. The wave (0x2FA6AEC, name
-//     0x75E4276D) and the five type 2 layers (0x2FB3E6C) are built from it
-//     (0x252A888: low dword the set's ref, high dword the index | 0x800000),
-//     so the set picks the line's sounds and with them their category.
-//     Params +0xC0 is written only by the SpeechParams applier 0x2F967E8
-//     (meta +0x14: +0xC8 = hash, 0x252AD8C + 0x252B408 give the ref ->
-//     +0xCC, 0x252B194 the object -> +0xC0) and by the context applier
-//     0x2F965D0 (ctx +0x10, the same three calls), which fills it only while
-//     +0xC0 is still 0 (0x2F965F3). The replay's ctor (0x2F91EA4) applies no
-//     SpeechParams, so the context's set wins and a replayed scripted line
-//     picks the AI lines' set and category;
-//   - the duck byte: params +0x19E -> line +0x2BE bit 5 (0x2FAC063). A d8 2
-//     line of type 1 or 2 with it raises every frame the speech duck level
-//     (0x2FCC224 -> 0x5B5BF24, a curve of the line's distance to the
-//     listener) that starts the mix scene 0x576520E1 (0x2F2D1EC). Live the
-//     scripted lines had it clear (bits 0x02480000); the ctor sets it
-//     (0x2FAEE3B), so every replayed scripted line would duck its own voice
-//     (the ambient speech category, where the context's set put it).
+// deeper the nearer the speaker is: the replay's params ctor applies no
+// SpeechParams, so the context's sound set wins (the AI lines' set and
+// category), and the ctor sets the duck byte the live scripted lines had
+// clear.
+//
 // So, with SpeechConversationLive=1, every replayed human line is asked with
 // its recorded duck byte and its recorded sound set: by hash with the
 // applier's own three calls when the clip has it (SPRQ v2), else (an older
 // clip) by the set ref of the line's own recorded layer sounds (ESND rows of
-// the speaker made by the layer call 0x2FA0DCC at the line's start; type 2
-// lines only, see SetFromSoundsAllowed). The replay writes params
-// +0xC0/+0xC8/+0xCC before the direct entry as 0x2F967E8 does, so the
+// the speaker made by the layer call, kLayerSoundCall, at the line's start;
+// type 2 lines only, see SetFromSoundsAllowed). The replay writes params
+// +0xC0/+0xC8/+0xCC before the direct entry as the applier does, so the
 // context applier leaves them.
+//
+// Evidence: offline dump of build 1491.50.
+// Research: docs/research/speech-duck-and-slots.md
 //
 // Pure: unit tested in ReplayCoreTests (speech_conversation_tests.cpp).
 
+#include "game_sig_core.h"
 #include "speech_request.h"
 #include "speech_script_path.h"
 
@@ -46,38 +34,50 @@
 
 namespace replay::speech::conversation
 {
-    // Return addresses of the two sound creations built from the line's set.
-    constexpr std::uint32_t kWaveSoundCaller = 0x2FA10CF;  // 0x2FA10A4, the wave (data +0xC0)
-    constexpr std::uint32_t kLayerSoundCaller = 0x2FA0DCC; // 0x2FA0D88, a type 2 layer (data +0x198)
-    // 0x252A888 (bts r9d, 0x17): a child ref's high dword is the index
-    // (20 bits) with bit 23 set.
+    namespace sig = replay::sig;
+
+    // The two sound creations the speech controller builds from the line's
+    // set: the wave (data +0xC0) and a type 2 layer (data +0x198). The return
+    // addresses of these calls are the callers a recorded sound keeps
+    // (puppet_audio_rule.h SpeechControllerCallers).
+    inline const sig::Signature kWaveSound{"speech_wave_sound",
+        "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 8B 89 B8 00 00 00", 0x2FA10A4};
+    inline const sig::Signature kWaveSoundCall{"speech_wave_sound_call", kWaveSound, sig::Offset{0x26},
+        "E8 ?? ?? ?? ??", 0x2FA10CA};
+    inline const sig::Signature kLayerSound{"speech_layer_sound",
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 30 48 8B E9 33 DB", 0x2FA0D88};
+    inline const sig::Signature kLayerSoundCall{"speech_layer_sound_call", kLayerSound, sig::Offset{0x3F},
+        "E8 ?? ?? ?? ??", 0x2FA0DC7};
+    // The child ref builder (bts r9d, 0x17): a child ref's high dword is the
+    // index (20 bits) with bit 23 set.
     constexpr std::uint32_t kChildIndexFlag = 0x800000;
     // The recorded sounds of a line are looked for this far around its
     // start (they share the audible start's millisecond, +-1).
     constexpr std::uint32_t kSoundBeforeMs = 250;
     constexpr std::uint32_t kSoundAfterMs = 2500;
 
-    // params offsets the applier 0x2F967E8 writes.
+    // params offsets the SpeechParams applier writes.
     constexpr std::uint16_t kParamsSetObject = 0xC0;
     constexpr std::uint16_t kParamsSetHash = 0xC8;
     constexpr std::uint16_t kParamsSetRef = 0xCC;
-    // 0x2F967E8 passes the ref to 0x252B194 as {ref, 0xFFFFF}.
+    // The applier passes the ref to the set object lookup as {ref, 0xFFFFF}.
     constexpr std::uint32_t kRefHighAny = 0xFFFFF;
 
-    // The set object's table, as
-    // the name search 0x49F6E4 reads it: the entry count at +5 (0x252B154)
-    // and entry n's name hash at +9 + 12 * n (0x252A8F4), searched in binary
-    // (so a real set's hashes ascend). A set found by a recorded ref is
+    // The set object's table, as the name search reads it: the entry count
+    // at +5 and entry n's name hash at +9 + 12 * n, searched in binary (so a
+    // real set's hashes ascend). A set found by a recorded ref is
     // checked against it before it goes into params (SetTableAscending).
     constexpr std::size_t kSetCountOffset = 5;
     constexpr std::size_t kSetEntriesOffset = 9;
     constexpr std::size_t kSetEntryBytes = 12;
     constexpr std::uint32_t kSetMaxEntries = 4096;
 
-    // 0x252A888 and 0x2516734 take 0 and 0xFFFFFFFF as "no ref".
+    // The child ref builder and the chunk lookup take 0 and 0xFFFFFFFF as
+    // "no ref".
     inline bool ValidSetRef(std::uint32_t ref) { return ref != 0 && ref != 0xFFFFFFFFu; }
 
-    // The set ref of a sound ref 0x252A888 built from a set, 0 for any other.
+    // The set ref of a sound ref the child ref builder made from a set, 0 for
+    // any other.
     inline std::uint32_t SetRefOfChild(std::uint64_t soundRef)
     {
         const std::uint32_t high = static_cast<std::uint32_t>(soundRef >> 32);
@@ -89,12 +89,13 @@ namespace replay::speech::conversation
 
     // `entries`: the set's bytes from kSetEntriesOffset, kSetEntryBytes per
     // entry. True when the count is plausible and the name hashes ascend as
-    // 0x49F6E4's binary search needs. 0x252B194 checks only the type byte
-    // (0x29) at the ref's offset; a ref recorded with another metadata
-    // layout (another install, a DLC or audio mod added or removed: the ref
-    // is chunk << 24 | offset) can land inside another object on a 0x29
-    // byte, and its "count" then sends the line's set searches (0x2FA6AEC,
-    // 0x2FB3E6C, outside any guard of ours) far out of the object.
+    // the name search's binary search needs. The set object lookup checks
+    // only the type byte (0x29) at the ref's offset; a ref recorded with
+    // another metadata layout (another install, a DLC or audio mod added or
+    // removed: the ref is chunk << 24 | offset) can land inside another
+    // object on a 0x29 byte, and its "count" then sends the line's set
+    // searches (the wave and layer builders, outside any guard of ours) far
+    // out of the object.
     inline bool SetTableAscending(const std::uint8_t* entries, std::uint32_t count)
     {
         if (!entries || count == 0 || count > kSetMaxEntries)
@@ -111,31 +112,33 @@ namespace replay::speech::conversation
         return true;
     }
 
-    // Only a type 2 line's layers prove the line's own set: 0x2FB3E6C builds
-    // them from data +0xE8 and has no default (a line without a set has no
-    // layers). A type 1 line plays only its wave, which 0x2FA6AEC builds
-    // from the line's set OR from a default set when the line has none, so
-    // its wave's set may not be the line's: a type 1 line gets no set from
-    // the sounds (left to the context, as the engine had it). An unknown
-    // type (0) is matched by its layers like type 2.
+    // Only a type 2 line's layers prove the line's own set: the layer builder
+    // builds them from data +0xE8 and has no default (a line without a set
+    // has no layers). A type 1 line plays only its wave, which the wave
+    // builder builds from the line's set OR from a default set when the line
+    // has none, so its wave's set may not be the line's: a type 1 line gets
+    // no set from the sounds (left to the context, as the engine had it). An
+    // unknown type (0) is matched by its layers like type 2.
     inline bool SetFromSoundsAllowed(std::uint32_t dataType)
     {
         return dataType != request::kTypeSingle && dataType != request::kTypePreResolved;
     }
 
     // An older clip (no set in SPRQ): the set ref of the speaker's own
-    // recorded layer sounds (0x2FA0DCC) nearest to the line's start.
-    // `Sounds` is a range of rows with entity, startMs, soundRef, caller,
-    // pedAudio and byHash (replay::EntitySound). 0 when none or not allowed.
+    // recorded layer sounds (kLayerSoundCall) nearest to the line's start.
+    // `layerCaller`: that call's return RVA in this game (0: not found, no
+    // set). `Sounds` is a range of rows with entity, startMs, soundRef,
+    // caller, pedAudio and byHash (replay::EntitySound). 0 when none or not
+    // allowed.
     template <typename Sounds, typename Id>
-    std::uint32_t SetRefFromSounds(const Sounds& sounds, const Id& speaker, std::uint32_t dataType, std::uint32_t startMs,
-        std::uint32_t& foundMs)
+    std::uint32_t SetRefFromSounds(std::uint32_t layerCaller, const Sounds& sounds, const Id& speaker,
+        std::uint32_t dataType, std::uint32_t startMs, std::uint32_t& foundMs)
     {
         std::uint32_t best = 0;
         std::uint32_t bestGap = 0xFFFFFFFFu;
-        if (!SetFromSoundsAllowed(dataType))
+        if (!SetFromSoundsAllowed(dataType) || !layerCaller)
             return 0;
-        const std::uint32_t caller = kLayerSoundCaller;
+        const std::uint32_t caller = layerCaller;
         const std::uint32_t from = startMs > kSoundBeforeMs ? startMs - kSoundBeforeMs : 0;
         const std::uint32_t to = startMs + kSoundAfterMs;
         for (const auto& sound : sounds)
@@ -219,9 +222,9 @@ namespace replay::speech::conversation
     enum class SetStatus : std::uint8_t
     {
         NotAsked = 0,
-        ByHash,    // hash -> ref (0x252B408) -> object (0x252B194), as 0x2F967E8
-        ByRef,     // recorded ref -> object (0x252B194): no hash (an older clip, the sounds' set)
-        NoObject,  // no object: +0xC0 left 0, the context applier fills it (as after 0x2F967E8)
+        ByHash,    // hash -> ref (the ref lookup) -> object (the set object lookup), as the applier does
+        ByRef,     // recorded ref -> object (the set object lookup): no hash (an older clip, the sounds' set)
+        NoObject,  // no object: +0xC0 left 0, the context applier fills it (as after the applier)
         Disabled,  // a signature or call site did not match: nothing written
         Exception, // an engine call faulted: nothing written
         BadObject, // the object of a recorded ref failed SetTableAscending: nothing written
@@ -249,9 +252,9 @@ namespace replay::speech::conversation
     // clip has the hash, the recorded ref only when it has none (an older
     // clip: the set of the line's sounds).
     // A hash the lookup did not find is a set this session does not have by
-    // name (0x252B408 searches every chunk), so the recorded ref names
-    // another layout and is not tried: 0, the context chooses (as after
-    // 0x2F967E8 with an unknown hash).
+    // name (the ref lookup searches every chunk), so the recorded ref names
+    // another layout and is not tried: 0, the context chooses (as after the
+    // applier with an unknown hash).
     inline std::uint32_t RefToResolve(const request::Ask& ask, bool hashLooked, std::uint32_t hashRef, bool& byHash)
     {
         byHash = false;

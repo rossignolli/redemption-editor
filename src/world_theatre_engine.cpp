@@ -1,7 +1,10 @@
 #include "world_theatre_engine.h"
 #include "audio_observer.h"
+#include "engine_sigs.h"
 #include "speech_replay_rules.h"
 
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "mod_clock.h"
 
@@ -20,34 +23,30 @@
 
 namespace replay::theatre
 {
+    using enginesig::kConversationSceneCall;
+    using enginesig::kConversationSceneStart;
+    using enginesig::kMixerStartScene;
+    using enginesig::kMixerStopScene;
+
     namespace
     {
         using U = std::uint64_t;
+        namespace sig = replay::sig;
 
-        std::uintptr_t Base()
-        {
-            return reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        }
-
+        // The RVA of a return address, for the evidence.
         std::uint32_t ToRva(void* address)
         {
-            const std::uintptr_t base = Base();
+            static const std::uintptr_t base = sig::ImageBase();
             const std::uintptr_t at = reinterpret_cast<std::uintptr_t>(address);
-            return at >= base && at - base < 0x10000000u ? static_cast<std::uint32_t>(at - base) : 0u;
+            return base && at >= base && at - base < 0x10000000u ? static_cast<std::uint32_t>(at - base) : 0u;
         }
 
-        bool SignatureAt(const Signature& signature)
+        bool Found(std::initializer_list<const sig::Signature*> list)
         {
-            std::uint8_t code[sizeof(signature.bytes)]{};
-            return replay::mem::Copy(code, Base() + signature.rva, sizeof(code)) &&
-                SignatureMatches(signature, code, sizeof(code));
-        }
-
-        bool SiteAt(const Site& site)
-        {
-            std::uint8_t code[8]{};
-            return SiteTarget(site) == site.target && replay::mem::Copy(code, Base() + site.rva, site.size) &&
-                SiteMatches(site, code, site.size);
+            for (const sig::Signature* s : list)
+                if (!sig::Find(*s))
+                    return false;
+            return true;
         }
 
         template <typename T>
@@ -85,7 +84,7 @@ namespace replay::theatre
         void DisableAnimalBank();
         void ForgetAnimalBankOriginal();
 
-        // ---- spawn funnel 0xBF23D4 (21 arguments, the RedM's layout:
+        // ---- spawn funnel kSpawnFunnel (21 arguments, the RedM's layout:
         // a1 u16, a2 int, a3 source name, a4 model index, a5 float* position,
         // a6 float, then pointers and flags; all integer registers, the float
         // on the stack, so U slots forward them bit for bit).
@@ -130,7 +129,7 @@ namespace replay::theatre
             return ped;
         }
 
-        // ---- mix scene start 0x2F19018 (mixer, &hash, r8, r9, 3 on the stack)
+        // ---- mix scene start kMixerStartScene (mixer, &hash, r8, r9, 3 on the stack)
         using SceneFn = U(__fastcall*)(U, U, U, U, U, U, U);
         std::atomic<SceneFn> g_sceneOriginal{nullptr};
         void* g_sceneTarget = nullptr;
@@ -144,6 +143,9 @@ namespace replay::theatre
         std::atomic<std::uint32_t> g_sceneRefusals[kMaxSceneRefusals];
         std::atomic<std::uint32_t> g_refusalCount{0};
         std::atomic<std::uint64_t> g_refused{0};
+        // The conversation scene start's return address from its call of the
+        // start (0: not found), set before the start detour.
+        std::atomic<std::uintptr_t> g_conversationReturn{0};
 
         bool RefuseStart(void* returnAddress)
         {
@@ -166,7 +168,9 @@ namespace replay::theatre
             if (slot)
                 replay::mem::Copy(&event.scene, static_cast<std::uintptr_t>(slot), sizeof(event.scene));
             event.caller = ToRva(returnAddress);
-            if (event.caller == kConversationSceneCaller && slot > kConversationSceneSlot)
+            const std::uintptr_t conversationReturn = g_conversationReturn.load(std::memory_order_relaxed);
+            if (conversationReturn && reinterpret_cast<std::uintptr_t>(returnAddress) == conversationReturn &&
+                slot > kConversationSceneSlot)
             {
                 const std::uintptr_t conversation = static_cast<std::uintptr_t>(slot) - kConversationSceneSlot;
                 std::uint64_t parts = 0;
@@ -215,7 +219,7 @@ namespace replay::theatre
             return result;
         }
 
-        // ---- mix scene stop 0x327A07C (scene, byte):
+        // ---- mix scene stop kMixerStopScene (scene, byte):
         // the hash read before the original (the stop may free the scene).
         using SceneStopFn = U(__fastcall*)(U, U);
         std::atomic<SceneStopFn> g_sceneStopOriginal{nullptr};
@@ -241,7 +245,7 @@ namespace replay::theatre
             return result;
         }
 
-        // ---- speech state 3 rules 0x2F972C4 (speech entity, line context);
+        // ---- speech state 3 rules kSpeechRules (speech entity, line context);
         // returns the refusal code (0 accepted). Forwarded first.
         using RulesFn = U(__fastcall*)(U, U, U, U);
         std::atomic<RulesFn> g_rulesOriginal{nullptr};
@@ -271,7 +275,7 @@ namespace replay::theatre
                 result = original(speechEntity, context, a3, a4);
             {
                 // The rules' second argument is the line (the
-                // state 3 handler 0x2FC486C passes it in rdx with the line's
+                // state 3 handler passes it in rdx with the line's
                 // speech entity [line +0x1C0] in rcx).
                 const std::uint32_t got = static_cast<std::uint32_t>(result & 0xFFFFFFFFu);
                 if (replay::speech::rules::WorldContextCode(got) && g_speechObserve.load(std::memory_order_acquire))
@@ -304,7 +308,7 @@ namespace replay::theatre
             return result;
         }
 
-        // ---- speech state 3 handler 0x2FC486C (line) -> code; forwarded
+        // ---- speech state 3 handler kSpeechState3 (line) -> code; forwarded
         // first, a failure code recorded while the replay plays (the
         // "revalidation" deaths of mission lines, where the theater refuses
         // and the rules detour above records nothing).
@@ -332,11 +336,14 @@ namespace replay::theatre
             return result;
         }
 
+        // `name`: the report's.
         template <typename Fn>
-        bool Hook(const Signature& signature, void* detour, std::atomic<Fn>& original, void*& target, std::string& report)
+        bool Hook(const char* name, const sig::Signature& signature, void* detour, std::atomic<Fn>& original,
+            void*& target, std::string& report)
         {
-            report += signature.name;
-            if (!SignatureAt(signature))
+            report += name;
+            void* at = reinterpret_cast<void*>(sig::Find(signature));
+            if (!at)
             {
                 report += "=signature;";
                 return false;
@@ -347,7 +354,6 @@ namespace replay::theatre
                 report += "=mh_init;";
                 return false;
             }
-            void* at = reinterpret_cast<void*>(Base() + signature.rva);
             void* trampoline = nullptr;
             MH_STATUS status = MH_CreateHook(at, detour, &trampoline);
             if (status != MH_OK || !trampoline)
@@ -372,65 +378,50 @@ namespace replay::theatre
         Checks g_checks;
         bool g_checked = false;
 
-        // SEH wrappers: no object with a destructor in these.
-        using RemoveVehsFn = void(__fastcall*)(bool respectCanBeDeleted);
-        using RemovePedsFn = void(__fastcall*)(void* exception, int mode, void* filter, bool asScript, bool cleanup);
-        using EmittersFn = void(__fastcall*)(void* manager);
-
+        // The clean-ups, each guarded by engine::Call.
         bool CallRemoveVehs(std::uintptr_t function, std::uint32_t& code)
         {
-            __try
-            {
-                reinterpret_cast<RemoveVehsFn>(function)(false);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kRemoveAllVehs, function, false) || engine::Failed(code);
         }
 
         bool CallRemovePeds(std::uintptr_t function, void* exception, std::uint32_t& code)
         {
-            __try
-            {
-                reinterpret_cast<RemovePedsFn>(function)(exception, kRemovePedsForceAllRandomAndMission, nullptr, true, true);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kRemoveAllPeds, function, exception, kRemovePedsForceAllRandomAndMission, nullptr, true,
+                       true) ||
+                engine::Failed(code);
         }
 
         bool CallEmitters(std::uintptr_t function, void* manager, std::uint32_t& code)
         {
-            __try
-            {
-                reinterpret_cast<EmittersFn>(function)(manager);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kStopStaticEmitters, function, manager) || engine::Failed(code);
         }
     }
 
     void Install(std::uint32_t hooks, std::string& report)
     {
         report.clear();
+        // The conversation's call of the start, when it calls the start the
+        // detour is on.
+        const std::uintptr_t conversationCall = sig::Find(kConversationSceneCall);
+        g_conversationReturn.store(conversationCall && sig::Find(kConversationSceneStart) == sig::Find(kMixerStartScene)
+                ? conversationCall + kConversationCallLength
+                : 0,
+            std::memory_order_relaxed);
         if (!g_spawnTarget && (hooks & kHookSpawn))
-            Hook(kSpawnFunnelSignature, reinterpret_cast<void*>(&SpawnDetour), g_spawnOriginal, g_spawnTarget, report);
+            Hook("CreatePopulationPed", kSpawnFunnel, reinterpret_cast<void*>(&SpawnDetour), g_spawnOriginal,
+                g_spawnTarget, report);
         if (!g_sceneTarget && (hooks & kHookScene))
-            Hook(kMixSceneSignature, reinterpret_cast<void*>(&SceneDetour), g_sceneOriginal, g_sceneTarget, report);
+            Hook("MixerStartScene", kMixerStartScene, reinterpret_cast<void*>(&SceneDetour), g_sceneOriginal,
+                g_sceneTarget, report);
         if (!g_rulesTarget && (hooks & kHookRules))
-            Hook(kSpeechRulesSignature, reinterpret_cast<void*>(&RulesDetour), g_rulesOriginal, g_rulesTarget, report);
-        if (!g_state3Target && (hooks & kHookState3))
-            Hook(kSpeechState3Signature, reinterpret_cast<void*>(&State3Detour), g_state3Original, g_state3Target, report);
-        if (!g_sceneStopTarget && (hooks & kHookSceneStop))
-            Hook(kMixSceneStopSignature, reinterpret_cast<void*>(&SceneStopDetour), g_sceneStopOriginal, g_sceneStopTarget,
+            Hook("SpeechState3Rules", kSpeechRules, reinterpret_cast<void*>(&RulesDetour), g_rulesOriginal, g_rulesTarget,
                 report);
+        if (!g_state3Target && (hooks & kHookState3))
+            Hook("SpeechState3Handler", kSpeechState3, reinterpret_cast<void*>(&State3Detour), g_state3Original,
+                g_state3Target, report);
+        if (!g_sceneStopTarget && (hooks & kHookSceneStop))
+            Hook("MixerStopScene", kMixerStopScene, reinterpret_cast<void*>(&SceneStopDetour), g_sceneStopOriginal,
+                g_sceneStopTarget, report);
     }
 
     void Shutdown()
@@ -529,15 +520,16 @@ namespace replay::theatre
                 g_checks.failed = name;
             return ok;
         };
-        g_checks.vehicles = first(SignatureAt(kRemoveAllVehsSignature), kRemoveAllVehsSignature.name) &&
-            first(SignatureAt(kFlushVehicleReuseSignature), kFlushVehicleReuseSignature.name) &&
-            first(SiteAt(kVehicleReuseSite), kVehicleReuseSite.name);
-        g_checks.peds = first(SignatureAt(kRemoveAllPedsSignature), kRemoveAllPedsSignature.name) &&
-            first(SiteAt(kPedFlushSite), kPedFlushSite.name) && first(SiteAt(kPedDestroySite), kPedDestroySite.name);
-        g_checks.emitters = first(SignatureAt(kStaticEmittersSignature), kStaticEmittersSignature.name) &&
-            first(SiteAt(kEmitterManagerSite), kEmitterManagerSite.name);
-        g_checks.perschar = first(SiteAt(kPerscharManagerSite), kPerscharManagerSite.name);
-        g_checks.speech = first(SiteAt(kSpeechManagerSite), kSpeechManagerSite.name);
+        g_checks.vehicles = first(Found({&kRemoveAllVehs}), "RemoveAllVehs") &&
+            first(Found({&kVehicleReuseCall}), "vehicles_reuse_pool") &&
+            first(Found({&kFlushVehicleReuse}), "FlushVehicleReusePool");
+        g_checks.peds = first(Found({&kRemoveAllPeds, &kRemoveAllPedsArg5}), "RemoveAllPedsWithException") &&
+            first(Found({&kPedFlushCall, &kPedFlushQueues}), "peds_flush_queues") &&
+            first(Found({&kPedDestroyJump, &kPedDeferredDestroy}), "peds_deferred_destroy");
+        g_checks.emitters = first(Found({&kEmitterReset, &kStaticEmitterManager}), "emitter_manager") &&
+            first(Found({&kStaticEmitters}), "StopAndResetStaticEmitters");
+        g_checks.perschar = first(Found({&kPerscharManager}), "perschar_manager");
+        g_checks.speech = first(Found({&kSpeechManager}), "speech_manager");
         return g_checks;
     }
 
@@ -546,7 +538,7 @@ namespace replay::theatre
         code = 0;
         if (!RunChecks().vehicles)
             return CallResult::Signature;
-        return CallRemoveVehs(Base() + kRemoveAllVehsSignature.rva, code) ? CallResult::Ok : CallResult::Exception;
+        return CallRemoveVehs(sig::Find(kRemoveAllVehs), code) ? CallResult::Ok : CallResult::Exception;
     }
 
     CallResult RemoveAllPeds(std::uint64_t playerPed, std::uint32_t& code)
@@ -554,7 +546,7 @@ namespace replay::theatre
         code = 0;
         if (!RunChecks().peds || !playerPed)
             return CallResult::Signature;
-        return CallRemovePeds(Base() + kRemoveAllPedsSignature.rva, reinterpret_cast<void*>(playerPed), code)
+        return CallRemovePeds(sig::Find(kRemoveAllPeds), reinterpret_cast<void*>(playerPed), code)
             ? CallResult::Ok
             : CallResult::Exception;
     }
@@ -564,7 +556,7 @@ namespace replay::theatre
         code = 0;
         if (!RunChecks().emitters)
             return CallResult::Signature;
-        return CallEmitters(Base() + kStaticEmittersSignature.rva, reinterpret_cast<void*>(Base() + kStaticEmitterManagerRva), code)
+        return CallEmitters(sig::Find(kStaticEmitters), reinterpret_cast<void*>(sig::Find(kStaticEmitterManager)), code)
             ? CallResult::Ok
             : CallResult::Exception;
     }
@@ -585,7 +577,7 @@ namespace replay::theatre
         }
     }
 
-    ThreadSpare SpareScriptHookThreads(bool pauseScriptHook, std::vector<ThreadView>* census)
+    ThreadSpare SpareScriptHookThreads(std::vector<ThreadView>* census)
     {
         static int checked = 0; // 0 not yet, 1 passed, -1 failed
         static std::string failed = "none";
@@ -593,14 +585,17 @@ namespace replay::theatre
         if (checked == 0)
         {
             checked = 1;
-            if (!SignatureAt(kPauseThreadsSignature))
-                failed = kPauseThreadsSignature.name;
-            else if (!SignatureAt(kPauseThreadsMarkSignature))
-                failed = kPauseThreadsMarkSignature.name;
-            else if (!SignatureAt(kThreadTickSignature))
-                failed = kThreadTickSignature.name;
-            else if (!SiteAt(kThreadArraySite))
-                failed = kThreadArraySite.name;
+            // The count is the word just after the array's qword, and the
+            // loop's body reads the same count.
+            const std::uintptr_t count = sig::Find(kThreadCount);
+            if (!Found({&kPauseThreads}))
+                failed = "PauseScriptThreads";
+            else if (!Found({&kPauseThreadsMark}) || sig::Find(kThreadCountMark) != count)
+                failed = "PauseScriptThreadsMark";
+            else if (!Found({&kThreadTick}))
+                failed = "GtaThreadTick";
+            else if (!count || sig::Find(kThreadArray) + 8 != count)
+                failed = "script_threads";
             if (failed != "none")
                 checked = -1;
         }
@@ -611,8 +606,8 @@ namespace replay::theatre
         }
         std::uint64_t array = 0;
         std::uint16_t count = 0;
-        if (!replay::mem::Copy(&array, Base() + kThreadArrayRva, sizeof(array)) ||
-            !replay::mem::Copy(&count, Base() + kThreadCountRva, sizeof(count)) || !array)
+        if (!replay::mem::Copy(&array, sig::Find(kThreadArray), sizeof(array)) ||
+            !replay::mem::Copy(&count, sig::Find(kThreadCount), sizeof(count)) || !array)
         {
             out.error = "thread_array_unreadable";
             return out;
@@ -634,7 +629,7 @@ namespace replay::theatre
             ++out.threads;
             out.pausedByNative += view.paused ? 1u : 0u;
             out.scriptHook += view.scriptHash == kScriptHookThreadHash ? 1u : 0u;
-            if (UnpauseForScriptHook(view, pauseScriptHook))
+            if (UnpauseForScriptHook(view))
             {
                 if (GuardedWriteThreadByte(static_cast<std::uintptr_t>(thread + kThreadPausedOffset), 0))
                 {
@@ -659,7 +654,7 @@ namespace replay::theatre
             return -1;
         std::uint64_t manager = 0;
         std::uint8_t held = 0;
-        if (!replay::mem::Copy(&manager, Base() + kPerscharManagerRva, sizeof(manager)) || !manager ||
+        if (!replay::mem::Copy(&manager, sig::Find(kPerscharManager), sizeof(manager)) || !manager ||
             !replay::mem::Copy(&held, static_cast<std::uintptr_t>(manager + kPerscharHeldOffset), 1))
             return -1;
         return held;
@@ -670,7 +665,7 @@ namespace replay::theatre
         SlotCensus census;
         if (!RunChecks().speech)
             return census;
-        const std::uintptr_t manager = Base() + kSpeechManagerRva;
+        const std::uintptr_t manager = sig::Find(kSpeechManager);
         census.ok = true;
         for (std::size_t c = 0; c < 4; ++c)
         {
@@ -712,7 +707,7 @@ namespace replay::theatre
     {
         if (!waveSlot || !RunChecks().speech)
             return false;
-        const std::uintptr_t manager = Base() + kSpeechManagerRva;
+        const std::uintptr_t manager = sig::Find(kSpeechManager);
         for (int c = 0; c < 3; ++c)
         {
             std::uint64_t array = 0;
@@ -740,31 +735,21 @@ namespace replay::theatre
 {
     namespace
     {
-        using AmbientReleaseFn = void(__fastcall*)(void* manager, void* speechEntity);
-
         bool CallAmbientRelease(std::uintptr_t function, void* manager, void* speechEntity, std::uint32_t& code)
         {
-            __try
-            {
-                reinterpret_cast<AmbientReleaseFn>(function)(manager, speechEntity);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kFreeAmbientSlots, function, manager, speechEntity) || engine::Failed(code);
         }
     }
 
-    // Guarded reads of the ambient slots (speech_slots.h), the layout
-    // 0x2FBD440 and 0x2FB1E94 read (build 1491.50).
+    // Guarded reads of the ambient slots (speech_slots.h), the layout the
+    // slot finder and FreeAmbientSlotsOfOwner read.
     void ReadAmbientSlots(AmbientSlots& out)
     {
         out.ok = false;
         out.slots.clear();
         if (!RunChecks().speech)
             return;
-        const std::uintptr_t manager = Base() + kSpeechManagerRva;
+        const std::uintptr_t manager = sig::Find(kSpeechManager);
         std::uint64_t array = 0;
         std::uint16_t total = 0;
         if (!replay::mem::Copy(&array, manager + kAmbientArray, 8) || !replay::mem::Copy(&total, manager + kAmbientCount, 2) ||
@@ -790,10 +775,10 @@ namespace replay::theatre
         code = 0;
         static int checked = 0; // 0 not yet, 1 passed, -1 failed
         if (checked == 0)
-            checked = RunChecks().speech && SignatureAt(kAmbientReleaseSignature) ? 1 : -1;
+            checked = RunChecks().speech && Found({&kAmbientRelease}) ? 1 : -1;
         if (checked < 0 || !speechEntity)
             return CallResult::Signature;
-        return CallAmbientRelease(Base() + kAmbientReleaseSignature.rva, reinterpret_cast<void*>(Base() + kSpeechManagerRva),
+        return CallAmbientRelease(sig::Find(kAmbientRelease), reinterpret_cast<void*>(sig::Find(kSpeechManager)),
                    reinterpret_cast<void*>(speechEntity), code)
             ? CallResult::Ok
             : CallResult::Exception;
@@ -824,8 +809,8 @@ namespace replay::theatre
         std::atomic<std::uint64_t> g_bankWriteFailed{0};
         std::atomic<std::uint32_t> g_bankLastForced{0}; // type << 8 | bank
         // The manager the records belong to
-        // (Base() + kSpeechManagerRva, its one caller passes it from
-        // 0x2F1DA13); the detour acts only on that one.
+        // (kSpeechManager, its one caller passes it); the detour acts only on
+        // that one.
         std::atomic<std::uintptr_t> g_bankManager{0};
         std::atomic<std::uint64_t> g_bankOtherManager{0};
 
@@ -861,9 +846,9 @@ namespace replay::theatre
                     std::uint8_t exhausted = 0;
                     if (replay::mem::Copy(&exhausted, static_cast<std::uintptr_t>(entry + bank::kEntryExhausted), 1))
                         out.exhausted = exhausted != 0;
-                    // The holder takes an entry only once its load completed
-                    // (0x2FC66B1), so its voice is the type's bank; a line by
-                    // context reads it only in state 5 (0x2FA66AD).
+                    // The holder takes an entry only once its load completed,
+                    // so its voice is the type's bank; a line by context
+                    // reads it only in state 5 (kAnimalVoiceEntry).
                     if (replay::mem::Copy(&out.holderVoice, static_cast<std::uintptr_t>(entry + bank::kEntryVoice), 4) &&
                         out.entryState == bank::kEntryLoaded)
                         out.loadedVoice = out.holderVoice;
@@ -970,18 +955,19 @@ namespace replay::theatre
                 return ok;
             };
             char format[16]{};
-            const bool formatText = replay::mem::Copy(format, Base() + kAnimalBankFormatRva, 13) &&
+            const std::uintptr_t formatAt = sig::Find(kAnimalBankFormat);
+            const bool formatText = formatAt && replay::mem::Copy(format, formatAt, 13) &&
                 std::memcmp(format, "%s_NEAR_%.2u", 13) == 0;
-            const bool ok = first(RunChecks().speech, kSpeechManagerSite.name) &&
-                first(SignatureAt(kAnimalBankPickSignature), kAnimalBankPickSignature.name) &&
-                first(SiteAt(kAnimalBankPickSite), kAnimalBankPickSite.name) &&
-                first(SignatureAt(kAnimalBankCountSignature), kAnimalBankCountSignature.name) &&
-                first(SignatureAt(kAnimalBankNextSignature), kAnimalBankNextSignature.name) &&
-                first(SignatureAt(kAnimalVoiceHolderSignature), kAnimalVoiceHolderSignature.name) &&
-                first(SignatureAt(kAnimalVoiceEntrySignature), kAnimalVoiceEntrySignature.name) &&
-                first(SignatureAt(kAnimalBankKeepSignature), kAnimalBankKeepSignature.name) &&
-                first(SiteAt(kAnimalNameTableSite), kAnimalNameTableSite.name) &&
-                first(SiteAt(kAnimalBankFormatSite), kAnimalBankFormatSite.name) &&
+            const bool ok = first(RunChecks().speech, "speech_manager") &&
+                first(Found({&kAnimalBankPickCall}), "animal_bank_pick_call") &&
+                first(Found({&kAnimalBankPick}), "AnimalBankPick") &&
+                first(Found({&kAnimalBankCount}), "AnimalBankCount") &&
+                first(Found({&kAnimalBankNext}), "AnimalBankNext") &&
+                first(Found({&kAnimalVoiceHolder}), "AnimalVoiceHolder") &&
+                first(Found({&kAnimalVoiceEntry}), "AnimalVoiceEntry") &&
+                first(Found({&kAnimalBankKeep}), "AnimalBankKeep") &&
+                first(Found({&kAnimalNameTableRead, &kAnimalNameTable}), "animal_name_table") &&
+                first(Found({&kAnimalBankFormatRead, &kAnimalBankFormat}), "animal_bank_format") &&
                 first(formatText, "animal_bank_format_text");
             g_bankChecked = ok ? 1 : -1;
         }
@@ -996,12 +982,12 @@ namespace replay::theatre
         std::string failed;
         if (!AnimalBankChecks(failed))
         {
-            report += std::string(kAnimalBankPickSignature.name) + "=check_" + failed + ";";
+            report += std::string("AnimalBankPick=check_") + failed + ";";
             return;
         }
-        g_bankManager.store(Base() + kSpeechManagerRva, std::memory_order_release);
-        Hook(kAnimalBankPickSignature, reinterpret_cast<void*>(&AnimalBankPickDetour), g_bankPickOriginal, g_bankPickTarget,
-            report);
+        g_bankManager.store(sig::Find(kSpeechManager), std::memory_order_release);
+        Hook("AnimalBankPick", kAnimalBankPick, reinterpret_cast<void*>(&AnimalBankPickDetour), g_bankPickOriginal,
+            g_bankPickTarget, report);
     }
 
     bool AnimalBankInstalled() { return g_bankPickTarget != nullptr; }
@@ -1012,7 +998,8 @@ namespace replay::theatre
         std::string failed;
         if (!AnimalBankChecks(failed))
             return false;
-        const std::uintptr_t manager = Base() + kSpeechManagerRva;
+        const std::uintptr_t manager = sig::Find(kSpeechManager);
+        const std::uintptr_t names = sig::Find(kAnimalNameTable);
         for (int type = 0; type < bank::kTypeCount; ++type)
         {
             bank::TypeBanks entry;
@@ -1021,7 +1008,7 @@ namespace replay::theatre
                 entry.count == 0 || entry.count > bank::kMaxBanks)
                 continue;
             std::uint64_t name = 0;
-            if (!replay::mem::Copy(&name, Base() + kAnimalNameTableRva + static_cast<std::uintptr_t>(type) * 8u, 8) || !name)
+            if (!replay::mem::Copy(&name, names + static_cast<std::uintptr_t>(type) * 8u, 8) || !name)
                 continue;
             // A string of the .rdata: read until the copy fails or ends.
             std::size_t size = sizeof(entry.name) - 1;
@@ -1043,7 +1030,7 @@ namespace replay::theatre
             return state;
         bank::Hold hold;
         hold.type = type;
-        ViewOf(Base() + kSpeechManagerRva, hold, &state);
+        ViewOf(sig::Find(kSpeechManager), hold, &state);
         return state;
     }
 

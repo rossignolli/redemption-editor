@@ -314,7 +314,7 @@ namespace
     void TestConfigDefault()
     {
         const sv::ReplayConfig config;
-        Check(config.record && config.replay, "MuscleRecord and MuscleReplay are on by default");
+        Check(config.replay, "MuscleReplay is on by default");
     }
 }
 

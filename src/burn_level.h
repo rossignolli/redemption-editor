@@ -1,26 +1,15 @@
 #pragma once
 
 // Burn level of an entity.
-// Every shader effect instance (CCustomShaderEffect, the object at draw
-// handler +0x18, draw handler = entity +0x28) owns a block of instance
-// shader variables that its base constructors allocate (0xAF4750, 0xAF4CF4
-// ped, 0xAF4ECC vehicle) and keep at effect +0x18; the virtual at +0x88
-// returns it (0x3090A4 -> 0x6FCB3C1, `mov rax, [rcx+0x18]`, the slot of the
-// 32 effect classes that have one; types 4 and two others return null).
-// Its common header holds the burn state:
-//   +0x1C burn level (0x6FD2E4): the fire's burnable entity update
-//         0x12BD608, the vehicle 0x15D5978 (never lowered unless forced) and
-//         _SET_OBJECT_BURN_LEVEL(o, l, affectAsh=1) write it; 0xB00950 reads it
-//   +0x20 the same native with affectAsh=0 (0xB0D48C)
-//   +0x24 burn intensity, +0x28 burn opacity (0xB0BF6C, 0xB16700; zeroed and
-//         refilled every frame while the fire's entry is alive)
-//   +0x30 entity mask colour (RGBA8)
-// Peds keep a second effect: the engine's own resolver 0x558244 (entity
-// mask natives) takes [[draw handler +0x748] +0xC0] for a ped (entity type
-// byte +0x30 == 4) instead of +0x18. Both blocks are read and written.
+// The burn state lives in the instance shader variables of the entity's shader
+// effect (draw handler +0x18, returned by the effect's virtual +0x88): +0x1C
+// burn level, +0x20 the same with affectAsh=0, +0x24 intensity, +0x28 opacity,
+// +0x30 entity mask colour. Peds keep a second effect ([[draw handler +0x748]
+// +0xC0]); both blocks are read and written.
 // No native reads the level and none writes it on a ped or vehicle, so the
-// replay reads and writes the block itself. Build 1491.50, signature-checked
-// once (Check), SEH-guarded; never calls engine code.
+// replay reads and writes the block itself. Found by signature once (Check),
+// SEH-guarded; never calls engine code. Offline dump, build 1491.50.
+// Research: docs/research/fx-fires-decals-effects.md
 
 #include <cstdint>
 #include <string>
@@ -66,11 +55,11 @@ namespace replay::burn
     // wagon body) is drawn by the fire renderer from the entity's fire record
     // (g_FireVolumeBuffer, g_FireCharShaderConstants), not from the shader
     // effect above. The engine keeps one record per burning or burnt entity in
-    // a tree (root at module+0x4E2F610, manager 0x4E2F5B0 +0x60; node +0x08
+    // a tree (a static root pointer, the record manager's +0x60; node +0x08
     // right (tagged), +0x10 left, +0x20 entity, +0x28 key -1; the record is the
     // node). The record outlives the fire (the corpse stays charred) and
-    // RESURRECT_PED removes it (0x8D9B18: 0x12A3D58(manager, entity, -1, 1)),
-    // which takes the look off at once. Record +0xD0: the burn volumes (linked
+    // RESURRECT_PED removes it (the removal (manager, entity, -1, 1)), which
+    // takes the look off at once. Record +0xD0: the burn volumes (linked
     // by +0x00, 0xF0 bytes each, count at +0xD8); per volume the extents and
     // age (+0x10..+0x3C), the char amount (+0x40, vec4, 1 = charred) and the
     // growth values (+0xC0..+0xDC); +0x50 is the world centre (the engine's).
@@ -108,8 +97,9 @@ namespace replay::burn
         for (std::size_t k = 12; k < 16; ++k)
             volume.v[k] = 0.0f;
     }
-    // Checks the fire record sites (the tree root use in 0xF9A8DC, the
-    // removal 0x12A3D58 and its manager at 0x8D9B0A). Runs once.
+    // Checks the fire record sites (the tree root use in
+    // _IS_ENTITY_CONSUMED_BY_FIRE's lookup, the removal and its manager in
+    // RESURRECT_PED) and the volume code the writes rely on. Runs once.
     bool CheckChar(std::string& error);
     bool CharEnabled();
     // Faults caught in the guarded reads so far (evidence).
@@ -118,13 +108,17 @@ namespace replay::burn
     bool ReadChar(const void* entity, CharState& state);
     // A record of the engine's fire record tree (0: none; present false).
     bool ReadRecord(std::uintptr_t record, CharState& state);
+    // The fire record tree (its root node pointer at +0), found by
+    // signature; 0 when not found.
+    std::uintptr_t RecordTree();
     // Writes `state` into the entity's existing record part by
     // part. match[r] is the entity volume (index in ReadChar order) that
     // takes recorded volume r (MatchFireCharVolumes), -1 none: with
     // `anchored` a volume is made for it on its part (CreateVolume), else it
     // is left out. Anchored writes also set the part's flags (low nibble)
     // and mask. Every entity volume no recorded one took is neutralized
-    // (NeutralizeVolume). Script thread only.
+    // (NeutralizeVolume). Nothing is written unless the engine's volume code
+    // shows the fields (CheckChar). Script thread only.
     struct CharWriteReport
     {
         int written = 0;
@@ -133,22 +127,23 @@ namespace replay::burn
         int neutralized = 0;
     };
     CharWriteReport WriteChar(const void* entity, const CharState& state, const std::vector<int>& match, bool anchored);
-    // Volume creation through the engine's own record copy
-    // (0x126E04F: 0x126DE7C clones a volume, 0x125B82C links it into a
-    // record, counts it and sets its mask from the part), signature checked,
-    // SEH guarded. Off by the ini (FireCharCreate=0) or a mismatch.
+    // Volume creation through the engine's own record copy (its clone of a
+    // volume, then the link into a record, which counts it and sets its mask
+    // from the part), signature checked, SEH guarded. Off by the ini
+    // (FireCharCreate=0) or a mismatch.
     // CreateChar gives an entity without one a record (fields copied from
-    // any other live record through 0x126E5DC, no volumes: WriteChar adds
-    // the recorded ones right after, in the same pass, before the engine's
-    // update removes an empty record). code 2: no record to copy from.
+    // any other live record through the engine's record copy, no volumes:
+    // WriteChar adds the recorded ones right after, in the same pass, before
+    // the engine's update removes an empty record). code 2: no record to copy
+    // from.
     bool CreateChar(void* entity, std::uint32_t& code);
     void SetCharCreate(bool on);
     bool CharCreateEnabled();
-    // Keeps records through the engine's area clear. The clear
-    // (0x12A35E4 -> 0x12A2FA4, called by the replay's fire rebuild through
+    // Keeps records through the engine's area clear. The clear (the region
+    // clear and its core, called by the replay's fire rebuild through
     // ClearBurntGround) removes every entity record whose entity is in the
-    // box; it skips a record with +0x142 bit 1 set and +0xF0 not 0
-    // (0x12A3036..0x12A304B, signature checked). ShieldChars sets both on the
+    // box; it skips a record with +0x142 bit 1 set and +0xF0 not 0 (its skip
+    // test, signature checked). ShieldChars sets both on the
     // records of `entities` (saving the old values), UnshieldChars puts them
     // back; the clear runs between the two on the same thread.
     struct CharShield

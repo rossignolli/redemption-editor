@@ -100,6 +100,49 @@ namespace replay::speech::resume
         return offset < kMinOffsetMs ? 0 : offset;
     }
 
+    // A line asked after waiting for its speaker's previous replayed line (the
+    // engine runs one line per speaker, so the replay defers it). Asked from its
+    // start, the whole wait became a desync: the audio behind the recorded face
+    // by the wait. Worse, its late end made the speaker's next line wait too, so
+    // along a run of back-to-back lines of one speaker (a camp story, a song, a
+    // monologue: gaps of one frame) every new delay added to the old ones and
+    // nothing took them back (only a gap longer than the lateness). In a long
+    // talking scene the speech fell further and further behind the picture.
+    // As replay editors do with a line asked late, it is asked at the
+    // playhead's point in it (OffsetAt, under kMinOffsetMs from its start), so
+    // each line of the run is in sync again whatever the previous one did.
+    // `drop`: less than kMinRemainingMs of a known end is left (not asked).
+    struct AfterWait
+    {
+        std::uint32_t offsetMs = 0;
+        bool drop = false;
+    };
+
+    inline AfterWait AskAfterWait(const replay::entity::SpeechEvent& line, std::uint32_t playheadMs, const LineEnd& end)
+    {
+        AfterWait ask;
+        if (playheadMs <= line.timeMs && !line.startedBeforeMs)
+            return ask; // not late: from its start
+        ask.offsetMs = OffsetAt(line, playheadMs);
+        if (ask.offsetMs && end.known && (end.endMs <= playheadMs || end.endMs - playheadMs < kMinRemainingMs))
+            ask.drop = true;
+        return ask;
+    }
+
+    // How far a replayed line's audio is from the picture, in ms of the line
+    // (positive: the sound ahead of the recorded face): where the audio is
+    // (`offsetMs` it was asked at plus `heardMs` audible since its start)
+    // against where the playhead is in the recorded line. The sync probe's
+    // measure (POSE_V2_SPEECH_SYNC).
+    inline std::int64_t AudioAheadMs(const replay::entity::SpeechEvent& line, std::uint32_t playheadMs,
+        std::uint32_t offsetMs, std::uint32_t heardMs)
+    {
+        const std::int64_t audio = static_cast<std::int64_t>(offsetMs) + heardMs;
+        const std::int64_t picture = static_cast<std::int64_t>(line.startedBeforeMs) +
+            static_cast<std::int64_t>(playheadMs) - static_cast<std::int64_t>(line.timeMs);
+        return audio - picture;
+    }
+
     // A line that began before a saved window's base and is still audible at it
     // (its known end, a recorded stop or natural end, more than kMinRemainingMs
     // past the base) is kept, adopted at the base: `out` has timeMs = 0 on the
@@ -345,9 +388,9 @@ namespace replay::speech::resume
     //
     // A resume asked right after the jump stop of the same line can die in its own
     // request (state 1 to 6 inside the call: e1_wave_missing or killed_loading). A
-    // stopped line (0x2FBCCD4: state 6, its data's sounds released through data
+    // stopped line (the line stop: state 6, its data's sounds released through data
     // vtable +0x28) stays alive until the speech update frees it: the line dtor
-    // 0x2F93888 puts the line vtable (0x37FD5D0) back and the pool free 0x2B079E0
+    // puts the line vtable back and the pool free
     // writes 0xFFFFFFFF over the element's first dword (build 1491.50). So a
     // resume of the same line (same speaker, voice, context, variation) waits
     // while the old copy still reads as a live line in state 6 with that

@@ -4,7 +4,7 @@
 // engine side (the cause, the evidence and the layout are in
 // speech_duck_core.h).
 //
-// - The replay path (SpeechDuckReplay=1): a detour of the duck driver 0x2F2D1EC
+// - The replay path (SpeechDuckReplay=1): a detour of the duck driver
 //   (prologue and 17 sites checked, installed with the other hooks at load)
 //   forwards every call; while the replay owns the world and a playback
 //   published the inputs at the playhead (fresh within 1 s), it writes the
@@ -34,7 +34,6 @@ namespace replay::speechduck
     {
         bool replay = true;                          // SpeechDuckReplay
         std::uint8_t derivedFlags = kDefaultDerivedFlags; // SpeechDuckDerivedFlags
-        bool log = true;                             // SpeechDuckLog
     };
     void Configure(const Config& config);
     const Config& GetConfig();

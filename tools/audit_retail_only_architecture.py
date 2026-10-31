@@ -128,7 +128,7 @@ POSE_PLAYBACK_ALLOWED_WEAPON_OBJECT_CALLS = frozenset(
 )
 
 # Every build offered for a test is listed here, so a stray VERSION fails.
-ACCEPTED_VERSIONS: tuple[str, ...] = ("1.0.0",)
+ACCEPTED_VERSIONS: tuple[str, ...] = ("1.0.0", "1.1.0")
 
 # Builds made before 1.0.0 are listed, when the file is present, in
 # audit_accepted_versions.txt next to this script (one VERSION per line, text
@@ -257,7 +257,9 @@ def _pose_playback_audit(root: Path) -> dict[str, object]:
 
     override_found = False
     if capture_path.is_file():
-        capture = capture_path.read_text(encoding="utf-8")
+        # pose_capture.cpp and its parts, src/pose_capture_*.cpp (split from it)
+        capture_paths = [capture_path] + sorted((root / "src").glob("pose_capture_*.cpp"))
+        capture = "".join(p.read_text(encoding="utf-8") for p in capture_paths)
         override_found = POSE_OVERRIDE_FUNCTION in capture
         capture_code = _strip_cpp_comments_and_strings(capture)
         if re.search(r"\bTASK::|\bWEAPON::|\bENTITY::|\bPED::", capture_code):
@@ -353,7 +355,9 @@ def audit(root: Path) -> dict[str, object]:
 
     script_path = root / "script.cpp"
     if script_path.is_file():
-        issues.extend(_script_audit(script_path.read_text(encoding="utf-8")))
+        # script.cpp and its parts, src/script_*.cpp (split from it)
+        script_paths = [script_path] + sorted((root / "src").glob("script_*.cpp"))
+        issues.extend(_script_audit("".join(p.read_text(encoding="utf-8") for p in script_paths)))
 
     pose_playback = _pose_playback_audit(root)
     issues.extend(str(issue) for issue in pose_playback.get("issues", []))

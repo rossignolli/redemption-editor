@@ -5,35 +5,10 @@
 // records footstep sounds, applied to the second queue of the foot audio.
 // Pure part (no game).
 //
-// Engine (build 1491.50):
-//   - every update of the movement component C (row +0x88; 0x8EF554 runs the
-//     per-foot loop 0x8EECE8) measures h, the height of the foot over its
-//     ground plane (stored at C +0x164 + 0x90 * foot, 0x8EEEA8), and calls
-//     0x8ED350(C, h, foot) at 0x8EEE91; there h is compared with
-//     [C +0x4F0] + [C +0x550] * [C +0x5E8] (0x8ED3C9..0x8ED40C): a foot down
-//     ([C +0x15C + 0x90 * foot] < 6) that rose above it lifted, a foot up that
-//     came under it landed. The event type comes from 0x89B608 (by the gait
-//     C +0x630: 3, 4, 5, 6 give 0..3 lifting and 6..9 landing; a standing
-//     quadruped 4/10, the leg mask 5/11, gait 9 0/6, other gaits none) and
-//     goes to 0x317A1D0(foot audio, type, foot, spread, direct) at 0x8ED457;
-//   - 0x317A1D0 refuses a foot audio with +0x5A7 set, type -1 and a foot of 12
-//     or more; for a quadruped with direct 0 it parks the event in a delayed
-//     table (+0xD8, 16 entries of 12 bytes, the delays of the hoof slots
-//     +0x3A0), which the movement update 0x3193D14 drains at its start by
-//     calling 0x317A1D0 again with direct 1 (0x3193D96); otherwise it queues
-//     {type, foot} at +0xB4 + 8 * n with the count at +0xD4 (at most 4; the
-//     store at 0x317A31A is the only increment);
-//   - the movement sounds 0x3193F20 (inside 0x3193D14, after the main steps)
-//     play that queue (0x3194261..0x31942A2) through 0x318CB98, which plays
-//     feet 0..3 only and goes to 0x318D470: the type picks a field of the
-//     soundset of the foot's slot (foot audio +0x240 + 0x40 * foot, the same
-//     container the main step uses) by the hash table 0x3E683C0
-//     (0x3180E88), created at 0x318E6E8, return 0x318D509 (the callers[2] of
-//     the POSE_V2_HORSE_STEP_AUDIO lines of a secondary step).
-// A frozen puppet's ground plane goes stale (it lifts once and never lands
-// again) and its gait stays 0 (C +0x5DC is 0), so its own generator gives the
-// standing types. So a step is not recomputed from the puppet's physics:
-// each step event is recorded and replayed in normal play.
+// Why events and not physics: a frozen puppet's ground plane goes stale (it
+// lifts once and never lands again) and its gait stays 0 (C +0x5DC is 0), so
+// its own lift/land detector gives the standing types. So each step event is
+// recorded and replayed in normal play.
 //
 // The mechanism: the recorder keeps every entry the engine put in a recorded
 // ped's second queue (type, foot, the slot's container, the foot's rise), as
@@ -41,6 +16,12 @@
 // same entry on the puppet at the same clip time with direct 1 (straight into
 // the queue), after setting the recorded container on the foot's slot. While
 // a clip with the section plays, the puppet's own events are refused.
+//
+// Evidence: offline dump of build 1491.50; the code sites below hold the
+// layout and are checked by signature.
+// Research: docs/research/footsteps.md
+
+#include "game_sig_core.h"
 
 #include <algorithm>
 #include <cmath>
@@ -53,38 +34,52 @@
 
 namespace replay::footevent
 {
-    // ---- engine layout (build 1491.50) ----
-    constexpr std::uintptr_t kEnqueueRva = 0x317A1D0;      // (foot audio, type, foot, spread, direct)
-    constexpr std::uintptr_t kEnqueueStoreRva = 0x317A31A; // mov [r10+0D4h],eax; ...; mov [r10+rcx*8+0B4h],rax
-    constexpr std::uintptr_t kGeneratorCallRva = 0x8ED457; // call 0x317A1D0 from the lift/land detector 0x8ED350
-    constexpr std::uintptr_t kGeneratorReturnRva = 0x8ED45C;
-    constexpr std::uintptr_t kDrainCallRva = 0x3193D96;    // call 0x317A1D0 from the movement update's drain
-    constexpr std::uintptr_t kDrainReturnRva = 0x3193D9B;
+    namespace sig = replay::sig;
+
+    // ---- engine layout ----
     constexpr std::uintptr_t kQueueOffset = 0xB4;
     constexpr std::uintptr_t kQueueCountOffset = 0xD4;
     constexpr std::uintptr_t kQueueStride = 8;
     constexpr std::int32_t kQueueMax = 4;
-    constexpr std::uintptr_t kEnabledOffset = 0x24;  // the foot audio is on (the main entry's own test, 0x8C2B64)
-    constexpr std::uintptr_t kBlockedOffset = 0x5A7; // 0x317A1DF: set = no event
-    constexpr std::int32_t kMaxType = 11;            // 0x89B608 gives 0..11 or -1
-    constexpr std::uint8_t kMaxFoot = 12;            // 0x317A200: a foot of 12 or more is refused
-    constexpr std::uint8_t kPlayedFeet = 4;          // 0x318CC04: the consumer plays feet 0..3
+    constexpr std::uintptr_t kEnabledOffset = 0x24;  // the foot audio is on (the main entry's own test)
+    constexpr std::uintptr_t kBlockedOffset = 0x5A7; // the entry's first test: set = no event
+    constexpr std::int32_t kMaxType = 11;            // the gait table gives 0..11 or -1
+    constexpr std::uint8_t kMaxFoot = 12;            // the entry refuses a foot of 12 or more
+    constexpr std::uint8_t kPlayedFeet = 4;          // the secondary step plays feet 0..3
 
-    // The entry's prologue up to its first branch (37 bytes, unique in
-    // .text): mov rax,rsp; three saves; cmp byte [rcx+5A7h],0; mov sil,r9b;
-    // mov r11b,r8b; mov ebx,edx; mov r10,rcx; jne. The fifth argument (direct)
-    // is a byte on the stack, read at [rsp+28h] (0x317A279).
-    constexpr std::uint8_t kEnqueueSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x70, 0x18,
-        0x48, 0x89, 0x78, 0x20, 0x80, 0xB9, 0xA7, 0x05, 0x00, 0x00, 0x00, 0x41, 0x8A, 0xF1, 0x45, 0x8A, 0xD8, 0x8B,
-        0xDA, 0x4C, 0x8B, 0xD1, 0x0F, 0x85, 0x37, 0x01};
-    // 0x317A31A: mov [r10+0D4h],eax; mov rax,[rsp+8]; mov [r10+rcx*8+0B4h],rax.
-    constexpr std::uint8_t kEnqueueStoreSignature[] = {0x41, 0x89, 0x82, 0xD4, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x44,
-        0x24, 0x08, 0x49, 0x89, 0x84, 0xCA, 0xB4, 0x00, 0x00, 0x00};
-    // 0x8ED457: call 0x317A1D0; mov [rbx+rdi*8+15Ch],esi.
-    constexpr std::uint8_t kGeneratorCallSignature[] = {0xE8, 0x74, 0xCD, 0x88, 0x02, 0x89, 0xB4, 0xFB, 0x5C, 0x01,
-        0x00, 0x00};
-    // 0x3193D96: call 0x317A1D0; or dword [rdi],-1.
-    constexpr std::uint8_t kDrainCallSignature[] = {0xE8, 0x35, 0x64, 0xFE, 0xFF, 0x83, 0x0F, 0xFF};
+    // The entry's prologue up to its first branch (37 bytes): mov rax,rsp;
+    // three saves; cmp byte [rcx+5A7h],0; mov sil,r9b; mov r11b,r8b; mov
+    // ebx,edx; mov r10,rcx; jne. The fifth argument (direct) is a byte on the
+    // stack, read at [rsp+28h].
+    inline const sig::Signature kEnqueue{"foot_event_enqueue",
+        "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 80 B9 A7 05 00 00 00 41 8A F1 45 8A D8 8B DA 4C 8B D1 0F 85 ?? ?? "
+        "?? ?? 83 FA FF 0F 84 ?? ?? ?? ?? 41 80 F8 0C 0F 83 ?? ?? ?? ?? 89 50 08 44 88 40 0C 48 8B 41 18 8B 80 9C 00 00 "
+        "00 25 FF FF 01 00 2B 05 ?? ?? ?? ?? 48 69 C8 48 01 00 00 48 8B 05 ?? ?? ?? ?? 48 8B 94 01 E0 00 00 00 48 8B C2 "
+        "48 83 E0 FE 48 F7 DA 48 1B FF 48 23 F8 48 8B 87 60 06 00 00 48 85 C0 74 0A 80 78 0C 04 75 04 B0 01 EB 02 32 C0 "
+        "80 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 84 C0 0F 84 ?? ?? ?? ?? 80 7C 24 28 00",
+        0x317A1D0};
+    // The store: mov [r10+0D4h],eax; mov rax,[rsp+8]; mov [r10+rcx*8+0B4h],rax.
+    inline const sig::Signature kEnqueueStore{"foot_event_enqueue_store", kEnqueue, sig::Offset{0x14A},
+        "41 89 82 D4 00 00 00 48 8B 44 24 08 49 89 84 CA B4 00 00 00", 0x317A31A};
+    // The lift/land detector's call of the entry; mov [rbx+rdi*8+15Ch],esi.
+    inline const sig::Signature kGenerator{"foot_event_generator",
+        "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 41 56 41 57 48 83 EC 30 48 8B 41 08", 0x8ED350};
+    inline const sig::Signature kGeneratorCall{"foot_event_generator_call", kGenerator, sig::Offset{0x107},
+        "E8 ?? ?? ?? ?? 89 B4 FB 5C 01 00 00", 0x8ED457};
+    // The movement update's drain of the delayed table: the call; or dword
+    // [rdi],-1.
+    inline const sig::Signature kMovementUpdate{"foot_event_movement_update",
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 48 83 EC 50 0F 29 70 E8 48 8D B9 E0 00 00 00", 0x3193D14};
+    inline const sig::Signature kDrainCall{"foot_event_drain_call", kMovementUpdate, sig::Offset{0x82},
+        "E8 ?? ?? ?? ?? 83 0F FF", 0x3193D96};
+
+    // The return addresses of the two calls (call + 5) as RVAs in this game,
+    // 0 for a call not found (nothing matches it).
+    struct CallReturns
+    {
+        std::uint32_t generator = 0;
+        std::uint32_t drain = 0;
+    };
 
     // The target of a rel32 call at `rva` whose bytes start with E8.
     inline std::uintptr_t CallTarget(std::uintptr_t rva, const std::uint8_t* bytes)
@@ -98,8 +93,8 @@ namespace replay::footevent
     enum class Origin : std::uint8_t
     {
         Other = 0,
-        Generator = 1, // 0x8ED457 (the movement component's lift or landing)
-        Drain = 2,     // 0x3193D96 (the delayed table of a quadruped)
+        Generator = 1, // kGeneratorCall (the movement component's lift or landing)
+        Drain = 2,     // kDrainCall (the delayed table of a quadruped)
         Replay = 3,    // the replay's own (PlayFootEvent)
     };
 
@@ -114,16 +109,18 @@ namespace replay::footevent
         }
     }
 
-    inline Origin OriginOf(std::uintptr_t returnRva)
+    inline Origin OriginOf(std::uintptr_t returnRva, const CallReturns& calls)
     {
-        return returnRva == kGeneratorReturnRva ? Origin::Generator
-            : returnRva == kDrainReturnRva     ? Origin::Drain
-                                               : Origin::Other;
+        if (!returnRva)
+            return Origin::Other;
+        return returnRva == calls.generator ? Origin::Generator
+            : returnRva == calls.drain     ? Origin::Drain
+                                           : Origin::Other;
     }
 
     // The 8-byte queue entry: the type as a dword, the foot as the next byte
-    // (0x317A20A/0x317A20D build it in the shadow space; the last three bytes
-    // are whatever was there).
+    // (the entry builds it in the shadow space; the last three bytes are
+    // whatever was there).
     inline void DecodeQueueEntry(const std::uint8_t (&raw)[kQueueStride], std::int32_t& type, std::uint8_t& foot)
     {
         type = static_cast<std::int32_t>(static_cast<std::uint32_t>(raw[0]) | (static_cast<std::uint32_t>(raw[1]) << 8) |
@@ -294,9 +291,9 @@ namespace replay::footevent
 
     struct WindowCounts
     {
-        std::uint32_t calls = 0;   // calls of 0x317A1D0 on this foot audio
-        std::uint32_t gen = 0;     // ... from the generator 0x8ED457
-        std::uint32_t drain = 0;   // ... from the drain 0x3193D96
+        std::uint32_t calls = 0;   // calls of the entry on this foot audio
+        std::uint32_t gen = 0;     // ... from the generator (kGeneratorCall)
+        std::uint32_t drain = 0;   // ... from the drain (kDrainCall)
         std::uint32_t other = 0;   // ... from anywhere else
         std::uint32_t enq = 0;     // entries the engine put in the queue
         std::uint32_t refused = 0; // the puppet's own, refused (a clip with FSEV)
@@ -429,9 +426,9 @@ namespace replay::footevent
     }
 
     // ---- the soundset field of a step's indirect ref ----
-    // A step's sound is an indirect ref 0x8000NN00'xxxxxxxx (0x252A888: bit 23
-    // of the high dword and the field index NN), xxxxxxxx the container's low
-    // dword.
+    // A step's sound is an indirect ref 0x8000NN00'xxxxxxxx (the child ref
+    // builder: bit 23 of the high dword and the field index NN), xxxxxxxx the
+    // container's low dword.
     inline bool IndirectField(std::uint64_t ref, std::uint8_t& field, std::uint32_t& container)
     {
         if ((ref >> 48) != 0x80u)
@@ -442,23 +439,40 @@ namespace replay::footevent
     }
 
     // ---- the paths of the player's horse's step sounds (HORSE_STEP_PATHS) ----
-    // callers[2] of a create-and-play (return addresses, build 1491.50).
-    constexpr std::uint32_t kMainStepCaller = 0x318D25B;      // 0x318D1B8, the main step's create (0x318D256)
-    constexpr std::uint32_t kSecondaryStepCaller = 0x318D509; // 0x318D470, the second queue's sound (0x318D504)
-    constexpr std::uint32_t kWetLayerCaller = 0x318D3A9;      // 0x318D1B8, the wet layer (0x318D3A4 -> 0x318CEB4)
+    // callers[2] of a create-and-play: the main step's create and its wet
+    // layer, and the secondary step's sound (the second queue's).
+    inline const sig::Signature kMainStep{"foot_event_main_step",
+        "48 8B C4 48 89 58 18 55 56 57 41 56 41 57 48 8D A8 48 FF FF FF 48 81 EC 90 01 00 00 44 0F B6 4A 0C",
+        0x318D1B8};
+    inline const sig::Signature kMainStepCall{"foot_event_main_step_call", kMainStep, sig::Offset{0x9E},
+        "E8 ?? ?? ?? ??", 0x318D256};
+    inline const sig::Signature kWetLayerCall{"foot_event_wet_layer_call", kMainStep, sig::Offset{0x1EC},
+        "E8 ?? ?? ?? ??", 0x318D3A4};
+    inline const sig::Signature kSecondaryStep{"foot_event_secondary_step",
+        "4C 8B DC 49 89 5B 10 49 89 73 18 57 48 81 EC 70 01 00 00", 0x318D470};
+    inline const sig::Signature kSecondaryStepCall{"foot_event_secondary_step_call", kSecondaryStep, sig::Offset{0x94},
+        "E8 ?? ?? ?? ??", 0x318D504};
+    // Their return addresses (call + 5) as RVAs in this game, 0 for a call
+    // not found (nothing matches it).
+    struct StepCallers
+    {
+        std::uint32_t main = 0;
+        std::uint32_t secondary = 0;
+        std::uint32_t wet = 0;
+    };
     struct PathCounts
     {
         std::uint32_t requests = 0, main = 0, secondary = 0, wet = 0, other = 0;
         std::map<std::uint8_t, std::uint32_t> secondaryFields; // NN -> count
         bool Any() const { return requests != 0; }
-        void Add(std::uint32_t caller2, std::uint64_t ref)
+        void Add(const StepCallers& paths, std::uint32_t caller2, std::uint64_t ref)
         {
             ++requests;
-            if (caller2 == kMainStepCaller)
+            if (caller2 && caller2 == paths.main)
                 ++main;
-            else if (caller2 == kWetLayerCaller)
+            else if (caller2 && caller2 == paths.wet)
                 ++wet;
-            else if (caller2 == kSecondaryStepCaller)
+            else if (caller2 && caller2 == paths.secondary)
             {
                 ++secondary;
                 std::uint8_t field = 0;
@@ -488,24 +502,24 @@ namespace replay::footevent
     }
 
     // ---- the movement component's state (MOTION_STATE) ----
-    // Offsets in the row +0x88 component C (build 1491.50):
-    constexpr std::uintptr_t kSpeedOffset = 0x5DC;      // the smoothed speed (0x8EC5D1), read by 0x8F162A
-    constexpr std::uintptr_t kGaitOffset = 0x630;       // the gait 0x8F14A4 writes
-    constexpr std::uintptr_t kGaitLoadedOffset = 0x634; // the gait whose thresholds 0x8ED774 loaded (0x8F1A01)
-    constexpr std::uintptr_t kGaitTableOffset = 0x4C0;  // pointer; T1..T4 at +4..+0x10 (0x8F1632..0x8F1672)
-    constexpr std::uintptr_t kThresholdBaseOffset = 0x4F0;  // the lift threshold base (0x8ED3DD)
-    constexpr std::uintptr_t kThresholdScaleOffset = 0x550; // times ... (0x8ED3C9)
-    constexpr std::uintptr_t kThresholdInputOffset = 0x5E8; // ... [row +0xE0 +0x6AC] (0x8EFA3C)
-    constexpr std::uintptr_t kFootStateOffset = 0x15C;  // + 0x90 * foot: the last event type (0x8ED45C), < 6 = down
-    constexpr std::uintptr_t kFootRiseOffset = 0x160;   // + 0x90 * foot: the highest rise since the contact (0x8EEEC3)
-    constexpr std::uintptr_t kFootHeightOffset = 0x164; // + 0x90 * foot: h of the last update (0x8EEEA8)
+    // Offsets in the row +0x88 component C (read only, for the log):
+    constexpr std::uintptr_t kSpeedOffset = 0x5DC;      // the smoothed speed, read by the gait choice
+    constexpr std::uintptr_t kGaitOffset = 0x630;       // the gait the gait choice writes
+    constexpr std::uintptr_t kGaitLoadedOffset = 0x634; // the gait whose thresholds the threshold load took
+    constexpr std::uintptr_t kGaitTableOffset = 0x4C0;  // pointer; T1..T4 at +4..+0x10 (the gait choice)
+    constexpr std::uintptr_t kThresholdBaseOffset = 0x4F0;  // the lift threshold base (the generator)
+    constexpr std::uintptr_t kThresholdScaleOffset = 0x550; // times ... (the generator)
+    constexpr std::uintptr_t kThresholdInputOffset = 0x5E8; // ... [row +0xE0 +0x6AC] (the foot update)
+    constexpr std::uintptr_t kFootStateOffset = 0x15C;  // + 0x90 * foot: the last event type (generator), < 6 = down
+    constexpr std::uintptr_t kFootRiseOffset = 0x160;   // + 0x90 * foot: the highest rise since the contact
+    constexpr std::uintptr_t kFootHeightOffset = 0x164; // + 0x90 * foot: h of the last update (the foot loop)
     constexpr std::uintptr_t kFootStride = 0x90;
-    constexpr std::uintptr_t kContactsAOffset = 0x61C;  // incremented at 0x8EF17A (PED_VARS row88_61c)
-    constexpr std::uintptr_t kContactsBOffset = 0x620;  // incremented at 0x8EF183, zeroed on a gait change (0x8F1A07)
-    constexpr std::uintptr_t kByte63EOffset = 0x63E;    // written at 0x8EF78F/0x8EFC52 (the foot update's state byte)
+    constexpr std::uintptr_t kContactsAOffset = 0x61C;  // incremented by the foot update (PED_VARS row88_61c)
+    constexpr std::uintptr_t kContactsBOffset = 0x620;  // incremented by the foot update, zeroed on a gait change
+    constexpr std::uintptr_t kByte63EOffset = 0x63E;    // written by the foot update (its state byte)
     // In the row (component table entry): +0xA8 the mount link, +0xD0 the
     // motion state object ([+0x298] state, [+0x2A0] move blend ratio, read by
-    // 0x8E53BC and 0x8F16B6).
+    // the motion state getters).
     constexpr std::uintptr_t kRowMountLinkSlot = 0xA8;
     constexpr std::uintptr_t kRowMotionSlot = 0xD0;
     constexpr std::uintptr_t kMotionStateOffset = 0x298;
@@ -567,13 +581,13 @@ namespace replay::footevent
     constexpr std::uint32_t kMotionLineCap = 900; // per phase
 
     // ---- the movement volume's inputs (MOVEMENT_TERM_DETAIL) ----
-    // 0x31815C4 (foot audio, limb, foot, value, out low-pass) is the volume
-    // term every step sound adds (main 0x318D52C and secondary 0x318CB98). It
-    // calls 0x317B9D0(holder +0x750, ...) first (the component whose byte
-    // +0x24 is holder +0x774), then the player term (-2.0 at 0x3E67E5C). This
-    // line gives the inputs and the result per owner and 5 s, recording
-    // against replay, to tell which term makes a volume differ.
-    constexpr std::uintptr_t kMovementLimbComponentOffset = 0x750; // in the ped audio holder (0x3181603)
+    // The movement volume (foot audio, limb, foot, value, out low-pass) is the
+    // volume term every step sound adds (the main and the secondary step). It
+    // calls the limb gate (holder +0x750, ...) first (the component whose byte
+    // +0x24 is holder +0x774), then the player term (-2.0, a constant of the
+    // exe). This line gives the inputs and the result per owner and 5 s,
+    // recording against replay, to tell which term makes a volume differ.
+    constexpr std::uintptr_t kMovementLimbComponentOffset = 0x750; // in the ped audio holder (the movement volume)
     constexpr std::uintptr_t kMovementLimbGateOffset = 0x774;      // holder +0x750 +0x24
     constexpr std::uintptr_t kMovementF504Offset = 0x504;          // foot audio (the step volume scale input)
     struct MovementWindow

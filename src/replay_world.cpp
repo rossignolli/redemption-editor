@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <share.h> // _SH_DENYNO
 #include <sstream>
 #include <string>
 #include <vector>
@@ -322,7 +323,7 @@ namespace replay::world
 
         void WriteBackupFile()
         {
-            FILE* file = _wfopen(BackupFile().c_str(), L"w");
+            FILE* file = _wfsopen(BackupFile().c_str(), L"w", _SH_DENYNO);
             if (!file)
                 return;
             std::fprintf(file, "WORLDIPL 1\n");
@@ -869,7 +870,7 @@ namespace replay::world
         if (!player || !ENTITY::DOES_ENTITY_EXIST(player))
             return;
         g_restoreLeftPending = false;
-        FILE* file = _wfopen(BackupFile().c_str(), L"r");
+        FILE* file = _wfsopen(BackupFile().c_str(), L"r", _SH_DENYNO);
         if (!file)
             return;
         std::vector<IplBackup> ipls;
@@ -889,7 +890,7 @@ namespace replay::world
             if (line[0] == 'I')
             {
                 unsigned hash = 0;
-                if (std::sscanf(line, "I %u %d %d", &hash, &was, &applied) == 3)
+                if (sscanf_s(line, "I %u %d %d", &hash, &was, &applied) == 3)
                     ipls.push_back({hash, was != 0, applied != 0});
             }
             else if (line[0] == 'S')
@@ -897,8 +898,8 @@ namespace replay::world
                 SetBackup b;
                 unsigned hash = 0;
                 char name[64]{};
-                if (std::sscanf(line, "S %u %f %f %f %d %d %63s", &hash, &b.position[0], &b.position[1], &b.position[2], &was,
-                        &applied, name) == 7)
+                if (sscanf_s(line, "S %u %f %f %f %d %d %63s", &hash, &b.position[0], &b.position[1], &b.position[2], &was,
+                        &applied, name, static_cast<unsigned>(sizeof(name))) == 7)
                 {
                     b.interiorHash = hash;
                     b.was = was != 0;

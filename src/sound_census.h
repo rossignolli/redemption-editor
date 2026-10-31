@@ -11,11 +11,11 @@
 // SOUND_MISSING_SUMMARY. RedemptionEditor.ini:
 //   SoundCheck      the cheap census and the report; default 1 with
 //                   Debug=1, 0 without. Off, the hooks stay
-//                   only for SoundCapture and nothing is counted
+//                   only for the sound capture and nothing is counted
 //   SoundCensus=0   1: also one SOUND_CENSUS log line per sound (for the
 //                   developer tools that compare runs)
-//   SoundCapture=1  the census-level capture (sound_capture.h): 1 vehicles,
-//                   train cars and objects; 2 every recorded owner; 0 off
+// The census-level capture (sound_capture.h) records vehicles, train cars
+// and objects (CaptureMode 1).
 
 #include "replay_context.h"
 #include "sound_census_core.h"
@@ -92,7 +92,7 @@ namespace replay::census
     // (the last recording's, or the clip census's player at a playback).
     std::uint32_t RecordedPlayerId();
     // The recorded player's speech lines are said by the hidden live player in this
-    // playback (SpeechPlayerOnPlayer): their sounds count as his.
+    // playback (speech_player_route.h): their sounds count as his.
     void SetPlayerSpeechProxy(bool on);
     const char* Phase();
 

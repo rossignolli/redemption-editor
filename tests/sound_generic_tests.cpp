@@ -129,16 +129,27 @@ namespace
 
     void TestFamilyCaller()
     {
+        const WrapperCode code = KnownWrapperCode();
         const std::uint32_t queued[kCallerFrames] = {kWrapper, kGameCaller, 0, 0};
-        Check(FamilyCaller(queued, kCallerFrames) == kGameCaller, "family: the first frame outside the wrappers");
+        Check(FamilyCaller(queued, kCallerFrames, code) == kGameCaller, "family: the first frame outside the wrappers");
         const std::uint32_t direct[kCallerFrames] = {0x251686C, 0x2589214, 0x313C5E8, 0};
-        Check(FamilyCaller(direct, kCallerFrames) == 0x313C5E8, "family: the creators' entries are skipped too");
+        Check(FamilyCaller(direct, kCallerFrames, code) == 0x313C5E8, "family: the creators' entries are skipped too");
         const std::uint32_t only[kCallerFrames] = {kWrapper, kDrain, 0, 0};
-        Check(FamilyCaller(only, kCallerFrames) == kWrapper, "family: all inside the wrappers: the nearest");
+        Check(FamilyCaller(only, kCallerFrames, code) == kWrapper, "family: all inside the wrappers: the nearest");
         const std::uint32_t none[kCallerFrames] = {};
-        Check(FamilyCaller(none, kCallerFrames) == 0, "family: no frame, no caller");
-        Check(InAudioEntityWrappers(0x258A348) && InAudioEntityWrappers(0x312D8BC) && !InAudioEntityWrappers(0x2F1CEF8),
+        Check(FamilyCaller(none, kCallerFrames, code) == 0, "family: no frame, no caller");
+        Check(InAudioEntityWrappers(0x258A348, code) && InAudioEntityWrappers(0x312D8BC, code) &&
+                  !InAudioEntityWrappers(0x2F1CEF8, code),
             "family: the wrapper ranges");
+        // The 1491.50 runs: the creators' entries to creator A's end, the
+        // wrappers to the queue drain's end, the other drain, the drain.
+        Check(code.creators.begin == 0x2516088u && code.creators.end == 0x251708Fu && code.wrappers.begin == 0x2588794u &&
+                  code.wrappers.end == 0x258A546u && code.otherDrain.begin == 0x312D8BCu &&
+                  code.otherDrain.end == 0x312DB4Au && code.drain.begin == 0x258A348u && code.drain.end == 0x258A546u,
+            "family: the known runs end where the functions end");
+        Check(FamilyCaller(queued, kCallerFrames, WrapperCode{}) == kWrapper &&
+                  !InAudioEntityWrappers(0x258A348, WrapperCode{}),
+            "family: no range found, every frame names its family");
     }
 
     void TestRing()
@@ -205,6 +216,7 @@ namespace
         Recorder recorder;
         Track track;
         Config config;
+        config.code = KnownWrapperCode();
         recorder.Begin(config, &track, 0);
         // A queued request answered 35 ms later.
         recorder.Life(Enqueue(0xA, kHoofRef, 1000000), 100, OwnerInfo{});
@@ -268,7 +280,7 @@ namespace
         recorder.Life(Enqueue(0x13, kHoofRef, 7000000), 900, OwnerInfo{});
         recorder.Tick(7000000 + Recorder::kPendingExpireUs, 5900);
         Check(recorder.Pending() == 0 && stats.pendingExpired == 1, "creates: a request older than 5 s expires");
-        Check(stats.bytes == 6 * kCreatePacketBytesV4Min, "creates: the bytes are the clip's"); // SGEN v4
+        Check(stats.bytes == 6 * kCreatePacketBytesV5Min, "creates: the bytes are the clip's"); // SGEN v5
         recorder.End();
         Check(stats.liveAtStop == 6 && !recorder.Active(), "creates: the sounds alive at the stop");
     }
@@ -278,6 +290,7 @@ namespace
         Recorder recorder;
         Track track;
         Config config;
+        config.code = KnownWrapperCode();
         config.updateHz = 20; // 50 ms
         recorder.Begin(config, &track, 0);
         recorder.AdjustCall(Adjusted(Adjust::Volume, 0x1000, 1000, -3.0f), 1);
@@ -317,7 +330,7 @@ namespace
         Check(stats.adjustCalls == 18 && stats.adjustRecorded == 14 && stats.adjustCallsByKind[static_cast<int>(Adjust::Variable)] == 10 &&
                 stats.adjustRecordedByKind[static_cast<int>(Adjust::Volume)] == 3,
             "sampler: the counts per kind");
-        Check(stats.bytes == kCreatePacketBytesV4Min + 3 * AdjustPacketBytes(Adjust::Volume) + AdjustPacketBytes(Adjust::Position) +
+        Check(stats.bytes == kCreatePacketBytesV5Min + 3 * AdjustPacketBytes(Adjust::Volume) + AdjustPacketBytes(Adjust::Position) +
                     AdjustPacketBytes(Adjust::Pitch) + 9 * AdjustPacketBytes(Adjust::Variable),
             "sampler: the bytes");
         Check(AdjustPacketBytes(Adjust::Position) == 21 && AdjustPacketBytes(Adjust::Volume) == 13 &&
@@ -330,7 +343,10 @@ namespace
     {
         Recorder recorder;
         Track track;
-        recorder.Begin(Config{}, &track, 0);
+        Config config;
+        config.code = KnownWrapperCode();
+        config.code = KnownWrapperCode();
+        recorder.Begin(config, &track, 0);
         recorder.Life(End(LifeKind::Release, 0x9999, 1000), 1, OwnerInfo{});
         Check(track.ends.empty() && recorder.StatsNow().endsUnknown == 1, "ends: a release of an unknown sound is counted");
         recorder.Life(Create(0xA, kHoofRef, 0x1000, 1000000, false), 100, OwnerInfo{});
@@ -350,7 +366,7 @@ namespace
         Check(stats.endsStop == 0 && stats.endsStopAndForget == 1 && stats.endsRelease == 2 && stats.endsReleaseAfterStop == 1 &&
                 stats.livePeak == 2 && recorder.Live() == 0,
             "ends: the counts");
-        Check(stats.bytes == 2 * kCreatePacketBytesV4Min + 3 * kEndPacketBytes, "ends: the bytes"); // SGEN v4
+        Check(stats.bytes == 2 * kCreatePacketBytesV5Min + 3 * kEndPacketBytes, "ends: the bytes"); // SGEN v5
     }
 
     void TestGovernor()
@@ -388,6 +404,7 @@ namespace
         Recorder recorder;
         Track track;
         Config config;
+        config.code = KnownWrapperCode();
         config.maxMBPerMin = 0.0001; // about 105 bytes a minute: one create is over it
         recorder.Begin(config, &track, 0);
         recorder.Life(Create(0xA, kHoofRef, 0x1000, 1000, false), 1, OwnerInfo{});
@@ -584,6 +601,7 @@ namespace
         Recorder recorder;
         Track track;
         Config config;
+        config.code = KnownWrapperCode();
         config.updateHz = 20; // 50 ms
         recorder.Begin(config, &track, 0);
         recorder.Life(Create(0xA, kHoofRef, 0x1000, 1000000, false), 100, OwnerInfo{});

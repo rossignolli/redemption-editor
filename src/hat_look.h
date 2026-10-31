@@ -2,45 +2,25 @@
 
 // The look of a loose hat object, whatever path recorded it.
 //
-// A hat knocked off a ped is an object of a generic model (0x30762E1A,
-// 0xE6856EC4 and 0x0B8A6250 are the only models seen with origin=hat) that
-// draws the metaped layer it carries: the drawable, albedo, normal,
-// material, palette and three tints, the eight values _SET_META_PED_TAG
-// takes. The bare model built by CREATE_OBJECT has no layer and draws as a
-// grey octagon. Engine layout, build 1491.50:
-//
-// - _GET_SHOP_ITEM_HAT_COMPONENT (0x7E02E4218D916B94, handler 0xFB6900)
-//   takes the hat object (short_update.c calls it on the object of
-//   EVENT_PLAYER_HAT_KNOCKED_OFF and EVENT_PLAYER_HAT_EQUIPPED). Its core
-//   0xFD4E58 accepts only an object (entity type byte [+0x30] == 5) with a
-//   tag count word [+0x418] above 0, takes the tag array [+0x410] and passes
-//   tag 0's +0xC, +0x10, +0x14, +0x18 and the qword +0x0 to the shop item
-//   lookup 0x2B34DD4.
-// - 0xB440C8 calls the same lookup for a ped's layer with the drawable,
-//   albedo, normal and material (its getters 0xB439C4, 0xB42D4C, 0xB44A5C,
-//   0xB44704 read slots 0, 8, 0x10, 0x18 of the ped's layer, the order
-//   GET_META_PED_ASSET_GUIDS's core 0xB443D8 returns them in) and the packed
-//   qword of 0xB4619C, the source GET_META_PED_ASSET_TINT unpacks: so +0xC
-//   is the drawable, +0x10 the albedo, +0x14 the normal, +0x18 the material
-//   and +0x0 the packed palette and tints.
-// - The packing is _SET_META_PED_TAG's 0x2B3FE34: palette in the high dword,
-//   tint0 in byte 2, tint1 in byte 1, tint2 in byte 0 (0xB5E4E4 unpacks it
-//   the same way).
-// - The object streaming walk 0xF1813C steps through the tags by 0x38 (its
-//   loop end at 0xF1847B) and requests each tag's assets from +0x20, +0x24,
-//   +0x28 (-1: none).
+// A hat knocked off a ped is an object of a generic model that draws the
+// metaped layer it carries (drawable, albedo, normal, material, palette and
+// three tints: the eight values _SET_META_PED_TAG takes). The bare model built
+// by CREATE_OBJECT has no layer and draws as a grey octagon, so the look is
+// read from the object's tag array.
 //
 // The script thread reads the tags under the guard (replay::mem) after both
 // code sites matched their bytes; no engine write. The look recorded is what
 // the hat draws; playback rebuilds the hat the way the engine made it: a ped
 // puppet wears the layer and drops it (KNOCK_OFF_PED_PROP), and the dropped
 // object carries the look (the generic model takes no layer from script).
-// A replay editor usually records a loose ped prop the same way: the prop's
-// hash, texture and anchor in the object's create, whatever path made it.
+//
+// Evidence: offline dump (tag layout and packing).
+// Research: docs/research/hats-look-and-chain.md
 //
 // Pure: unit tested in tests/scenery_speech_tests.cpp.
 
 #include "entity_lifecycle.h"
+#include "game_sig_core.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -50,20 +30,21 @@
 
 namespace replay::hatlook
 {
-    // ---- engine layout (build 1491.50) ---------------------------------------
+    // ---- engine layout ---------------------------------------------------------
 
-    constexpr std::uint32_t kTagCoreRva = 0xFD4E58;
-    // 0xFD4E58..0xFD4E96: prologue, the type test, the count and the array
-    // offsets and tag 0's four dword reads (+0x18, +0xC, +0x10, +0x14) and
-    // the qword +0x0.
-    constexpr std::uint8_t kTagCoreSignature[] = {
-        0x48, 0x89, 0x5C, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x50, 0x33, 0xFF, 0x45, 0x8A, 0xD8, 0x8B,
-        0xDA, 0x48, 0x85, 0xC9, 0x74, 0x7F, 0x80, 0x79, 0x30, 0x05, 0x75, 0x79, 0x66, 0x39, 0xB9, 0x18,
-        0x04, 0x00, 0x00, 0x76, 0x70, 0x4C, 0x8B, 0x89, 0x10, 0x04, 0x00, 0x00, 0x41, 0x8B, 0x41, 0x18,
-        0x45, 0x8B, 0x41, 0x0C, 0x41, 0x8B, 0x51, 0x10, 0x41, 0x8B, 0x49, 0x14, 0x4D, 0x8B, 0x11};
-    // 0xF1847B: inc r12; add rdi, 0x38; cmp r12, [rbp-0x10] (the tag walk).
-    constexpr std::uint32_t kTagWalkRva = 0xF1847B;
-    constexpr std::uint8_t kTagWalkSignature[] = {0x49, 0xFF, 0xC4, 0x48, 0x83, 0xC7, 0x38, 0x4C, 0x3B, 0x65, 0xF0};
+    // The hat component's core: prologue, the type test, the count and the
+    // array offsets and tag 0's four dword reads (+0x18, +0xC, +0x10, +0x14)
+    // and the qword +0x0.
+    inline const sig::Signature kTagCore{"hat_tag_core",
+        "48 89 5C 24 10 57 48 83 EC 50 33 FF 45 8A D8 8B DA 48 85 C9 74 7F 80 79 30 05 75 79 66 39 B9 18 04 00 00 76 70 "
+        "4C 8B 89 10 04 00 00 41 8B 41 18 45 8B 41 0C 41 8B 51 10 41 8B 49 14 4D 8B 11",
+        0xFD4E58};
+    // The object streaming walk, and its loop end: inc r12; add rdi, 0x38;
+    // cmp r12, [rbp-0x10] (the tag walk).
+    inline const sig::Signature kStreamWalk{"hat_stream_walk",
+        "48 85 C9 0F 84 ?? ?? ?? ?? 48 89 5C 24 10 48 89 74 24 18 48 89 7C 24 20", 0xF1813C};
+    inline const sig::Signature kTagWalk{"hat_tag_walk", kStreamWalk, sig::Offset{0x33F}, "49 FF C4 48 83 C7 38 4C 3B 65 F0",
+        0xF1847B};
 
     constexpr std::uint32_t kEntityTypeOffset = 0x30;
     constexpr std::uint8_t kEntityTypeObject = 5;

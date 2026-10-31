@@ -1,6 +1,8 @@
 #include "rope_observer.h"
 
 #include "audio_observer.h"
+#include "engine_calls.h"
+#include "game_sig.h"
 
 #include <windows.h>
 
@@ -12,9 +14,34 @@ namespace replay::rope
 {
     namespace
     {
-        // Offline layout of the retail rope manager: the manager pointer, its
-        // active list and the rope instance fields.
-        constexpr std::uintptr_t kRopeManagerRva = 0x453A4A8;
+        namespace sig = replay::sig;
+
+        // The rope manager (a pointer), its active list and the rope instance
+        // fields. GET_ROPE_VERTEX_COUNT's core loads the manager, then takes
+        // the vertex count (+0x58) less the drawn window's unused tail (+0xCC)
+        // and first index (+0xC8).
+        const sig::Signature kRopeVertexCountCore{"rope_vertex_count",
+            "48 83 EC 28 8B D1 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 1F E8 ?? ?? ?? ?? 48 8B C8 48 85 C0 74 12 0F B7 40 58 2B "
+            "81 CC 00 00 00 2B 81 C8 00 00 00 EB 02 33 C0 48 83 C4 28 C3",
+            0xFD4930};
+        const sig::Signature kRopeManager{"rope_manager", kRopeVertexCountCore, sig::Rel32{9, 13}, "", 0x453A4A8};
+        // What WriteWindow writes: GET_ROPE_LAST_VERTEX_COORD's core reads the
+        // positions (+0x50, 16 bytes a vertex) up to the unused tail; a pass of
+        // the engine over a rope's vertices takes the drawn window (+0xC8,
+        // +0xCC, +0x58), the previous step (+0x40) and the positions (+0x50).
+        const sig::Signature kRopeLastVertex{"rope_last_vertex",
+            "40 53 48 83 EC 20 48 8B D9 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 27 E8 ?? ?? ?? ?? 48 85 C0 74 1D 0F B7 48 58 2B "
+            "88 CC 00 00 00 48 8B 40 50 FF C9 48 03 C9 0F 10 04 C8 F3 0F 7F 03 EB 06 0F 57 C0 0F 11 03 48 8B C3 48 83 C4 "
+            "20 5B C3",
+            0xFD4894};
+        const sig::Signature kRopeVertexPass{"rope_vertex_pass",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 81 EC 30 01 00 00 BE 10 00 00 00",
+            0x2D1CBD0};
+        const sig::Signature kRopeVertexArrays{"rope_vertex_arrays", kRopeVertexPass, sig::Offset{0xC8},
+            "41 8B BE C8 00 00 00 41 8B 9E CC 00 00 00 E8 ?? ?? ?? ?? 45 0F B7 4E 58 49 8D 46 70 89 5C 24 58 49 8D 8E 80 "
+            "00 00 00 89 7C 24 50 4D 8D 46 60 48 89 44 24 48 33 D2 49 8B 46 40 48 89 4C 24 40 48 8D 8C 24 A0 00 00 00 48 "
+            "83 64 24 38 00 48 89 44 24 30 49 8B 46 50",
+            0x2D1CC98};
         constexpr std::uint64_t kManagerCount = 0x30;
         constexpr std::uint64_t kManagerListHead = 0x58;
         constexpr std::uint64_t kRopePrevious = 0x40;
@@ -50,13 +77,28 @@ namespace replay::rope
         // Attachment entity setter used by the engine rope attach
         // (release the old entity reference, add one to the new, store at
         // entry+0x38): two arguments, entry and entity.
-        constexpr std::uintptr_t kSetAttachmentEntityRva = 0x2D24DE0;
-        constexpr std::uint8_t kSetAttachmentEntitySignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B,
-            0xF9, 0x48, 0x8B, 0xDA, 0x48, 0x8B, 0x49, 0x38, 0x48, 0x85, 0xC9, 0x74};
-        using SetAttachmentEntityFn = void(__fastcall*)(std::uint64_t entry, std::uint64_t entity);
+        const sig::Signature kRopeSetAttachmentEntity{"rope_set_attachment_entity",
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 8B DA 48 8B 49 38 48 85 C9 74 06", 0x2D24DE0};
 
+        // The reins slot setter: the entry of a slot (rope +0x2C0, 0x80 each)
+        // through the entity setter, then its active byte (+0x70).
+        const sig::Signature kRopeSlotSetter{"rope_slot_setter",
+            "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 41 56 48 83 EC 20 48 8B 41 10 48 8B F1 44 8B F2 41 8A D9 49 C1 "
+            "E6 07 48 8B 90 A0 07 00 00 48 8B BA C0 02 00 00 49 8B D0 49 03 FE 48 8B CF E8 ?? ?? ?? ?? 80 7C 24 50 00 88 "
+            "5F 70 C6 47 74 00",
+            0x6FA1E4};
         constexpr std::uint64_t kAttachmentActive = 0x70;
+
+        // The reins controller update sets and clears the held flag of its rope
+        // ([[ctrl+0x10]+0x7A0] +0x758, 0x20000000).
+        const sig::Signature kRopeReinsUpdate{"rope_reins_update",
+            "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D A8 A8 FD FF FF 48 81 EC 30 03 "
+            "00 00 83 41 6C FF",
+            0x70457C};
+        const sig::Signature kRopeHeldFlag{"rope_held_flag", kRopeReinsUpdate, sig::Offset{0xA4},
+            "48 8B 41 10 48 8B 88 A0 07 00 00 81 E2 04 40 00 00 74 0D F0 81 89 58 07 00 00 00 00 00 20 EB 08 F0 44 21 81 "
+            "58 07 00 00",
+            0x704620};
 
         bool GuardedWrite(std::uint64_t address, const void* data, std::size_t size)
         {
@@ -71,17 +113,9 @@ namespace replay::rope
             }
         }
 
-        bool GuardedSetEntity(SetAttachmentEntityFn setter, std::uint64_t entry, std::uint64_t entity)
+        bool GuardedSetEntity(std::uintptr_t setter, std::uint64_t entry, std::uint64_t entity)
         {
-            __try
-            {
-                setter(entry, entity);
-                return true;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kRopeSetAttachmentEntity, setter, entry, entity);
         }
 
         bool ReadVertex(std::uint64_t positions, std::uint32_t index, float out[3])
@@ -94,9 +128,9 @@ namespace replay::rope
     {
         out.clear();
         managerCount = 0;
-        const std::uint64_t base = reinterpret_cast<std::uint64_t>(GetModuleHandleW(nullptr));
+        const std::uint64_t global = sig::Find(kRopeManager);
         std::uint64_t manager = 0;
-        if (!Read(base + kRopeManagerRva, manager) || !Plausible(manager))
+        if (!global || !Read(global, manager) || !Plausible(manager))
             return false;
         if (!Read(manager + kManagerCount, managerCount) || managerCount > kMaxRopes)
             return false;
@@ -205,15 +239,11 @@ namespace replay::rope
     bool SetAttachmentEntity(std::uint64_t entry, std::uint64_t entity)
     {
         static int checked = 0; // 0 unknown, 1 matches, -1 differs
-        static SetAttachmentEntityFn setter = nullptr;
+        static std::uintptr_t setter = 0;
         if (checked == 0)
         {
-            const std::uint64_t base = reinterpret_cast<std::uint64_t>(GetModuleHandleW(nullptr));
-            std::uint8_t bytes[sizeof(kSetAttachmentEntitySignature)] = {};
-            const bool read = replay::audio::ReadBytes(base + kSetAttachmentEntityRva, bytes, sizeof(bytes));
-            checked = read && std::memcmp(bytes, kSetAttachmentEntitySignature, sizeof(bytes)) == 0 ? 1 : -1;
-            if (checked == 1)
-                setter = reinterpret_cast<SetAttachmentEntityFn>(base + kSetAttachmentEntityRva);
+            setter = sig::Find(kRopeSetAttachmentEntity);
+            checked = setter ? 1 : -1;
         }
         if (checked != 1 || !Plausible(entry) || (entity && !Plausible(entity)))
             return false;
@@ -276,7 +306,9 @@ namespace replay::rope
 
     bool WriteWindow(const RopeInfo& rope, const float* xyz, std::uint32_t count)
     {
-        if (!xyz || !count || !rope.positions || !rope.previous || rope.vertices > kMaxVertices ||
+        // Only where the engine's own code shows both arrays and the window.
+        static const bool proven = sig::Find(kRopeLastVertex) && sig::Find(kRopeVertexArrays);
+        if (!proven || !xyz || !count || !rope.positions || !rope.previous || rope.vertices > kMaxVertices ||
             count != WindowCount(rope))
         {
             return false;
@@ -291,7 +323,8 @@ namespace replay::rope
 
     bool SetAttachmentActive(std::uint64_t entry, bool active)
     {
-        if (!Plausible(entry))
+        static const bool proven = sig::Find(kRopeSlotSetter) != 0;
+        if (!proven || !Plausible(entry))
             return false;
         const std::uint16_t value = active ? 1 : 0;
         return GuardedWrite(entry + kAttachmentActive, &value, sizeof(value));
@@ -299,7 +332,8 @@ namespace replay::rope
 
     bool SetRopeFlag(const RopeInfo& rope, std::uint32_t flag, bool on)
     {
-        if (!Plausible(rope.address))
+        static const bool proven = sig::Find(kRopeHeldFlag) != 0;
+        if (!proven || !Plausible(rope.address))
             return false;
         std::uint32_t flags = 0;
         if (!Read(rope.address + kRopeFlags, flags))

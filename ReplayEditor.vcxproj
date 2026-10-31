@@ -8,11 +8,19 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="editor\replay_editor_addon.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_menus.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_export.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_projects.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_markers.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_timeline.cpp" />
+    <ClCompile Include="editor\replay_editor_addon_help.cpp" />
+    <ClInclude Include="editor\replay_editor_addon_internal.h" />
     <ClCompile Include="editor\render_export\render_export.cpp" />
     <ClCompile Include="editor\render_export\gpu_export.cpp" />
     <ClCompile Include="editor\render_export\encoder_sink.cpp" />
     <ClCompile Include="editor\render_export\libav_encoder.cpp" />
     <ClCompile Include="editor\render_export\audio_loopback.cpp" />
+    <ClCompile Include="editor\render_export\export_memory.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="editor\display_font.h" />
@@ -22,7 +30,6 @@
     <ClInclude Include="editor\clip_thumbnails.h" />
     <ClInclude Include="editor\readback_release.h" />
     <ClInclude Include="editor\seek_freeze.h" />
-    <ClInclude Include="editor\gpu_events.h" />
     <ClInclude Include="editor\rec_indicator_window.h" />
     <ClInclude Include="src\rec_indicator.h" />
     <ClInclude Include="src\ui_scale.h" />
@@ -39,6 +46,8 @@
     <ClInclude Include="editor\render_export\audio_sink.h" />
     <ClInclude Include="editor\render_export\export_controller.h" />
     <ClInclude Include="editor\render_export\export_finish.h" />
+    <ClInclude Include="editor\render_export\export_memory.h" />
+    <ClInclude Include="editor\render_export\export_segments.h" />
     <ClInclude Include="src\export_channel.h" />
     <ClInclude Include="src\export_schedule.h" />
     <ClInclude Include="src\project_export_plan.h" />
@@ -64,6 +73,7 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <RedemptionVersionBinary>2</RedemptionVersionBinary>
     <TargetName>RedemptionEditorCore</TargetName>
     <RedemptionKeepsSymbols>true</RedemptionKeepsSymbols>
     <TargetExt>.dll</TargetExt>
@@ -74,10 +84,13 @@
     <FfmpegRoot Condition="'$(FfmpegRoot)'==''">$(MSBuildThisFileDirectory)external\ffmpeg\installed\x64-windows-release\</FfmpegRoot>
     <!-- The FFmpeg 8.1 DLL names: libav_encoder.cpp loads the same names (from the headers). -->
     <FfmpegDelayLoad>avutil-60.dll;swresample-6.dll;swscale-9.dll;avcodec-62.dll;avformat-62.dll;avfilter-11.dll</FfmpegDelayLoad>
+    <!-- ReShade, ImGui (stb) and FFmpeg headers: third party, no warnings (RedemptionEditor.props). -->
+    <ExternalIncludePath>$(ProjectDir)external\reshade\include;$(ProjectDir)external\reshade\deps\imgui;$(FfmpegRoot)include;$(ExternalIncludePath)</ExternalIncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
       <Optimization>MaxSpeed</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FunctionLevelLinking>true</FunctionLevelLinking>

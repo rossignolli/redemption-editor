@@ -890,8 +890,10 @@ namespace render_export
     }
 
     bool LibavFinalizeParts(const EncodeJob& job, const std::vector<VideoPart>& parts, double audioStartS, const std::vector<Chapter>& chapters,
-        std::uint64_t durationMs, std::uint64_t frames, std::string& error)
+        std::uint64_t durationMs, std::uint64_t frames, std::string& error, FinalizeCounts* counts)
     {
+        if (counts)
+            *counts = FinalizeCounts{};
         if (!FfmpegRuntimeLoaded())
         {
             error = "ffmpeg_runtime_missing";
@@ -1089,6 +1091,8 @@ namespace render_export
                 const AVRational frame{static_cast<int>(job.rate.den), static_cast<int>(job.rate.num)};
                 shift = av_rescale_q(static_cast<std::int64_t>(partFirstFrame), frame, s.videoOut->time_base) + firstStart - start;
             }
+            if (counts)
+                counts->partPackets.push_back(0);
             while ((ret = av_read_frame(s.video, s.packet)) >= 0)
             {
                 if (s.packet->stream_index != s.videoIn)
@@ -1125,6 +1129,11 @@ namespace render_export
                     error = "write video";
                     return false;
                 }
+                if (counts)
+                {
+                    ++counts->partPackets.back();
+                    ++counts->videoPackets;
+                }
             }
             partFirstFrame += parts[part].frames;
         }
@@ -1139,6 +1148,49 @@ namespace render_export
         if (av_write_trailer(s.out) < 0)
         {
             error = "trailer";
+            return false;
+        }
+        if (counts)
+        {
+            counts->audioSamples = static_cast<std::uint64_t>(s.written);
+            counts->audioLimit = static_cast<std::uint64_t>(s.limit);
+        }
+        return true;
+    }
+
+    bool LibavVideoInfo(const std::wstring& path, std::uint64_t& frames, std::int64_t& durationUs, std::string& error)
+    {
+        frames = 0;
+        durationUs = 0;
+        if (!FfmpegRuntimeLoaded())
+        {
+            error = "ffmpeg_runtime_missing";
+            return false;
+        }
+        AVFormatContext* format = nullptr;
+        const std::string utf8 = Utf8(path);
+        int ret = avformat_open_input(&format, utf8.c_str(), nullptr, nullptr);
+        if (ret < 0 || avformat_find_stream_info(format, nullptr) < 0)
+        {
+            error = "open: " + AvError(ret);
+            if (format)
+                avformat_close_input(&format);
+            return false;
+        }
+        const int video = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+        if (video >= 0)
+        {
+            const AVStream* stream = format->streams[video];
+            frames = stream->nb_frames > 0 ? static_cast<std::uint64_t>(stream->nb_frames) : 0;
+            if (stream->duration != AV_NOPTS_VALUE)
+                durationUs = av_rescale_q(stream->duration, stream->time_base, AVRational{1, 1000000});
+        }
+        if (durationUs == 0 && format->duration != AV_NOPTS_VALUE)
+            durationUs = format->duration;
+        avformat_close_input(&format);
+        if (video < 0)
+        {
+            error = "no video stream";
             return false;
         }
         return true;

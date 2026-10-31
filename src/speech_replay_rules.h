@@ -3,27 +3,18 @@
 // The speech rules a line the replay asked does not have to pass again.
 //
 // A replayed line can die in state 3 with stop reason 6
-// (POSE_V2_SPEECH_SILENT cause=revalidation) with the code of the speech
-// entity's rules (vtable +0x68, 0x2F972C4 for a ped; the state 3 handler
-// 0x2FC486C stops the line when the code is below 0x46, 0x2F49A64):
-//   - 28 (0x1C, 0x2F975A4 at 0x2F97926): another speaker of the manager's
-//     list (+0x78, count +0x80) is saying a line whose data priority (+0x25
-//     of [line +0x68]) is at least this line's;
-//   - 41 (0x29, 0x2F97CBB): the speaker is farther from the listener than
-//     the line's range mode allows (0x2F9B3A4: 35, 60 or 100 m), unless line
-//     +0x34 is 1 (e.g. away from the replay camera);
-//   - 48 (0x30, 0x2F97E57): a scripted conversation is going on (the u16 at
-//     0x5BD2F50, which a script native reads as "> 0") or its time stamp
-//     0x5BD2F58 is not past, and neither the line's speaker nor its target
-//     (+0x78) is the player ped (0x351808), unless line +0x38 is set.
-// The three judge the world around the line (other speakers, the listener,
-// the conversation state), which in a replay is the replay's own: live the
-// recorded line passed them. A replay says a recorded line without the AI's
-// can-say rules. So with SpeechReplayRules=1 (default) the rules detour
-// (world_theatre.h kHookRules, forwarded first) gives "accepted" (0x4A) for
-// these three codes on a line the replay asked; any other code (18: the
-// speaker's own newest line of the context, 0x23: no ped, 0x2F: dead, ...)
-// stays as the engine said, and so does every world line.
+// (POSE_V2_SPEECH_SILENT cause=revalidation) on three codes of the speech
+// entity's rules: 28 (0x1C, overlap with another speaker), 41 (0x29, out of
+// range of the listener) and 48 (0x30, a scripted conversation going on).
+// The three judge the world around the line, which in a replay is the
+// replay's own: live the recorded line passed them, and a replay says a
+// recorded line without the AI's can-say rules. So with SpeechReplayRules=1
+// (default) the rules detour (world_theatre.h kHookRules, forwarded first)
+// gives "accepted" (0x4A) for these three codes on a line the replay asked;
+// any other code (18: the speaker's own newest line of the context, 0x23: no
+// ped, 0x2F: dead, ...) stays as the engine said, and so does every world
+// line.
+// Research: docs/research/speech-line-request.md
 //
 // Pure: unit tested in tests/missing_sound_tests.cpp.
 
@@ -38,7 +29,7 @@ namespace replay::speech::rules
     constexpr std::uint32_t kOutOfRange = 0x29;      // 41
     constexpr std::uint32_t kConversationOn = 0x30;  // 48
 
-    // A code below 0x46 stops the line (0x2F49A64).
+    // A code below 0x46 stops the line (the engine's failure test).
     inline bool Failed(std::uint32_t code) { return code != 0 && code < 0x46; }
 
     inline bool WorldContextCode(std::uint32_t code)

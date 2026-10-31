@@ -132,6 +132,31 @@ namespace
         Check(NormalStepMs(16) == 16 && NormalStepMs(5000) == kMaxNormalStepMs, "NormalStepMs caps only above the limit");
     }
 
+    // The time normal play did not get from the wall clock: a held frame and the
+    // rest of a stalled frame past the cap, never a pause; reset by Start.
+    void TestLostTime()
+    {
+        Transport transport;
+        transport.SetDurationMs(60000);
+        transport.Start(1000);
+        transport.Update(1016, {});
+        Check(transport.LostMs() == 0, "normal frames lose nothing");
+        transport.Update(1048, Keys(0, false, true)); // held 32 ms
+        Check(transport.HeldMs() == 32 && transport.PlayheadMs() == 16, "a held frame counts its wall time");
+        transport.Update(1648, {}); // a 600 ms stall: 200 played, 400 lost
+        Check(transport.PlayheadMs() == 216 && transport.CappedMs() == 400 && transport.LostMs() == 432,
+            "the rest of a stalled frame counts");
+        transport.SetPaused(true, 1648);
+        transport.Update(5000, Keys(0, false, true));
+        Check(transport.LostMs() == 432, "held while paused loses nothing");
+        transport.SetPaused(false, 5000);
+        transport.SetRate(2.0);
+        transport.Update(5010, Keys(0, false, true));
+        Check(transport.HeldMs() == 52, "held time counts at the rate");
+        transport.Start(6000);
+        Check(transport.LostMs() == 0, "start resets the count");
+    }
+
     void TestScrubSpeedEndsPaused()
     {
         Transport transport;
@@ -222,6 +247,21 @@ namespace
         Check(!NeedsRetarget(true, origin, closeBy), "load wait: a camera 30 m away keeps the scene");
         Check(NeedsRetarget(true, origin, farAway), "load wait: a camera 60 m away loads again there");
 
+        Check(PlanScene(false, true, origin, closeBy) == SceneStep::Start, "load scene: none of ours (another's active): start ours");
+        Check(PlanScene(true, false, origin, closeBy) == SceneStep::Lost, "load scene: ours stopped by someone else: start again");
+        Check(PlanScene(true, true, origin, closeBy) == SceneStep::Keep, "load scene: ours, active, near: keep");
+        Check(PlanScene(true, true, origin, farAway) == SceneStep::Retarget, "load scene: ours, the camera 60 m away: retarget");
+
+        StreamingIdle idle;
+        Check(idle.IdleMs(500) == 0, "streaming idle: nothing fed");
+        idle.Feed(100, 40);
+        Check(idle.IdleMs(200) == 0, "streaming idle: busy");
+        idle.Feed(300, 0);
+        idle.Feed(400, 0);
+        Check(idle.IdleMs(1300) == 1000, "streaming idle: counted from the first empty tick");
+        idle.Feed(1400, 2);
+        Check(idle.IdleMs(1500) == 0, "streaming idle: a request resets it");
+
         Check(IsLongJump(true, origin, 1000, farAway, 9000, false), "jump: a seek landing 60 m away goes black");
         Check(!IsLongJump(false, origin, 1000, farAway, 9000, false), "jump: no previous camera, no jump");
         Check(!IsLongJump(true, origin, 1000, farAway, 9000, true), "jump: a scrub never goes black");
@@ -238,6 +278,7 @@ int RunReplayTransportTests()
     TestRate();
     TestNormalPlayAndHold();
     TestStalledFrameIsNotAJump();
+    TestLostTime();
     TestScrubSpeedEndsPaused();
     TestScrubGestureChangeAndFine();
     TestScrubBoundaries();

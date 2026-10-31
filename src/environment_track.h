@@ -28,7 +28,7 @@ namespace replay
         // The weather manager's transition "over time" (SET_WEATHER_TYPE with
         // a time, as the missions do), which GET_CURR_WEATHER_STATE does not
         // return: the target type (hash, 0 none), the total and the time left
-        // in the engine's own unit (milliseconds, offline 0x7340BC multiplies
+        // in the engine's own unit (milliseconds, the transition setter multiplies
         // the seconds by 1000.0) and the manager's flag byte. transitionKnown
         // is false in an ENVT v1 clip or when the recorder could not read the
         // manager: the replay then leaves the engine's transition alone.
@@ -55,7 +55,7 @@ namespace replay
         }
 
         // The time left of a transition runs down by itself (the engine takes
-        // the frame time off every frame, offline 0x75FFEC); a sample is kept
+        // the frame time off every frame, in the transition update); a sample is kept
         // when it strays from that straight line by this much (a pause, slow
         // motion, a script restarting it), so a 40 s transition costs its first
         // and its last sample.
@@ -233,9 +233,9 @@ namespace replay
 
         // What the replay writes into the manager's transition fields for a
         // recorded total and time left, every frame. The progress is the
-        // engine's own (1 - min(left / total, 1), offline 0x75FFEC). The engine
+        // engine's own (1 - min(left / total, 1), the transition update). The engine
         // takes the frame time off the time left every frame and, at 0, makes
-        // the target the weather and clears the fields (0x733F34): the time
+        // the target the weather and clears the fields (the finalizer): the time
         // left written never goes below kMinLeftMs while the clip plays, and the
         // total grows with it so the progress stays the recorded one (capped at
         // kMaxProgress).
@@ -275,8 +275,8 @@ namespace replay
             return out;
         }
 
-        // SET_WIND_DIRECTION takes degrees (offline 0x73A01C multiplies by
-        // pi/180) and stores the vector (-sin d, -cos d, 0) (0x10594BC); a
+        // SET_WIND_DIRECTION takes degrees (its vector helper multiplies by
+        // pi/180) and stores the vector (-sin d, -cos d, 0) (its handler); a
         // negative value releases it. The track keeps GET_WIND_DIRECTION's
         // vector as atan2(y, x) (radians), so the degrees that give that vector
         // back, in [0, 360).

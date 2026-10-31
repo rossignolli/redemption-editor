@@ -4,7 +4,7 @@
 // every frame and plays with the game timers set to the recorded time, so
 // the sky it draws is a function of the clip. RDR2's volumetric clouds move
 // by accumulators the sky update integrates every frame from the game frame
-// time and the wind (0x5F8640, build 1491.50): x -= wind * speed * frame
+// time and the wind: x -= wind * speed * frame
 // time, then wrapped with fmod by a period. They start wherever the session
 // left them, so without this two playbacks of a clip draw different clouds.
 // The replay records them (guarded reads, sky_state.cpp) and pins them at the
@@ -24,12 +24,12 @@ namespace replay
     {
         enum Channel : std::uint32_t
         {
-            kNoiseX, kNoiseY, kNoiseZ,          // _SET_CLOUD_NOISE      0x4078F60
-            kPositionX, kPositionY, kPositionZ, // _SET_CLOUD_POSITION   0x3F29D10
-            kLayer0X, kLayer0Y,                 // _SET_CLOUD_LAYER 0    0x4054160
-            kLayer1X, kLayer1Y,                 // _SET_CLOUD_LAYER 1    0x4054170
-            kDriftX, kDriftY,                   // 0x085C5B61A0114F32    0x4054180
-            kRegionX, kRegionY,                 // 0x1FF8731BE1DFC0C0    0x3F28FB0
+            kNoiseX, kNoiseY, kNoiseZ,          // _SET_CLOUD_NOISE      the noise global
+            kPositionX, kPositionY, kPositionZ, // _SET_CLOUD_POSITION   the position global
+            kLayer0X, kLayer0Y,                 // _SET_CLOUD_LAYER 0    the layer array
+            kLayer1X, kLayer1Y,                 // _SET_CLOUD_LAYER 1    the layer array +0x10
+            kDriftX, kDriftY,                   // 0x085C5B61A0114F32    the drift global
+            kRegionX, kRegionY,                 // 0x1FF8731BE1DFC0C0    the region global
             kChannels
         };
 
@@ -52,7 +52,7 @@ namespace replay
     {
         std::uint32_t timeMs = 0;
         float value[sky::kChannels] = {};
-        // 0x40651E0: a third offset the same update integrates, with no
+        // The unpinned global: a third offset the same update integrates, with no
         // setter in the game: recorded to compare in the log, never applied.
         float unpinned[3] = {};
     };

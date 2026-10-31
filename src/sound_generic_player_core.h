@@ -63,6 +63,12 @@ namespace replay::soundgeneric::player
 {
     struct Config
     {
+        // The audio entity's code in the running game (audio::GenericWrapperCode):
+        // a packet's caller inside it names no game code. Empty: none is.
+        WrapperCode code;
+        // The known systems' functions (audio::OwnerCallerRanges): a packet's
+        // caller inside one names its family. Empty: none does.
+        soundowner::CallerRanges callers;
         std::uint32_t preloadMs = 500;       // SoundGenericPreloadMs: create and prepare this early
         std::uint32_t preloadDelayMs = 100;  // SoundGenericPreloadDelayMs: packets that waited this long get the preload (0: all)
         std::uint32_t holdMs = 150;          // SoundGenericHoldMs: the anti-double wait after the packet's time
@@ -84,7 +90,7 @@ namespace replay::soundgeneric::player
         // mode a is on (its families are created without the flag).
         std::uint32_t entityDrivenMask = 0;
         bool detachedEntityMode = false;
-        // SoundGenericKeepLoops. Without it a jump or a pass wrap during normal
+        // Loops kept across a jump (always on in the replay). Without it a jump or a pass wrap during normal
         // play stops every live sound and creates the long ones alive at the new
         // playhead again (loops born again at every pass). On: a live long sound
         // whose recorded life covers the new playhead (started, no end packet at
@@ -277,7 +283,7 @@ namespace replay::soundgeneric::player
         // never stopped before it is born).
         bool awaitingBirth = false;
         std::int32_t bornDelayMs = 0; // birth tick minus recorded time (mode c)
-        bool kept = false; // kept playing across a jump (SoundGenericKeepLoops)
+        bool kept = false; // kept playing across a jump (loops kept)
 
         bool Long(std::uint32_t loopMs) const { return !released || endMs - startMs >= loopMs; }
     };
@@ -1040,7 +1046,7 @@ namespace replay::soundgeneric::player
             (void)nowMs;
             return false;
         }
-        // SoundGenericKeepLoops: whether a live sound may go on across a jump
+        // Loops kept: whether a live sound may go on across a jump
         // (the engine side: still held, made on the same puppet that owns the
         // packet now, not a queued request).
         virtual bool KeepAcrossJump(std::uint64_t) { return false; }
@@ -1199,7 +1205,8 @@ namespace replay::soundgeneric::player
                 key.audioBase = c.audioBase;
                 // `shots`, the recorded shots (a weapon audio packet of no named caller
                 // away from them is not the shot track's; null: no shot filter).
-                key.callerInWrappers = InAudioEntityWrappers(c.caller);
+                key.callerInWrappers = InAudioEntityWrappers(c.caller, m_config.code);
+                soundowner::NameCaller(key, m_config.callers);
                 plan.family = soundowner::FamilyOf(key, cover, shots);
                 plan.taker = soundowner::TakerOf(plan.family, overrides);
                 if (plan.family == soundowner::Family::Owned && soundowner::OffShot(key, shots))
@@ -2652,9 +2659,9 @@ namespace replay::soundgeneric::player
             "By port: S03 create-and-play %u (the puppets' own one-shots, refused), S04 deferred request %u, S05 "
             "persistent by ref %u, S06 persistent by hash %u; a vehicle's or train car's own create at the creators: S01 %u, "
             "S02 %u (SoundGenericVehicleBlock).\n"
-            "Inside a replayed step or melee call, a set the owner never made in the clip (refused, SoundStepSetGate) %u.\n"
-            "A persistent sound by ref the owner never made in the clip and the ESND track does not carry (refused, "
-            "PuppetUnrecordedPersistent) %u.\n",
+            "Inside a replayed step or melee call, a set the owner never made in the clip (refused) %u.\n"
+            "A persistent sound by ref the owner never made in the clip and the ESND track does not carry (refused) "
+            "%u.\n",
             t.Total(), t.Refused(), t.Passed(), t.ByVerdict(soundowner::LifeVerdict::Recorded),
             t.ByVerdict(soundowner::LifeVerdict::Alternative), t.WithoutPacket(), t.RunsWithoutPacket(),
             blockAll ? "refused too" : "left to the puppet, except S03", t.Hidden(), t.ByPort(3), t.ByPort(4), t.ByPort(5), t.ByPort(6),
