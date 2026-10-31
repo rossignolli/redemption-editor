@@ -3,22 +3,15 @@
 // Pure rules for replayed particle effects: recreation, the relocate mark,
 // and the stretches without a call.
 //
-// Engine facts, build 1491.50:
-// - Only two writers set bit 0x2 of an instance's +0x584 ("relocated"):
-//   0x143C1E2 (in 0x143C180, every instance attached to an entity whose
-//   transform a script native set, SET_ENTITY_COORDS_NO_OFFSET through the
-//   vfunc +0x250 at 0xFA00B5) and 0x2C4F1CC (in 0x2C4F0E4, when the parent
-//   moved more than the instance's +0x3A8 in one update, states 2..4). The
-//   replay places every puppet with that native every tick, so every effect
-//   attached to a puppet is likely marked relocated every frame (unconfirmed;
-//   FX_RELOCATE_PROBE logs it), a jump for the emitter.
-// - The registry update 0x2C52554 stops softly (0x2C52635) an entry not got
-//   this frame and restarts (0x29E7644 at 0x2C5268A) an entry got again in
-//   state 3..5: the hoof dust is a burst per call run, not a stream.
-// - The attach update 0x2C52254 frees an entry (0x2C52FE0) whose entity
-//   reference is null, whose bone matrix has a zero X axis outside the table
-//   0x2C52A4C, or whose entity's draw data [[e+0x28]+8] is null (vfunc +0xA8
-//   0x1405B94); the next get of the key creates the instance again.
+// Engine facts the rules rely on (offline dump, build 1491.50):
+// - The replay places every puppet with SET_ENTITY_COORDS_NO_OFFSET every
+//   tick, so an attached effect is likely marked relocated (+0x584 bit 0x2)
+//   every frame (unconfirmed; FX_RELOCATE_PROBE logs it).
+// - The registry update stops softly an entry not got this frame and restarts
+//   one got again in state 3..5: the hoof dust is a burst per call run.
+// - The attach update frees an entry whose entity or bone is gone; the next
+//   get of the key creates the instance again.
+// Research: docs/research/fx-fires-decals-effects.md
 //
 // Pure (no game); unit tested in tests/particle_replay_tests.cpp.
 
@@ -29,17 +22,29 @@
 #include <vector>
 
 #include "entity_events.h"
+#include "game_sig_core.h"
 
 namespace replay::fxmotion
 {
-    constexpr std::uint32_t kRelocatedBit = 0x2;  // +0x584 bit 1 (0x143C1E2, 0x2C4F1CC)
+    constexpr std::uint32_t kRelocatedBit = 0x2;  // +0x584 bit 1 (the relocation mark, the parent test)
     constexpr std::uint32_t kMovedBit = 0x10;      // +0x584 bit 4 (evidence: the game's own moving effects)
-    // The hoof site's distance (0x146C1F9 writes +0x3A8 = 1.0 every call).
+    // The hoof site's distance (its function writes +0x3A8 = 1.0 every call).
     constexpr float kHoofSiteTeleportM = 1.0f;
-    constexpr std::uint32_t kHoofRegisteredSite = 0x146BF6F; // return address of its registered call (RGFX callerSite)
-    // The registry restart's return address: an instance start from there is
-    // a key got again after a stretch without a call (0x2C5268F).
-    constexpr std::uint32_t kRegistryRestartSite = 0x2C5268F;
+    // The hoof dust function and its registered call: the return address is
+    // the site a clip records (RGFX callerSite, fx_observer.h HoofRegisteredSite).
+    inline const sig::Signature kFxHoof{"fx_hoof_dust",
+        "48 8B C4 48 89 58 08 48 89 70 18 55 57 41 55 41 56 41 57 48 8D 68 A8 48 81 EC 30 01 00 00 49 8B C8",
+        0x146BEE0};
+    inline const sig::Signature kFxHoofCall{"fx_hoof_dust_registered_call", kFxHoof, sig::Offset{0x8A},
+        "E8 ?? ?? ?? ?? 48 8B D8 48 85 C0", 0x146BF6A};
+    // The registry update and its restart of an entry: an instance start
+    // returning there (fx_observer.h RegistryRestartSite) is a key got again
+    // after a stretch without a call.
+    inline const sig::Signature kFxRegistryUpdate{"fx_registry_update",
+        "40 55 41 54 41 55 41 56 41 57 48 83 EC 20 48 8D 6C 24 20 0F 2E 05 ?? ?? ?? ?? 48 89 5D 30 48 89 75 38",
+        0x2C52554};
+    inline const sig::Signature kFxRegistryRestartCall{"fx_registry_restart_call", kFxRegistryUpdate,
+        sig::Offset{0x136}, "E8 ?? ?? ?? ?? 88 5E 28 48 83 C7 18", 0x2C5268A};
 
     inline bool Finite(float value)
     {

@@ -28,6 +28,49 @@ namespace replay::entity
         const pose::WorldTransform& parent,
         const pose::WorldTransform& relative);
 
+    // Attach through a bone of the child (the engine attachment extension's
+    // child bone, weapon_observer.h AttachFrame): the engine puts the child's
+    // bone at parent bone * offset, so the child's origin sits at
+    // parent bone * offset * inverse(child bone). ATTACH_ENTITY_TO_ENTITY has
+    // no child bone, so the recording folds it into the offset: the result
+    // is the offset of the child's origin from the parent bone.
+    // childBoneObject: the child bone in the child's object space (its
+    // skeleton's object matrix).
+    pose::WorldTransform FoldChildBone(
+        const pose::WorldTransform& offset,
+        const pose::WorldTransform& childBoneObject);
+
+    // An attach frame against the recording. The frame puts the child at
+    // parentBoneObject * frameOffset in the parent's object space (the
+    // parent's recorded pose at the playhead); the recording saw it at
+    // recordedRelative (the weapon track, also in the parent's frame). A
+    // frame that misses by more than a hand's grip is not the attach the
+    // original had (a clip recorded before the child bone was read, or an
+    // attach kind the frame does not describe): playback keeps the recorded
+    // relative transform instead, as the reference editor places an
+    // attached object by its recorded matrix.
+    struct FrameAgreement
+    {
+        float angleDeg = 0.0f;
+        float distanceM = 0.0f;
+    };
+    FrameAgreement AttachFrameAgreement(
+        const pose::WorldTransform& parentBoneObject,
+        const pose::WorldTransform& frameOffset,
+        const pose::WorldTransform& recordedRelative);
+    // Attach checks of the Klan1 clip (31/10/2026, engine against recorded):
+    // weapons in a hand and in holsters within ~1 degree (median) and 1-2 cm,
+    // a repeater on its shoulder strap 0.4 degrees but 4.4 cm (the strap
+    // update moves it off the bare frame); the crowd torch read without its
+    // child bone 84 degrees and 5 cm. The distance bound leaves the straps
+    // alone; the angle tells the torch.
+    constexpr float kAttachFrameMaxDeg = 10.0f;
+    constexpr float kAttachFrameMaxM = 0.10f;
+    inline bool AttachFrameAgrees(const FrameAgreement& agreement)
+    {
+        return agreement.angleDeg <= kAttachFrameMaxDeg && agreement.distanceM <= kAttachFrameMaxM;
+    }
+
     // Seat evidence. A seated puppet rides its recorded pose (the engine seat
     // placement lands the ped at the vehicle for a frame and then holds it off
     // the recorded pose). The error logged is the distance between the child's

@@ -22,6 +22,13 @@ namespace
 
     bool Near(float a, float b) { return std::fabs(a - b) < 1e-4f; }
 
+    // Byte n of a signature's pattern is fixed and equals `value`.
+    bool PatternHas(const replay::sig::Signature& s, std::size_t n, std::uint32_t value)
+    {
+        replay::sig::Pattern p;
+        return replay::sig::Parse(s.pattern, p) && n < p.size && !p.wild[n] && p.bytes[n] == value;
+    }
+
     Sample S(std::uint32_t t, float x, float y = 0.0f, float z = 0.0f)
     {
         Sample s;
@@ -35,13 +42,23 @@ namespace
 
     void TestSites()
     {
-        Check(EnvLeaTarget(kSites[0]) == kEnvironmentRva, "env lea target");
+        Check(kEnvironment.parent == &kEnvLea && kEnvironment.via == replay::sig::Via::Rel32 && kEnvironment.at == 3 &&
+                  kEnvironment.end == 7 && !*kEnvironment.pattern,
+            "env lea target");
         Check(ListenerOffset(0) == 0x20 && ListenerOffset(1) == 0x330, "listener descriptions");
+        replay::sig::Pattern lea;
+        Check(replay::sig::Parse(kEnvLea.pattern, lea), "env lea parses");
         const std::uint8_t good[16] = {0x48, 0x8D, 0x0D, 0xA6, 0x8D, 0xA0, 0x02};
-        const std::uint8_t bad[16] = {0x48, 0x8D, 0x0D, 0xA6, 0x8D, 0xA0, 0x03};
-        Check(SiteMatches(kSites[0], good) && !SiteMatches(kSites[0], bad) && !SiteMatches(kSites[0], nullptr), "site match");
-        for (const Site& site : kSites)
-            Check(site.size > 0 && site.size <= 16, "site size");
+        const std::uint8_t moved[16] = {0x48, 0x8D, 0x0D, 0x00, 0x11, 0x22, 0x03};
+        const std::uint8_t bad[16] = {0x48, 0x8D, 0x05, 0xA6, 0x8D, 0xA0, 0x02};
+        Check(replay::sig::MatchesAt(lea, good, sizeof(good)) && replay::sig::MatchesAt(lea, moved, sizeof(moved)) &&
+                  !replay::sig::MatchesAt(lea, bad, sizeof(bad)) && !replay::sig::MatchesAt(lea, nullptr, 16),
+            "site match");
+        for (const replay::sig::Signature* site : kSites)
+        {
+            replay::sig::Pattern p;
+            Check(!*site->pattern || (replay::sig::Parse(site->pattern, p) && p.size <= 64), "site pattern");
+        }
     }
 
     void TestTrack()
@@ -81,25 +98,6 @@ namespace
         u.DropBefore(1200);
         Check(u.samples.size() == 2 && u.samples[0].timeMs == 1200, "drop before");
     }
-
-    void TestDecide()
-    {
-        Inputs in;
-        Check(Decide(in) == Why::Off, "off");
-        in.enabled = true;
-        Check(Decide(in) == Why::Unproven, "unproven");
-        in.proven = true;
-        Check(Decide(in) == Why::NotRecordedCam, "not the recorded camera");
-        in.recordedGameCamera = true;
-        Check(Decide(in) == Why::NoTrack, "no track");
-        in.haveTarget = true;
-        Check(Decide(in) == Why::Apply, "apply");
-        in.overrideBitSet = true;
-        Check(Decide(in) == Why::EngineOverride, "an engine scene owns the override");
-        in.overrideIsOurs = true;
-        Check(Decide(in) == Why::Apply, "our own override stays");
-        Check(WhyName(Why::NotRecordedCam)[0] == 'n', "names");
-    }
 }
 
 namespace
@@ -107,19 +105,31 @@ namespace
     // The microphone put back.
     void TestMicSites()
     {
-        Check(EnvLeaTarget(kSites[11]) == kMicTableRva, "mic table lea");
-        Check(CallTarget(kSites[12]) == kMicMapRva, "mic map call");
+        Check(kMicTable.parent == &kMicTableLea && kMicTable.via == replay::sig::Via::Rel32 && !*kMicTable.pattern,
+            "mic table lea");
+        Check(kMicMap.parent == &kMicMapCall && kMicMap.via == replay::sig::Via::Rel32 && kMicMap.at == 1 &&
+                  kMicMap.end == 5,
+            "mic map call");
         Check(SlotOffset(0) + 0x40 == kVolumePointPos && SlotOffset(1) == 0x220, "slots");
-        Check(std::string(kSites[9].name) == "mic_crossfade_read" && kSites[9].bytes[2] == 0x78, "crossfade site");
-        // The camera map's answer goes to the reference lookup 0x252B5AC, not the hash
-        // lookup 0x252B584.
-        Check(std::string(kSites[15].name) == "mic_map_ref_lookup" && CallTarget(kSites[15]) == 0x252B5ACu &&
-                  CallTarget(kSites[15]) != kMetadataLookupRva,
+        Check(std::string(kMicCrossfadeRead.name) == "mic_crossfade_read" && PatternHas(kMicCrossfadeRead, 2, 0x78),
+            "crossfade site");
+        // The camera map's answer goes to the reference lookup, not the hash
+        // lookup.
+        Check(std::string(kMicMapRefLookup.name) == "mic_map_ref_lookup" &&
+                  kMetaRefLookup.parent == &kMicMapRefLookup && kMetaRefLookup.rva == 0x252B5ACu &&
+                  kMetaRefLookup.rva != kMetadataLookup.rva,
             "the map answer is a reference");
-        Check(kSites[18].bytes[3] == kMetaChunkStride && kSites[19].bytes[4] == kMetaChunkSize &&
-                  kSites[20].bytes[4] == kMetaChunkData && kSites[21].bytes[3] == kMetaEntryCount &&
-                  kSites[22].bytes[3] == kMetaLoaded && kSites[23].bytes[3] == kMetaEntries,
+        Check(PatternHas(kMetaChunkStrideSite, 3, kMetaChunkStride) &&
+                  PatternHas(kMetaChunkSizeSite, 4, kMetaChunkSize) &&
+                  PatternHas(kMetaChunkDataSite, 4, kMetaChunkData) &&
+                  PatternHas(kMetaEntryCountSite, 3, kMetaEntryCount) &&
+                  PatternHas(kMetaChunkLoadedSite, 3, kMetaLoaded) && PatternHas(kMetaEntriesSite, 3, kMetaEntries),
             "metadata table layout sites");
+        Check(PatternHas(kMicOverrideRead, 2, kMicOverrideHash & 0xFF) &&
+                  PatternHas(kMicOverrideRead, 3, kMicOverrideHash >> 8) &&
+                  PatternHas(kVolOverrideRead, 2, kFlags & 0xFF) &&
+                  PatternHas(kVolMatrixRead, 3, kVolumeOverrideMatrix & 0xFF),
+            "written offsets are in the sites");
         const MetaEntry entries[] = {{0x10, 0xAAAAu}, {0x40, 0x2A7C18A2u}, {0x80, 0xBBBBu}};
         Check(HashOfOffset(entries, 3, 0x40) == 0x2A7C18A2u && HashOfOffset(entries, 3, 0x44) == 0 &&
                   HashOfOffset(entries, 0, 0x10) == 0,
@@ -203,7 +213,6 @@ int RunGameListenerTests()
 {
     TestSites();
     TestTrack();
-    TestDecide();
     TestMicSites();
     TestMicAt();
     TestFollows();

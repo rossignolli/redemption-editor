@@ -49,7 +49,8 @@ namespace render_export
         AudioNotReady = 16,      // the probe got no audio capture acknowledgement in time (export_channel.h AudioAck)
         FinalizeFailed = 17,     // the video could not be saved under the requested name (it stays under its temporary one)
         ProjectClipMissing = 18, // whole project export: a clip of the project is not in ReplayClips (refused before anything ran)
-        ProjectClipLoad = 19     // whole project export: a clip did not open (or the project changed): stopped, the pieces deleted
+        ProjectClipLoad = 19,    // whole project export: a clip did not open (or the project changed): stopped, the pieces deleted
+        ResumeMismatch = 20      // a segmented export's resume no longer matches (size, range, encoder): nothing ran, its segments are kept
     };
 
     // One output frame in CPU memory, ready for the encoder.

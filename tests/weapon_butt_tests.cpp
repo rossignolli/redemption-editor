@@ -90,6 +90,8 @@ namespace
     player::Config PacketsConfig()
     {
         player::Config c;
+        c.code = KnownWrapperCode();
+        c.callers = owner::KnownCallerRanges();
         c.packets = true;
         c.enabled = true;
         return c;
@@ -314,6 +316,8 @@ namespace
         player.Begin(track, PacketsConfig(), cover, overrides, 500, &feet);
         Check(player.Stats().complement == 0, "SoundGenericTake=footstep:specific keeps the steps with their track");
         player::Config legacy;
+        legacy.code = KnownWrapperCode();
+        legacy.callers = owner::KnownCallerRanges();
         legacy.packets = false;
         Player old;
         old.Begin(track, legacy, cover, owner::Overrides(), 500, &feet);

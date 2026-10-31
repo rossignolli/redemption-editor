@@ -2,6 +2,7 @@
 
 #include "entity_cache.h"
 #include "entity_lifecycle.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "log_format.h"
 #include "profiler.h"
@@ -24,29 +25,38 @@ namespace replay::vehdoors
 {
     namespace
     {
-        // IS_VEHICLE_DOOR_FULLY_OPEN's core, whole up to the compare of +0x28.
-        constexpr std::uint32_t kFullyOpenRva = 0x10EC3FC;
-        constexpr std::uint8_t kFullyOpenSignature[] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48,
-            0x63, 0xFA, 0x33, 0xDB, 0xE8, 0x08, 0x77, 0xDC, 0xFF, 0x48, 0x8B, 0xC8, 0x48, 0x85, 0xC0, 0x74, 0x23, 0x48,
-            0x8D, 0x15, 0x09, 0xB7, 0x9F, 0x02, 0x8B, 0x14, 0xBA, 0xE8, 0x45, 0xA6, 0x4A, 0x00, 0x48, 0x85, 0xC0, 0x74,
-            0x0F, 0xF3, 0x0F, 0x10, 0x05, 0xB0, 0x27, 0x28, 0x02, 0x0F, 0x2F, 0x40, 0x28, 0x0F, 0x92, 0xC3};
-        constexpr std::uint32_t kTableLeaRva = 0x10EC418; // lea rdx, [rip+disp32]: the script door -> hierarchy id table
+        namespace sig = replay::sig;
+
+        // IS_VEHICLE_DOOR_FULLY_OPEN's core, whole up to the compare of +0x28:
+        // the script door -> hierarchy id table (lea rdx, [rip]) and the call
+        // of GetDoorFromId.
+        const sig::Signature kFullyOpen{"vehicle_doors_fully_open",
+            "48 89 5C 24 08 57 48 83 EC 20 48 63 FA 33 DB E8 ?? ?? ?? ?? 48 8B C8 48 85 C0 74 23 48 8D 15 ?? ?? ?? ?? "
+            "8B 14 BA E8 ?? ?? ?? ?? 48 85 C0 74 0F F3 0F 10 05 ?? ?? ?? ?? 0F 2F 40 28 0F 92 C3",
+            0x10EC3FC};
+        const sig::Signature kDoorTable{"vehicle_doors_table", kFullyOpen, sig::Rel32{0x1F, 0x23}, "", 0x3AE7B28};
         // GetDoorFromId: the array, the count, the stride, the id.
-        constexpr std::uint32_t kDoorFromIdRva = 0x1596A6C;
-        constexpr std::uint8_t kDoorFromIdSignature[] = {0x44, 0x8B, 0x91, 0xD8, 0x0B, 0x00, 0x00, 0x45, 0x33, 0xC0, 0x45,
-            0x8B, 0xC8, 0x45, 0x85, 0xD2, 0x7E, 0x28, 0x4D, 0x63, 0xD9, 0x45, 0x3B, 0xCA, 0x7D, 0x0D, 0x49, 0x6B, 0xC3,
-            0x70, 0x48, 0x03, 0x81, 0xD0, 0x0B, 0x00, 0x00, 0xEB, 0x03, 0x49, 0x8B, 0xC0, 0x0F, 0xBF, 0x40, 0x0C, 0x3B,
-            0xC2, 0x74, 0x0B, 0x41, 0xFF, 0xC1, 0x45, 0x3B, 0xCA, 0x7C, 0xD8, 0x33, 0xC0, 0xC3};
+        const sig::Signature kDoorFromId{"vehicle_doors_from_id", kFullyOpen, sig::Rel32{0x27, 0x2B},
+            "44 8B 91 D8 0B 00 00 45 33 C0 45 8B C8 45 85 D2 7E 28 4D 63 D9 45 3B CA 7D 0D 49 6B C3 70 48 03 81 D0 0B "
+            "00 00 EB 03 49 8B C0 0F BF 40 0C 3B C2 74 0B 41 FF C1 45 3B CA 7C D8 33 C0 C3",
+            0x1596A6C};
         // SetTargetDoorOpenRatio: old target +0x24, target +0x20, flags +0x14, bit 18.
-        constexpr std::uint32_t kSetTargetRva = 0x14D7CC7;
-        constexpr std::uint8_t kSetTargetSignature[] = {0xF3, 0x0F, 0x11, 0x41, 0x24, 0xF3, 0x0F, 0x11, 0x79, 0x20, 0x8B,
-            0x49, 0x14, 0x8B, 0xC1, 0xC1, 0xE8, 0x12, 0xA8, 0x01};
-        // The latch: the handler's type test (17, 18) and the store.
-        constexpr std::uint32_t kLatchTypeRva = 0x10F287D;
-        constexpr std::uint8_t kLatchTypeSignature[] = {0x8B, 0x8F, 0xB0, 0x0B, 0x00, 0x00, 0x83, 0xE9, 0x11, 0x83, 0xF9,
-            0x01, 0x77, 0x0B};
-        constexpr std::uint32_t kLatchStoreRva = 0x1545F6F;
-        constexpr std::uint8_t kLatchStoreSignature[] = {0x40, 0x88, 0xAF, 0x80, 0x16, 0x00, 0x00};
+        const sig::Signature kSetTarget{"vehicle_doors_set_target",
+            "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 48 8D 68 A1 48 81 EC A0 00 00 00 F3 0F 10 41 20",
+            0x14D7C24};
+        const sig::Signature kSetTargetStore{"vehicle_doors_set_target_store", kSetTarget, sig::Offset{0xA3},
+            "F3 0F 11 41 24 F3 0F 11 79 20 8B 49 14 8B C1 C1 E8 12 A8 01", 0x14D7CC7};
+        // The latch: the handler's type test (17, 18), then the call that
+        // stores it.
+        const sig::Signature kLatchHandler{"vehicle_doors_latch_handler",
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 40 8A F2 8B D9 E8 ?? ?? ?? ?? 41 B8 0F 00 00 00 8B D3 48 8B "
+            "C8 48 8B F8 E8 ?? ?? ?? ?? 84 C0 74 1E 48 85 FF 74 19 8B 8F B0 0B 00 00 83 E9 11 83 F9 01 77 0B 40 8A D6 "
+            "48 8B CF E8 ?? ?? ?? ??",
+            0x10F2848};
+        const sig::Signature kLatchSetter{"vehicle_doors_latch_setter", kLatchHandler, sig::Rel32{0x4A, 0x4E},
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 78 18 4C 89 68 20 41 56 48 83 EC 40", 0x1545E88};
+        const sig::Signature kLatchStore{"vehicle_doors_latch_store", kLatchSetter, sig::Offset{0xE7},
+            "40 88 AF 80 16 00 00", 0x1545F6F};
 
         constexpr std::uint32_t kDoorArray = 0xBD0;
         constexpr std::uint32_t kDoorCount = 0xBD8;
@@ -72,29 +82,17 @@ namespace replay::vehdoors
         Engine g_engine;
         bool g_write = true;
 
-        std::uintptr_t Base() { return reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)); }
-
-        bool Same(std::uintptr_t at, const std::uint8_t* bytes, std::size_t size)
-        {
-            return replay::mem::Matches(reinterpret_cast<const void*>(at), bytes, size);
-        }
-
         void CheckEngine()
         {
             if (g_engine.checked)
                 return;
             g_engine.checked = true;
-            const std::uintptr_t base = Base();
-            g_engine.doors = Same(base + kFullyOpenRva, kFullyOpenSignature, sizeof(kFullyOpenSignature)) &&
-                Same(base + kDoorFromIdRva, kDoorFromIdSignature, sizeof(kDoorFromIdSignature));
+            g_engine.doors = sig::Find(kFullyOpen) && sig::Find(kDoorFromId);
             if (g_engine.doors)
             {
                 // The table the core reads the hierarchy id from (lea rdx, [rip+disp32]).
-                std::int32_t disp = 0;
-                const std::uintptr_t lea = base + kTableLeaRva;
-                if (replay::mem::Read(lea + 3, disp))
+                if (const std::uintptr_t table = sig::Find(kDoorTable))
                 {
-                    const std::uintptr_t table = lea + 7 + static_cast<std::intptr_t>(disp);
                     bool plausible = replay::mem::Copy(g_engine.hierarchy, table, sizeof(g_engine.hierarchy));
                     for (int n = 0; plausible && n < kScriptDoors; ++n)
                     {
@@ -105,9 +103,8 @@ namespace replay::vehdoors
                     g_engine.table = plausible;
                 }
             }
-            g_engine.flags = Same(base + kSetTargetRva, kSetTargetSignature, sizeof(kSetTargetSignature));
-            g_engine.latch = Same(base + kLatchTypeRva, kLatchTypeSignature, sizeof(kLatchTypeSignature)) &&
-                Same(base + kLatchStoreRva, kLatchStoreSignature, sizeof(kLatchStoreSignature));
+            g_engine.flags = sig::Find(kSetTargetStore) != 0;
+            g_engine.latch = sig::Find(kLatchHandler) && sig::Find(kLatchStore);
             std::string error;
             if (!g_engine.doors)
                 error += "doors;";

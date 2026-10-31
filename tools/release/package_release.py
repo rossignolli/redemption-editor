@@ -5,14 +5,17 @@ Windows Python, standard library only. From the repository root, after building
 RedemptionEditor.sln (or ReplayProbe, ReplayEditorLoader and ReplayEditor) in
 Release x64:
 
-    py -3 tools\\release\\package_release.py [--bin DIR] [--asi-dir DIR] [--editor-dir DIR] [--ffmpeg-root DIR] [--out DIR]
+    py -3 tools\\release\\package_release.py [--bin DIR] [--asi-dir DIR] [--editor-dir DIR] [--host-dir DIR]
+        [--ffmpeg-root DIR] [--out DIR] [--zip-name NAME]
 
 --bin is the output folder of the build (default bin\\Release); --asi-dir and
 --editor-dir override it for the ASI and for the add-on and core; --ffmpeg-root is the
 FFmpeg build the core was linked with (the FfmpegRoot property; default
-external\\ffmpeg\\installed\\x64-windows-release), for its licences. Writes
-<out>\\RedemptionEditor-<VERSION>.zip (default out: build\\package) with, at its
-root, what goes next to RDR2.exe:
+external\\ffmpeg\\installed\\x64-windows-release), for its licences; --host-dir is the
+output folder of RedemptionEditorHost.vcxproj (the editor's own overlay, ReShade
+optional). Writes <out>\\RedemptionEditor-<VERSION>.zip (default out:
+build\\package; --zip-name names it otherwise) with, at its root, what goes next to
+RDR2.exe:
 
     RedemptionEditor.asi       the Script Hook RDR2 script
     RedemptionEditor.addon64   the ReShade add-on (a loader)
@@ -21,14 +24,18 @@ root, what goes next to RDR2.exe:
     RedemptionEditor\\fonts\\   the editor's title font
     RedemptionEditor\\ui\\      the editor's painted art
     RedemptionEditor\\lang\\    the languages (en.lang, the translators' template, and each translation)
+    RedemptionEditor\\host\\    with --host-dir: RedemptionEditorHost.dll and its Vulkan layer
+                               manifest RedemptionEditorHost.json (the editor's own overlay)
     RedemptionEditor.ini       the default settings (dist\\RedemptionEditor.ini)
     README.md, LICENSE, THIRD_PARTY_NOTICES.md
     THIRD_PARTY_LICENSES\\      the licences of the FFmpeg build (a GPL build)
     SHA256SUMS.txt
 
 It refuses an ASI that does not carry this checkout's VERSION, a developer
-build (flavor=dev) and a core that imports FFmpeg without delay-load. It only
-reads the build folders and writes the zip.
+build (flavor=dev) of the ASI or of the host (both carry the build flavor:
+mod_identity.h kBuildFlavor, logged by the host's HOST_RUNTIME line), a host
+manifest that differs from host\\RedemptionEditorHost.json and a core that imports
+FFmpeg without delay-load. It only reads the build folders and writes the zip.
 """
 
 from __future__ import annotations
@@ -44,6 +51,11 @@ ASI = "RedemptionEditor.asi"
 ADDON = "RedemptionEditor.addon64"
 CORE = "RedemptionEditorCore.dll"
 INI = "RedemptionEditor.ini"
+# The editor's own overlay (ReShade optional): RedemptionEditor.asi adds this folder to the
+# Vulkan loader's layer path (src/host_layer_env.h) when the manifest is there.
+HOST_FOLDER = "RedemptionEditor/host"
+HOST_DLL = "RedemptionEditorHost.dll"
+HOST_JSON = "RedemptionEditorHost.json"
 DOCS = ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md")
 FFMPEG_ROOT = ROOT / "external" / "ffmpeg" / "installed" / "x64-windows-release"
 # vcpkg helper and build-tool ports: none of their code ships.
@@ -69,8 +81,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--bin", type=Path, default=ROOT / "bin" / "Release")
     parser.add_argument("--asi-dir", type=Path)
     parser.add_argument("--editor-dir", type=Path)
+    parser.add_argument("--host-dir", type=Path)
     parser.add_argument("--ffmpeg-root", type=Path, default=FFMPEG_ROOT)
     parser.add_argument("--out", type=Path, default=ROOT / "build" / "package")
+    parser.add_argument("--zip-name")
     args = parser.parse_args(argv)
     asi_dir = args.asi_dir or args.bin
     editor_dir = args.editor_dir or args.bin
@@ -88,6 +102,18 @@ def main(argv: list[str]) -> int:
     for name in (ADDON, CORE):
         if not (editor_dir / name).is_file():
             return fail("editor_missing", path=editor_dir / name)
+    zip_name = args.zip_name or f"RedemptionEditor-{version}.zip"
+    if not zip_name.lower().endswith(".zip") or "/" in zip_name or "\\" in zip_name:
+        return fail("zip_name_invalid", name=zip_name)
+    if args.host_dir is not None:
+        for name in (HOST_DLL, HOST_JSON):
+            if not (args.host_dir / name).is_file():
+                return fail("host_missing", path=args.host_dir / name, hint="build RedemptionEditorHost.vcxproj")
+        host_bytes = (args.host_dir / HOST_DLL).read_bytes()
+        if b"flavor=dev\x00" in host_bytes or b"flavor=public\x00" not in host_bytes:
+            return fail("host_not_public_build", path=args.host_dir / HOST_DLL, hint="build without /p:RedemptionDev=true")
+        if (args.host_dir / HOST_JSON).read_bytes() != (ROOT / "host" / HOST_JSON).read_bytes():
+            return fail("host_manifest_differs", path=args.host_dir / HOST_JSON)
 
     sys.path.insert(0, str(ROOT / "tools" / "ffmpeg"))
     import check_imports  # noqa: E402 - tools/ffmpeg/check_imports.py
@@ -129,6 +155,9 @@ def main(argv: list[str]) -> int:
         files[f"RedemptionEditor/ui/{name}"] = bundle / "ui" / name
     for name in langs:
         files[f"RedemptionEditor/lang/{name}"] = bundle / "lang" / name
+    if args.host_dir is not None:
+        for name in (HOST_DLL, HOST_JSON):
+            files[f"{HOST_FOLDER}/{name}"] = args.host_dir / name
     files[INI] = ROOT / "dist" / INI
     for name in DOCS:
         files[name] = readme if name == "README.md" else ROOT / name
@@ -138,14 +167,15 @@ def main(argv: list[str]) -> int:
 
     sums = "".join(f"{sha256(path)}  {name}\r\n" for name, path in sorted(files.items()))
     args.out.mkdir(parents=True, exist_ok=True)
-    target = args.out / f"RedemptionEditor-{version}.zip"
+    target = args.out / zip_name
     temporary = target.with_suffix(".zip.tmp")
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name, path in files.items():
             archive.write(path, name)
         archive.writestr("SHA256SUMS.txt", sums)
     temporary.replace(target)
-    print(f"PACKAGE_RELEASE,ok=1,version={version},files={len(files) + 1},zip={target},sha256={sha256(target)}")
+    print(f"PACKAGE_RELEASE,ok=1,version={version},host={1 if args.host_dir is not None else 0},files={len(files) + 1},"
+          f"zip={target},sha256={sha256(target)}")
     return 0
 
 

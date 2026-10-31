@@ -452,13 +452,13 @@ namespace
     void TestDefaultsAndFormats()
     {
         Keyframe fresh;
-        Check(fresh.blend == Blend::Spline && fresh.spline.overrides == 0, "default: a new marker is Spline with the global tuning");
+        Check(fresh.blend == Blend::None && fresh.spline.overrides == 0, "default: a new marker is No Blend, the global Spline tuning");
         Keyframe game;
         game.cameraMode = CameraMode::Game;
         game.blend = Blend::Linear;
         Keyframe after;
         camera::InheritFrom(after, game);
-        Check(after.blend == Blend::Spline, "default: after a Game marker, Spline");
+        Check(after.blend == Blend::None, "default: after a Game marker, No Blend");
         Keyframe free = FreeAt(0, {0, 0, 0});
         free.blend = Blend::Smooth;
         free.spline = With(editor::SplineOverrideWeight, 1.0f, 0, 0, 0.7f, SplinePacing::Natural);

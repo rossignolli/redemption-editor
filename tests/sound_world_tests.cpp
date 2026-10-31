@@ -201,40 +201,56 @@ namespace
         Check(b.Dropped() == 0 && b.Take(), "budget: a reset starts over");
     }
 
+    // Byte n of a signature's pattern is fixed and equals `value`.
+    bool PatternHas(const replay::sig::Signature& s, std::size_t n, std::uint32_t value)
+    {
+        replay::sig::Pattern p;
+        return replay::sig::Parse(s.pattern, p) && n < p.size && !p.wild[n] && p.bytes[n] == value;
+    }
+
     void TestSites()
     {
         std::set<std::string> names;
-        bool sizes = true, parts = true;
+        bool patterns = true, parts = true;
         int ptfx = 0, group = 0, listener = 0;
         for (const ProbeSite& site : kProbeSites)
         {
-            names.insert(site.name);
-            sizes = sizes && site.size > 0 && site.size <= sizeof(site.bytes);
+            names.insert(site.site->name);
+            replay::sig::Pattern p;
+            patterns = patterns && (!*site.site->pattern || replay::sig::Parse(site.site->pattern, p));
             parts = parts && std::string(ProbePartName(site.part)) != "?";
             ptfx += site.part == ProbePart::Ptfx;
             group += site.part == ProbePart::Group;
             listener += site.part == ProbePart::Listener;
         }
-        Check(names.size() == kProbeSiteCount && sizes && parts, "sites: unique names, sizes, parts");
-        Check(ptfx == 17 && group == 13 && listener == 2, "sites: every part has its sites");
-        Check(RipTarget7(kProbeSites[0]) == 0x5C9A660 && RipTarget7(kProbeSites[17]) == 0x5BF7EA8,
+        Check(names.size() == kProbeSiteCount && patterns && parts, "sites: unique names, patterns, parts");
+        Check(ptfx == 19 && group == 15 && listener == 2, "sites: every part has its sites");
+        Check(kPtfxManager.parent == &kPtfxMgrLeaSite && kPtfxManager.via == replay::sig::Via::Rel32 &&
+                  !*kPtfxManager.pattern && kGroupManagerPtr.parent == &kGroupMgrLoadSite &&
+                  kGroupManagerPtr.via == replay::sig::Via::Rel32 && !*kGroupManagerPtr.pattern,
             "sites: the managers' globals");
+        replay::sig::Pattern lea;
+        Check(replay::sig::Parse(kPtfxMgrLeaSite.pattern, lea), "sites: the lea parses");
         std::uint8_t code[8] = {0x48, 0x8D, 0x0D, 0x9C, 0xCB, 0xD7, 0x02, 0x00};
-        Check(ProbeSiteMatches(kProbeSites[0], code), "sites: a match");
-        code[3] = 0x9D;
-        Check(!ProbeSiteMatches(kProbeSites[0], code) && !ProbeSiteMatches(kProbeSites[0], nullptr), "sites: a mismatch");
+        Check(replay::sig::MatchesAt(lea, code, sizeof(code)), "sites: a match");
+        code[2] = 0x05;
+        Check(!replay::sig::MatchesAt(lea, code, sizeof(code)) && !replay::sig::MatchesAt(lea, nullptr, 8),
+            "sites: a mismatch");
         // Field offsets the sites prove (the bytes hold the displacement).
-        Check(kProbeSites[6].bytes[2] == (kPtfxSkip & 0xFF) && kProbeSites[7].bytes[2] == (kPtfxActive & 0xFF) &&
-                kProbeSites[8].bytes[3] == (kPtfxSettings & 0xFF) && kProbeSites[9].bytes[4] == kPtfxSettingsMaxM &&
-                kProbeSites[11].bytes[3] == (kPtfxSound & 0xFF) && kProbeSites[12].bytes[2] == (kPtfxDone & 0xFF) &&
-                kProbeSites[14].bytes[2] == kPtfxSettingsMode,
+        Check(PatternHas(kPtfxSkipSite, 2, kPtfxSkip & 0xFF) && PatternHas(kPtfxActiveSite, 2, kPtfxActive & 0xFF) &&
+                PatternHas(kPtfxSettingsSite, 3, kPtfxSettings & 0xFF) &&
+                PatternHas(kPtfxMaxSite, 4, kPtfxSettingsMaxM) && PatternHas(kPtfxFarSoundSite, 3, kPtfxSound & 0xFF) &&
+                PatternHas(kPtfxFarDoneSite, 2, kPtfxDone & 0xFF) && PatternHas(kPtfxModeSite, 2, kPtfxSettingsMode),
             "sites: the particle slot's fields");
-        Check(kProbeSites[19].bytes[3] == (kGroupStride & 0xFF) && kProbeSites[19].bytes[4] == (kGroupStride >> 8) &&
-                kProbeSites[20].bytes[3] == kGroupFirst && kProbeSites[21].bytes[2] == kGroupCount &&
-                kProbeSites[22].bytes[3] == (kGroupMeta & 0xFF) && kProbeSites[23].bytes[2] == (kGroupMemberCount & 0xFF) &&
-                kProbeSites[24].bytes[3] * 8u == kGroupMembers && kProbeSites[26].bytes[3] == (kGroupMeanPos & 0xFF) &&
-                kProbeSites[27].bytes[4] == (kGroupMeanSpeed & 0xFF) && kProbeSites[28].bytes[3] == (kGroupLeader & 0xFF) &&
-                kProbeSites[29].bytes[3] == (kGroupSound & 0xFF),
+        Check(PatternHas(kGroupStrideSite, 3, kGroupStride & 0xFF) &&
+                PatternHas(kGroupStrideSite, 4, kGroupStride >> 8) && PatternHas(kGroupFirstSite, 3, kGroupFirst) &&
+                PatternHas(kGroupCountSite, 2, kGroupCount) && PatternHas(kGroupMetaSite, 3, kGroupMeta & 0xFF) &&
+                PatternHas(kGroupMemberCountSite, 2, kGroupMemberCount & 0xFF) &&
+                PatternHas(kGroupMembersSite, 3, kGroupMembers / 8) &&
+                PatternHas(kGroupPosMeanSite, 3, kGroupMeanPos & 0xFF) &&
+                PatternHas(kGroupSpeedMeanSite, 4, kGroupMeanSpeed & 0xFF) &&
+                PatternHas(kGroupLeaderSite, 3, kGroupLeader & 0xFF) &&
+                PatternHas(kGroupSoundSite, 3, kGroupSound & 0xFF),
             "sites: the group's fields");
         const float points[2][3] = {{0.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}};
         const float pos[3] = {7.0f, 0.0f, 0.0f};

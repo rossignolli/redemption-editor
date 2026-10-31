@@ -2,6 +2,7 @@
 
 #include "entity_cache.h"
 #include "entity_selection.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "log_format.h"
 #include "pose_capture.h"
@@ -39,47 +40,54 @@ namespace replay::trains
         Context* g_context = nullptr;
         Context& Ctx() { return *g_context; }
 
+        namespace sig = replay::sig;
+
         constexpr std::uint32_t kIntervalMs = 1000 / replay::recorder::kSampleHz;
 
-        // ----- Engine structure (build 1491.50), by signature -----
+        // ----- Engine structure, by signature -----
 
-        // The car count of _GET_TRAIN_CARRIAGE_TRAILER_NUMBER (0x10E3264
-        // jumps here for vehicle types 17..19): 1 + the cars behind
-        // (+0x11F8) + the cars in front (+0x11F0).
-        constexpr std::uint32_t kCarCountRva = 0x1504F90;
-        constexpr std::uint8_t kCarCountSignature[] = {
-            0xB8, 0x01, 0x00, 0x00, 0x00, 0x48, 0x85, 0xC9, 0x74, 0x27, 0x48, 0x8B, 0x91, 0xF8, 0x11, 0x00, 0x00,
-            0xEB, 0x09, 0x48, 0x8B, 0x92, 0xF8, 0x11, 0x00, 0x00, 0xFF, 0xC0, 0x48, 0x85, 0xD2, 0x75, 0xF2, 0xEB,
-            0x02, 0xFF, 0xC0, 0x48, 0x8B, 0x89, 0xF0, 0x11, 0x00, 0x00, 0x48, 0x85, 0xC9, 0x75, 0xF2, 0xC3};
-        // GET_TRAIN_CARRIAGE's walk (0x10E80C4 calls it): n steps along
-        // +0x11F8 from the train, so +0x11F8 is the car behind.
-        constexpr std::uint32_t kCarriageWalkRva = 0x1510670;
-        constexpr std::uint8_t kCarriageWalkSignature[] = {
-            0x32, 0xC0, 0x84, 0xD2, 0x74, 0x12, 0x48, 0x8B, 0x89, 0xF8, 0x11, 0x00, 0x00, 0x48, 0x85, 0xC9, 0x74,
-            0x0A, 0xFE, 0xC0, 0x3A, 0xC2, 0x72, 0xEE, 0x48, 0x8B, 0xC1, 0xC3};
+        // The car count of _GET_TRAIN_CARRIAGE_TRAILER_NUMBER (the trailer
+        // number below jumps here for vehicle types 17..19): 1 + the cars
+        // behind (+0x11F8) + the cars in front (+0x11F0).
+        const sig::Signature kCarCount{"trains_car_count",
+            "B8 01 00 00 00 48 85 C9 74 27 48 8B 91 F8 11 00 00 EB 09 48 8B 92 F8 11 00 00 FF C0 48 85 D2 75 F2 EB 02 "
+            "FF C0 48 8B 89 F0 11 00 00 48 85 C9 75 F2 C3",
+            0x1504F90};
+        // GET_TRAIN_CARRIAGE's walk: n steps along +0x11F8 from the train, so
+        // +0x11F8 is the car behind.
+        const sig::Signature kCarriageWalk{"trains_carriage_walk",
+            "32 C0 84 D2 74 12 48 8B 89 F8 11 00 00 48 85 C9 74 0A FE C0 3A C2 72 EE 48 8B C1 C3", 0x1510670};
         // The trailer number's type test: [car+0xBB0] - 17 <= 2.
-        constexpr std::uint32_t kTypeTestRva = 0x10E3272;
-        constexpr std::uint8_t kTypeTestSignature[] = {0x8B, 0x88, 0xB0, 0x0B, 0x00, 0x00, 0x83, 0xE9, 0x11, 0x83, 0xF9, 0x02};
-        // _TRIGGER_TRAIN_WHISTLE's core (0x10F7A24): the same type test,
-        // then the train's audio entity at [car+0x11E0], on which the
-        // whistle is played (0x154D500).
-        constexpr std::uint32_t kAudioRva = 0x10F7A69;
-        constexpr std::uint8_t kAudioSignature[] = {0x8B, 0x8F, 0xB0, 0x0B, 0x00, 0x00, 0x83, 0xE9, 0x11, 0x83, 0xF9,
-            0x02, 0x77, 0x2F, 0x48, 0x8B, 0x9F, 0xE0, 0x11, 0x00, 0x00};
-        // SET_RANDOM_TRAINS (handler 0x10E0CA4): the byte `arg == 0` goes to
-        // a global (0x15088AC: mov [rip+x], cl; ret): nonzero = random trains
-        // off. Read to give the user's state back at the end.
-        constexpr std::uint32_t kRandomTrainsHandlerRva = 0x10E0CA4;
-        constexpr std::uint8_t kRandomTrainsHandlerSignature[] = {0x48, 0x8B, 0x41, 0x10, 0x83, 0x38, 0x00, 0x0F, 0x94, 0xC1, 0xE9};
-        constexpr std::uint32_t kRandomTrainsSetRva = 0x15088AC;
-        // The train config lookup (0x151D5F0, _GET_NUM_CARS_FROM_TRAIN_CONFIG
-        // through 0x10EBFF4): the count at a global, the configs in an array
-        // of 0x1260 bytes whose first dword is the config's hash. Bench only
-        // (train_spawn auto).
-        constexpr std::uint32_t kConfigLookupRva = 0x151D5F0;
-        constexpr std::uint8_t kConfigLookupHead[] = {0x44, 0x8B, 0x0D};
-        constexpr std::uint8_t kConfigLookupMiddle[] = {0x45, 0x32, 0xC0, 0x45, 0x85, 0xC9, 0x7E, 0x27, 0x33, 0xC0, 0x48, 0x69,
-            0xD0, 0x60, 0x12, 0x00, 0x00, 0x48, 0x8D, 0x05};
+        const sig::Signature kTrailerNumber{"trains_trailer_number",
+            "48 83 EC 28 E8 ?? ?? ?? ?? 48 85 C0 74 1A 8B 88 B0 0B 00 00 83 E9 11 83 F9 02 77 0C 48 8B C8 48 83 C4 28 "
+            "E9 ?? ?? ?? ??",
+            0x10E3264};
+        // _TRIGGER_TRAIN_WHISTLE's core: the same type test, then the
+        // train's audio entity at [car+0x11E0], on which the whistle is played.
+        const sig::Signature kWhistle{"trains_whistle",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 30 41 8A E9 45 8A F0 48 8B F2 8B "
+            "D9 E8 ?? ?? ?? ?? 41 B8 0F 00 00 00 8B D3 48 8B C8 48 8B F8 E8 ?? ?? ?? ?? 84 C0 74 42 48 85 FF 74 3D 8B "
+            "8F B0 0B 00 00 83 E9 11 83 F9 02 77 2F 48 8B 9F E0 11 00 00",
+            0x10F7A24};
+        // SET_RANDOM_TRAINS, found by its native hash where the natives are
+        // registered (lea rdx, handler; mov rcx, hash): the handler jumps with
+        // the byte `arg == 0` to the setter (mov [rip+x], cl; ret), whose
+        // global is nonzero when random trains are off. Read to give the
+        // user's state back at the end.
+        const sig::Signature kRandomNative{"trains_random_native",
+            "48 8D 15 ?? ?? ?? ?? 48 B9 8A A9 82 7E EE C6 56 11 E8 ?? ?? ?? ??", 0x10FA779};
+        const sig::Signature kRandomHandler{"trains_random_handler", kRandomNative, sig::Rel32{0x03, 0x07},
+            "48 8B 41 10 83 38 00 0F 94 C1 E9 ?? ?? ?? ??", 0x10E0CA4};
+        const sig::Signature kRandomSetter{"trains_random_setter", kRandomHandler, sig::Rel32{0x0B, 0x0F},
+            "88 0D ?? ?? ?? ?? C3", 0x15088AC};
+        const sig::Signature kRandomFlag{"trains_random_flag", kRandomSetter, sig::Rel32{0x02, 0x06}, "", 0x4F8EDD3};
+        // The train config lookup (_GET_NUM_CARS_FROM_TRAIN_CONFIG calls it):
+        // the count at a global, the configs in an array of 0x1260 bytes whose
+        // first dword is the config's hash. Bench only (train_spawn auto).
+        const sig::Signature kConfigLookup{"trains_config_lookup",
+            "44 8B 0D ?? ?? ?? ?? 45 32 C0 45 85 C9 7E 27 33 C0 48 69 D0 60 12 00 00 48 8D 05 ?? ?? ?? ??", 0x151D5F0};
+        const sig::Signature kConfigCount{"trains_config_count", kConfigLookup, sig::Rel32{0x03, 0x07}, "", 0x5009FB0};
+        const sig::Signature kConfigs{"trains_configs", kConfigLookup, sig::Rel32{0x1B, 0x1F}, "", 0x4FD08F8};
         constexpr std::uint32_t kConfigStride = 0x1260;
 
         constexpr std::uint32_t kForwardLink = 0x11F0;
@@ -102,57 +110,20 @@ namespace replay::trains
         };
         Engine g_engine;
 
-        std::uintptr_t Base() { return reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)); }
-
-        bool Same(std::uintptr_t at, const std::uint8_t* bytes, std::size_t size)
-        {
-            std::uint8_t copy[64]{};
-            if (size > sizeof(copy) || !replay::mem::Copy(copy, at, size))
-                return false;
-            return std::memcmp(copy, bytes, size) == 0;
-        }
-
-        std::int32_t Rel32(std::uintptr_t at)
-        {
-            std::int32_t value = 0;
-            replay::mem::Read(at, value);
-            return value;
-        }
-
         void CheckEngine()
         {
             if (g_engine.checked)
                 return;
             g_engine.checked = true;
-            const std::uintptr_t base = Base();
-            g_engine.links = Same(base + kCarCountRva, kCarCountSignature, sizeof(kCarCountSignature)) &&
-                Same(base + kCarriageWalkRva, kCarriageWalkSignature, sizeof(kCarriageWalkSignature));
-            g_engine.types = Same(base + kTypeTestRva, kTypeTestSignature, sizeof(kTypeTestSignature));
-            g_engine.audio = g_engine.types && Same(base + kAudioRva, kAudioSignature, sizeof(kAudioSignature));
-            if (Same(base + kRandomTrainsHandlerRva, kRandomTrainsHandlerSignature, sizeof(kRandomTrainsHandlerSignature)))
-            {
-                // The handler's jump lands on the setter; the setter stores cl.
-                const std::uintptr_t jumpEnd = base + kRandomTrainsHandlerRva + sizeof(kRandomTrainsHandlerSignature) + 4;
-                const std::uintptr_t target = jumpEnd + static_cast<std::intptr_t>(Rel32(jumpEnd - 4));
-                std::uint8_t setter[7]{};
-                if (target == base + kRandomTrainsSetRva && replay::mem::Copy(setter, target, sizeof(setter)) &&
-                    setter[0] == 0x88 && setter[1] == 0x0D && setter[6] == 0xC3)
-                {
-                    std::int32_t disp = 0;
-                    std::memcpy(&disp, setter + 2, sizeof(disp));
-                    g_engine.randomFlag = target + 6 + static_cast<std::intptr_t>(disp);
-                    g_engine.random = true;
-                }
-            }
-            {
-                const std::uintptr_t at = base + kConfigLookupRva;
-                if (Same(at, kConfigLookupHead, sizeof(kConfigLookupHead)) && Same(at + 7, kConfigLookupMiddle, sizeof(kConfigLookupMiddle)))
-                {
-                    g_engine.configCount = at + 7 + static_cast<std::intptr_t>(Rel32(at + 3));
-                    g_engine.configBase = at + 0x1F + static_cast<std::intptr_t>(Rel32(at + 0x1B));
-                    g_engine.configs = true;
-                }
-            }
+            g_engine.links = sig::Find(kCarCount) && sig::Find(kCarriageWalk);
+            g_engine.types = sig::Find(kTrailerNumber) != 0;
+            g_engine.audio = g_engine.types && sig::Find(kWhistle);
+            // The handler's jump lands on the setter; the setter stores cl.
+            g_engine.randomFlag = sig::Find(kRandomFlag);
+            g_engine.random = g_engine.randomFlag != 0;
+            g_engine.configCount = sig::Find(kConfigCount);
+            g_engine.configBase = sig::Find(kConfigs);
+            g_engine.configs = g_engine.configCount && g_engine.configBase;
             std::string error;
             if (!g_engine.links)
                 error += "links;";
@@ -189,9 +160,6 @@ namespace replay::trains
             links.backward = backward;
             return true;
         }
-
-        int g_puppetMode = 0;
-        int g_worldClearMode = 0;
 
         // ----- Recording -----
 
@@ -990,7 +958,7 @@ namespace replay::trains
         RandomTrainsOff(prior);
         char text[320]{};
         std::snprintf(text, sizeof(text),
-            "TRAINS,links=%d,types=%d,audio=%d,random_flag=%d,random_off=%d,configs=%d,config_count=%d,puppet_mode=%d,world_clear=%d,error=%s",
+            "TRAINS,links=%d,types=%d,audio=%d,random_flag=%d,random_off=%d,configs=%d,config_count=%d,error=%s",
             g_engine.links ? 1 : 0, g_engine.types ? 1 : 0, g_engine.audio ? 1 : 0, g_engine.random ? 1 : 0, prior,
             g_engine.configs ? 1 : 0,
             [] {
@@ -999,7 +967,7 @@ namespace replay::trains
                     replay::mem::Read(g_engine.configCount, count);
                 return static_cast<int>(count);
             }(),
-            g_puppetMode, g_worldClearMode, g_engine.error.empty() ? "none" : g_engine.error.c_str());
+            g_engine.error.empty() ? "none" : g_engine.error.c_str());
         return text;
     }
 
@@ -1009,8 +977,6 @@ namespace replay::trains
         constexpr int kScriptDoorsBench = replay::vehdoors::kScriptDoors;
     }
 
-    void SetPuppetMode(int mode) { g_puppetMode = (std::max)(0, (std::min)(2, mode)); }
-    void SetWorldClearMode(int mode) { g_worldClearMode = (std::max)(0, (std::min)(1, mode)); }
 
     bool IsTrainCar(Entity vehicle)
     {
@@ -1250,7 +1216,7 @@ namespace replay::trains
         g_playing = true;
         // No random train comes while the replay plays (the setter is a
         // flag; SET_DISABLE_RANDOM_TRAINS_THIS_FRAME is an empty stub in
-        // this build, 0x11CC10 `ret 0`). The user's state goes back at the end.
+        // this build, `ret 0`). The user's state goes back at the end.
         g_randomChanged = false;
         RandomTrainsOff(g_randomPrior);
         if (g_randomPrior != 1)
@@ -1258,10 +1224,6 @@ namespace replay::trains
             VEHICLE::SET_RANDOM_TRAINS(FALSE);
             g_randomChanged = true;
         }
-        // Every train is cleared before playback only when the ini asks (a
-        // mission train goes too).
-        if (g_worldClearMode == 1)
-            DeleteAllTrains("ini");
         // The cars' pose records, and whether anything moved in them (the
         // wheels): read from the track headers.
         for (const replay::entity::CreatePacket& packet : Ctx().clip.created)
@@ -1281,8 +1243,7 @@ namespace replay::trains
             }
         }
         Ctx().log << "TRAIN_WORLD,action=begin,random_prior=" << g_randomPrior << ",random_changed=" << (g_randomChanged ? 1 : 0)
-                  << ",clip_cars=" << Ctx().clip.trains.cars.size() << ",world_clear=" << g_worldClearMode
-                  << ",puppet_mode=" << g_puppetMode << '\n';
+                  << ",clip_cars=" << Ctx().clip.trains.cars.size() << '\n';
     }
 
     void SuppressThisFrame()
@@ -1362,8 +1323,6 @@ namespace replay::trains
                 continue;
             ++alive;
             PuppetState& state = g_puppets[puppet.packet.id.Packed()];
-            if (puppet.createAttempts == 0 && puppet.state == replay::playback::PuppetState::Loading && g_puppetMode == 2)
-                state.kind = PuppetKind::Object;
             const replay::entity::RelativeTrack* track = TrackOf(puppet);
             replay::entity::TransformSample sample;
             const bool sampled = track && track->Sample(timeMs, sample, &Ctx().clip.cuts);
@@ -1411,11 +1370,9 @@ namespace replay::trains
                     }
                     continue;
                 }
-                if (creates >= replay::playback::kMaxCreatesPerFrame || now < puppet.nextCreateAt ||
-                    !replay::playback::StartBatchLeft()) // ClipStartStagger
+                if (creates >= replay::playback::kMaxCreatesPerFrame || now < puppet.nextCreateAt)
                     continue;
                 ++creates;
-                replay::playback::StartBatchUse();
                 ++puppet.createAttempts;
                 puppet.clone = CreateCarPuppet(puppet, state.kind, sample.relative);
                 puppet.placed = false;
@@ -1424,7 +1381,7 @@ namespace replay::trains
                 {
                     ++g_play.refused;
                     puppet.nextCreateAt = now + replay::playback::kCreateRetryMs;
-                    if (state.kind == PuppetKind::Vehicle && g_puppetMode == 0 && state.judge.Refused())
+                    if (state.kind == PuppetKind::Vehicle && state.judge.Refused())
                     {
                         state.kind = PuppetKind::Object;
                         ++g_play.fallbackObject;
@@ -1471,7 +1428,7 @@ namespace replay::trains
                     const float dz = at[2] - puppet.placedWorld.position.z;
                     const float drift = std::sqrt(dx * dx + dy * dy + dz * dz);
                     g_play.driftWorst = (std::max)(g_play.driftWorst, drift);
-                    if (state.judge.Drift(drift) && g_puppetMode == 0)
+                    if (state.judge.Drift(drift))
                     {
                         ++g_play.fallbackObject;
                         LogPuppet(puppet, "fallback_object", state, timeMs, "drift");
@@ -1878,8 +1835,8 @@ namespace replay::trains
             train = 0;
             return;
         }
-        // DELETE_MISSION_TRAIN takes types 18 and 19 of its script
-        // (0x10E406C); anything left goes with every train (bench only).
+        // DELETE_MISSION_TRAIN takes types 18 and 19 of its script;
+        // anything left goes with every train (bench only).
         Vehicle handle = train;
         VEHICLE::DELETE_MISSION_TRAIN(&handle);
         if (ENTITY::DOES_ENTITY_EXIST(train))

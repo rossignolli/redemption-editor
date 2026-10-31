@@ -103,19 +103,6 @@ namespace replay::events
     // The time budget per tick of the state rebuild queue (the
     // blood records after a jump): normal play, settle, frozen picture.
     void SetStateBudget(bool settling, bool frozen);
-    // EngineFeetInReplay in the ini. Off (the default): while a
-    // clip plays, the puppets' and the hidden player's own foot-down audio
-    // and the engine's foot puffs are kept out (the recorded ones play).
-    void SetEngineFeetInReplay(bool on);
-    // FxOwnerRule in the ini. On (the default): while a clip plays, a one-shot
-    // effect the engine starts on its own on a puppet or the hidden player is
-    // killed at its start (the recorded one plays); blood, explosion, fire and
-    // the weapon sites are exempt. 0: not killed.
-    void SetFxOwnerRule(bool on);
-    // FxRegisteredSplit in the ini. On (the default):
-    // every creation of a registered effect key while recording starts its
-    // own track (the hoof dust bursts); 0: one track per live key.
-    void SetFxRegisteredSplit(bool on);
     // The replay buffer's trim: the registered fx tracks it emptied (ended
     // before keepFrom) are removed, the live keys' track indices follow
     // (entity::DropEmptiedRegisteredFx). Returns the tracks removed.
@@ -124,26 +111,15 @@ namespace replay::events
     // turns its part off.
     struct FxParticlesConfig
     {
-        bool motionProbe = true;          // FxMotionProbe (read only, capped lines)
         bool puppetNoWarp = true;         // FxPuppetNoWarp
-        bool recordSettings = true;       // FxRecordSettings (FXSS and RGSS settings)
         bool settingsReplay = true;       // FxSettingsReplay
-        bool registeredParentOnce = true; // FxRegisteredParentOnce
-        bool callGaps = true;             // FxRegisteredCallGaps (recording and playback)
-        bool ownerReady = true;           // FxRegisteredOwnerReady
-        std::uint32_t recreateBackoffMs = 250; // FxRegisteredRecreateBackoffMs
-        bool puppetVelocity = true;       // FxPuppetVelocity (detour 0x1405BA4)
-        bool worldOwnerRule = true;       // FxWorldOwnerRule
-        bool ownerListImmediate = true;   // FxOwnerListImmediate
-        bool weaponFxEvents = true;       // WeaponFxEvents (recording)
-        bool applyRecordedFlags = true;   // FxApplyRecordedFlags
-        bool shotLegacyDedupe = true;     // ShotFxLegacyDedupe (older clips)
-        bool pauseFreeze = true;          // FxPauseFreeze (detour 0x145C17C)
-        bool checkMotion = true;          // FxCheckMotion (detection)
+        std::uint32_t recreateBackoffMs = 250; // the wait after a recreation in a stretch
+        bool puppetVelocity = true;       // FxPuppetVelocity (detour on the particle entity velocity)
+        bool pauseFreeze = true;          // FxPauseFreeze (detour on the vfx update)
         bool ownerReadyHold = true;       // FxRegisteredOwnerReadyHold: the ready check in every mode, no recreation paused
         bool worldOwnerEarly = true;      // FxWorldOwnerEarly: the map object refused before our instance, 1 s lease
         bool relocateClearStill = true;   // FxRelocateClearStill: the relocate mark cleared on an owner that did not move
-        bool weaponFxIntent = true;       // WeaponFxIntent: the shot's effect requests recorded (detours 0x14309A8, 0x14308F0) and played back through the same wrappers
+        bool weaponFxIntent = true;       // WeaponFxIntent: the shot's effect requests recorded (detours on the muzzle and shell requests) and played back through the same wrappers
     };
     void SetFxParticlesConfig(const FxParticlesConfig& config);
     // The playback's placement of a puppet
@@ -159,11 +135,6 @@ namespace replay::events
     // Play, outside its audio scope: a sound the call makes is the puppet's
     // own to the sound rules, and it is measured.
     void PlayWeaponFxIntents(std::uint32_t timeMs);
-    // FxWorldSiteRule (1): with FxOwnerRule, the engine's one-shots from the
-    // sites of the clip's world one-shots are killed at their start while it plays (the fx track plays them).
-    void SetFxWorldSiteRule(bool on);
-    // SpeechPlayerOnPlayer (1): the recorded player's lines are said by the hidden player.
-    void SetSpeechPlayerOnPlayer(bool on);
     // The trail follow (script.cpp UpdatePlayerFollow) reports every tick whether
     // it moved the hidden player (false: off, skipped for a mission or a vehicle,
     // no focus). While a line of the recorded player that names its voice (his
@@ -172,78 +143,31 @@ namespace replay::events
     // position, where the follow keeps him instead of the trail focus.
     void NotePlayerFollow(bool moving);
     bool PlayerSpeechHoldAt(float& x, float& y, float& z);
-    // FireUntrackedInitial (0): 1: the
-    // engine's fires the start detour never saw enter the clip as initial fires.
-    void SetFireUntrackedInitial(bool on);
-    void SetFireAdoptLive(bool on); // FireAdoptLive (default 0): keep a live initial fire instead of the native clear and the relight
-    // PedAudioLoopFollowsPuppet in the ini. On (the default): a replayed ped
-    // audio loop whose recorded params carry a position follows its puppet,
-    // as the engine moves it every frame; off: it stays where it was created.
-    void SetPedAudioLoopFollowsPuppet(bool on);
-    // PedAudioKeepRecordedLength
-    // in the ini. On (the default): a replayed short ped / train car audio
-    // sound stops after its recorded length (the horse's braking slide is a
-    // new sound every frame, each stopped by the game a frame later); off: it
-    // plays its whole sample.
-    void SetPedAudioKeepRecordedLength(bool on);
-    bool PedAudioKeepRecordedLength();
-    // AnimalVocalRetry in the ini. On (the default): an animal line
-    // the engine killed while loading is asked again through the animal's
-    // own vocalization; off: left silent.
-    void SetAnimalVocalRetry(bool on);
-    bool AnimalVocalRetry();
-    // SpeechQueueAnyContext in the ini. On: a speaker's due line waits for
-    // any line of that speaker still active (one speech slot per speech
-    // entity), not only one of the same context.
-    void SetSpeechQueueAnyContext(bool on);
-    // PlayerWeaponBank=1 (player_weapon_bank_core.h):
-    // the hidden live player equips the recorded player's next shot weapon so
-    // the engine has its bank in the player's weapon wave slots.
-    void SetPlayerWeaponBank(bool on);
-    // PuppetFoleyVariants (ped_audio_state.h; the
-    // recorded foley variant indices written into the puppets), PedAudioStateLog
-    // (FOLEY_VARIANT and PED_VARS lines) and PedVariablesReadProbe (the
-    // read-only detour on the sound variable lookup, installed at the first
-    // recording or playback when on).
-    void SetPedAudioState(bool variants, bool log, bool readProbe);
-    // ped_speed_core.h: PedSpeedRecord (1) keeps each recorded ped's and horse's PED_VARIABLES
-    // speed 4 times a second (section PSPD); PedSpeedReplay (1) writes it into
-    // the puppet's block after the engine's update (detour on 0x31A3ABC), from
-    // the section or the puppet's recorded motion; PedSpeedReplayLog (1) the
-    // PED_SPEED_REPLAY lines (one per puppet every 5 s of clip time).
-    void SetPedSpeed(bool record, bool replayOn, bool log);
-    // foot_event_core.h: FootEventRecord (1) keeps the entries the engine queued in
-    // each recorded ped's and horse's second foot queue (the secondary steps,
-    // section FSEV); FootEventReplay (1) queues them again on the puppet at
-    // the same clip time and, for a clip with FSEV, refuses the puppet's own;
-    // FootEventLog (1) the FOOT_EVENT_WINDOW lines (per owner and 5 s).
-    void SetFootEvents(bool record, bool replayOn, bool log);
+    // ped_speed_core.h: each recorded ped's and horse's PED_VARIABLES speed is
+    // kept 4 times a second (section PSPD); PedSpeedReplay (1) writes it into
+    // the puppet's block after the engine's update (detour on UpdatePedVariables), from
+    // the section or the puppet's recorded motion; the PED_SPEED_REPLAY lines
+    // (one per puppet every 5 s of clip time).
+    void SetPedSpeed(bool replayOn);
+    // foot_event_core.h: the entries the engine queued in each recorded ped's
+    // and horse's second foot queue are kept (the secondary steps, section
+    // FSEV); FootEventReplay (1) queues them again on the puppet at the same
+    // clip time and, for a clip with FSEV, refuses the puppet's own; the
+    // FOOT_EVENT_WINDOW lines (per owner and 5 s).
+    void SetFootEvents(bool replayOn);
     // MotionSpeedReplay (1): the movement component's own speed (C +0x5DC)
-    // on the puppets (detour on 0x8AABCC, the target of PedSpeedReplay);
-    // MotionStateLog (1): the MOTION_STATE (per horse and second) and
-    // MOTION_SPEED_REPLAY (per puppet and 5 s) lines.
-    void SetMotionSpeed(bool replayOn, bool stateLog);
+    // on the puppets (detour on the raw speed, the target of PedSpeedReplay);
+    // the MOTION_STATE (per horse and second) and MOTION_SPEED_REPLAY (per
+    // puppet and 5 s) lines.
+    void SetMotionSpeed(bool replayOn);
     // ShotEnvGroupReplay (1): a carried weapon's sound the live game made
     // with an environment group gets its holder's (SHOT_ENV lines).
     void SetShotEnvGroup(bool on);
-    // foot_movement_core.h: FootMovementRecord (1) keeps the
-    // movement volume result of each recorded step (section FMOV);
-    // FootMovementReplay (1) gives it back to the puppet's step at the same
-    // clip time (no MovementTermCorrection on top; a clip without FMOV is
-    // not changed). FOOT_MOVEMENT_TOTAL at each phase's end.
-    void SetFootMovement(bool record, bool replayOn);
-    // HumanOwnVoiceFallback (default 1). A puppet whose
-    // ambient voice line died with the wave missing in its fixed slot asks
-    // with its own voice (context and variation kept).
-    void SetHumanOwnVoiceFallback(bool on);
-    bool SpeechQueueAnyContext();
-    // RegisteredFxOwnerCheck
-    // in the ini. On (the default): a registered effect's track takes no owner
-    // from a new tenant of its instance address after the key stopped calling,
-    // and an attached track whose recorded parent is far from the puppet is not
-    // created on it.
-    void SetRegisteredFxOwnerCheck(bool on);
-    bool RegisteredFxOwnerCheck();
+    // foot_movement_core.h: the movement volume result of each recorded step
+    // is kept (section FMOV); FootMovementReplay (1) gives it back to the
+    // puppet's step at the same clip time (no MovementTermCorrection on top; a
+    // clip without FMOV is not changed). FOOT_MOVEMENT_TOTAL at each phase's end.
+    void SetFootMovement(bool replayOn);
     struct StateCounters
     {
         std::uint64_t decalReconciles = 0;

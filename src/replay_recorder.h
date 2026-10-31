@@ -22,8 +22,8 @@ namespace replay::recorder
     // Capture rate of the transform tracks.
     constexpr std::uint32_t kSampleHz = 30;
     // Capture places per class, so parked wagons never crowd out people.
-    // The ped class is the ini key PedCapacity (default 56,
-    // capture_capacity.h); kPedCapacity reads the session's value.
+    // The ped class is the session's PedCapacity (56, 148 with WorldModel=gta,
+    // capture_capacity.h); kPedCapacity reads it.
     inline constexpr replay::capacity::PedCapacityValue kPedCapacity{};
     constexpr int kWeaponAttachPoints = 32;
     // Attached objects (hand props, saddle holster weapons) share the weapon

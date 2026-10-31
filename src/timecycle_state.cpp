@@ -1,150 +1,143 @@
 #include "timecycle_state.h"
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 
 #include <windows.h>
 
 #include <algorithm>
 #include <cstring>
+#include <initializer_list>
 #include <vector>
 
-// See timecycle_state.h for the code each signature covers. The bytes are the
-// build 1491.50 dump's; the rip-relative and call operands are checked against
-// the documented targets as well.
+// See timecycle_state.h for the code each signature covers. The patterns are
+// the bytes the module checked (address bytes masked); the rip-relative and
+// call operands it compared are signatures reached from them, and every
+// reference to T or W must land on the same object.
 namespace replay::tcstate
 {
     namespace
     {
-        struct RipOperand
-        {
-            std::size_t dispOffset; // where the disp32 is, from the site
-            std::size_t insnEnd;    // where the instruction ends, from the site
-            std::uintptr_t targetRva;
-        };
+        namespace sig = replay::sig;
 
-        constexpr std::uintptr_t kSetModifierHandlerRva = 0xF8F4E8;
-        constexpr std::uint8_t kSetModifierHandler[] = {
-            0x48, 0x8B, 0x49, 0x10, 0x48, 0x8B, 0x09, 0xE9, 0x64, 0x32, 0x01, 0x00, 0x48, 0x8B, 0x41, 0x10,
-            0xF3, 0x0F, 0x10, 0x00, 0xF3, 0x0F, 0x11, 0x05, 0xF0, 0xA0, 0xB0, 0x03, 0xC3,
-        };
-        constexpr std::uintptr_t kSetModifierRva = 0xFA2758;
-        constexpr std::uint8_t kSetModifier[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD1, 0x33, 0xC9, 0xE8, 0x1C, 0x75, 0x66, 0x01,
-            0x45, 0x33, 0xC9, 0x89, 0x44, 0x24, 0x38, 0x4C, 0x8D, 0x05, 0x72, 0x1E, 0x4B, 0x02, 0x48, 0x8D,
-            0x54, 0x24, 0x38, 0x48, 0x8D, 0x0D, 0xFE, 0x46, 0xAF, 0x03, 0xE8, 0xF1, 0xC5, 0xB8, 0x01, 0x83,
-            0x0D, 0x6A, 0x6E, 0xAF, 0x03, 0xFF, 0x8B, 0x1D, 0xB8, 0x2D, 0xCE, 0x02, 0x89, 0x05, 0x56, 0x6E,
-            0xAF, 0x03,
-        };
-        constexpr std::uintptr_t kModifierIndexRva = 0x2B2ED78;
-        constexpr std::uint8_t kModifierIndex[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x8B, 0x02, 0x48, 0x8B, 0xD9, 0x48, 0x8D, 0x54, 0x24, 0x30,
-            0x89, 0x44, 0x24, 0x30, 0xE8, 0x8B, 0xFF, 0xFF, 0xFF, 0x44, 0x0F, 0xB7, 0x4B, 0x48, 0x33, 0xD2,
-            0x66, 0x41, 0x3B, 0xD1, 0x73, 0x16, 0x4C, 0x8B, 0x43, 0x40, 0x0F, 0xB7, 0xCA, 0x49, 0x39, 0x04,
-            0xC8, 0x74, 0x12, 0x66, 0xFF, 0xC2, 0x66, 0x41, 0x3B, 0xD1, 0x72, 0xEE, 0x83, 0xC8, 0xFF, 0x48,
-            0x83, 0xC4, 0x20, 0x5B, 0xC3, 0x0F, 0xB7, 0xC2, 0xEB, 0xF5,
-        };
-        constexpr std::uintptr_t kModifierAliasRva = 0x2B2ED1C;
-        constexpr std::uint8_t kModifierAlias[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x44, 0x8B, 0x02, 0x33, 0xDB, 0x45, 0x85, 0xC0, 0x75, 0x04,
-            0x33, 0xC0, 0xEB, 0x41, 0x44, 0x89, 0x44, 0x24, 0x38, 0x39, 0x59, 0x38, 0x74, 0x1E, 0x8B, 0xC3,
-            0x7E, 0x1A, 0x8B, 0xD0, 0x44, 0x39, 0x44, 0xD1, 0x18, 0x74, 0x09, 0xFF, 0xC0, 0x3B, 0x41, 0x38,
-            0x7C, 0xF0, 0xEB, 0x08, 0x8B, 0x44, 0xD1, 0x1C, 0x89, 0x44, 0x24, 0x38, 0x48, 0x83, 0xC1, 0x50,
-            0x48, 0x8D, 0x54, 0x24, 0x38, 0xE8, 0xAA, 0x14, 0x92, 0xFD, 0x48, 0x85, 0xC0, 0x74, 0x03, 0x48,
-            0x8B, 0x18, 0x48, 0x8B, 0xC3, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3,
-        };
-        constexpr std::uintptr_t kSortedMapFindRva = 0x450210;
-        constexpr std::uint8_t kSortedMapFind[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x7C, 0x24, 0x10, 0x33, 0xFF, 0x4C, 0x8B, 0xD2, 0x66,
-            0x39, 0x79, 0x10, 0x76, 0x5D, 0x4C, 0x8B, 0x59, 0x08, 0x0F, 0xB7, 0x49, 0x10, 0x4D, 0x8B, 0xC3,
-            0x44, 0x8B, 0xC9, 0x48, 0x85, 0xC9, 0x74, 0x30, 0x8B, 0x1A, 0x49, 0x8B, 0xD1, 0x48, 0xD1, 0xFA,
-            0x48, 0x8B, 0xC2, 0x48, 0x03, 0xC0, 0x41, 0x39, 0x1C, 0xC0, 0x73, 0x14, 0x4D, 0x8D, 0x04, 0xC0,
-            0x48, 0x83, 0xC8, 0xFF, 0x48, 0x2B, 0xC2, 0x49, 0x83, 0xC0, 0x10, 0x4C, 0x03, 0xC8, 0xEB, 0x03,
-            0x4C, 0x8B, 0xCA, 0x4D, 0x85, 0xC9, 0x7F, 0xD2, 0x48, 0xC1, 0xE1, 0x04, 0x49, 0x03, 0xCB, 0x4C,
-            0x3B, 0xC1, 0x74, 0x0E, 0x41, 0x8B, 0x02, 0x41, 0x39, 0x00, 0x75, 0x06, 0x49, 0x8D, 0x40, 0x08,
-            0xEB, 0x02, 0x33, 0xC0, 0x48, 0x8B, 0x5C, 0x24, 0x08, 0x48, 0x8B, 0x7C, 0x24, 0x10, 0xC3,
-        };
-        constexpr std::uintptr_t kModifierUpdateRva = 0xF22BC8;
-        constexpr std::uint8_t kModifierUpdate[] = {
-            0xF3, 0x0F, 0x10, 0x05, 0x6C, 0x0D, 0xA9, 0x04, 0xF3, 0x0F, 0x59, 0x83, 0x80, 0x27, 0x00, 0x00,
-            0xF3, 0x0F, 0x58, 0x83, 0x7C, 0x27, 0x00, 0x00, 0xF3, 0x0F, 0x11, 0x83, 0x7C, 0x27, 0x00, 0x00,
-            0xEB, 0x08, 0xF3, 0x0F, 0x10, 0x83, 0x7C, 0x27, 0x00, 0x00, 0xF3, 0x0F, 0x10, 0x8B, 0x74, 0x27,
-            0x00, 0x00, 0x0F, 0x2F, 0xC1, 0x72, 0x12, 0x83, 0x8B, 0x78, 0x27, 0x00, 0x00, 0xFF, 0x89, 0x83,
-            0x70, 0x27, 0x00, 0x00, 0xE9, 0x5B, 0x01, 0x00, 0x00, 0x8B, 0x8B, 0x70, 0x27, 0x00, 0x00, 0x85,
-            0xC9, 0x78, 0x24, 0x8B, 0xC1, 0xF3, 0x0F, 0x5C, 0xC8, 0x48, 0x8B, 0x4B, 0x40, 0x48, 0x8B, 0x0C,
-            0xC1, 0x0F, 0x28, 0xD1, 0xE8, 0x53, 0x4B, 0xC0, 0x01, 0xF3, 0x0F, 0x10, 0x83, 0x7C, 0x27, 0x00,
-            0x00, 0x8B, 0x83, 0x78, 0x27, 0x00, 0x00, 0x8B, 0xC8, 0x0F, 0x28, 0xC8, 0xE9, 0x26, 0x01, 0x00,
-            0x00, 0x8B, 0x83, 0x70, 0x27, 0x00, 0x00, 0x85, 0xC0, 0x0F, 0x88, 0xA1, 0x00, 0x00, 0x00, 0x8B,
-            0xC8, 0x48, 0x8B, 0x43, 0x40, 0x48, 0x8B, 0x0C, 0xC8, 0x40, 0x38, 0xB3, 0x84, 0x27, 0x00, 0x00,
-        };
-        constexpr std::uintptr_t kClearHandlerRva = 0xF8AC84;
-        constexpr std::uint8_t kClearHandler[] = {
-            0xE9, 0xE7, 0x8A, 0x00, 0x00,
-        };
-        constexpr std::uintptr_t kClearModifierRva = 0xF93770;
-        constexpr std::uint8_t kClearModifier[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0xF3, 0x0F, 0x10, 0x05, 0x26, 0x90,
-            0x37, 0x02, 0x83, 0xC8, 0xFF, 0x8B, 0x3D, 0xC1, 0x1D, 0xCF, 0x02, 0x33, 0xDB, 0xF3, 0x0F, 0x11,
-            0x05, 0x5F, 0x5E, 0xB0, 0x03, 0x89, 0x05, 0x55, 0x5E, 0xB0, 0x03, 0x89, 0x05, 0x57, 0x5E, 0xB0,
-            0x03, 0x88, 0x1D, 0x5D, 0x5E, 0xB0, 0x03,
-        };
-        constexpr std::uintptr_t kSetVariationHandlerRva = 0x1047A2C;
-        constexpr std::uint8_t kSetVariationHandler[] = {
-            0x48, 0x8B, 0x49, 0x10, 0x48, 0x8B, 0x51, 0x08, 0x48, 0x8B, 0x09, 0xE9, 0x20, 0x1A, 0x01, 0x00,
-        };
-        constexpr std::uintptr_t kSetVariationImplRva = 0x105945C;
-        constexpr std::uint8_t kSetVariationImpl[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xDA, 0x48, 0x8B, 0xD1,
-            0x48, 0x8D, 0x0D, 0x6D, 0x8E, 0x51, 0x03, 0xE8, 0xA0, 0x04, 0x6E, 0xFF, 0x4C, 0x8B, 0xC3, 0x48,
-            0x8D, 0x0D, 0x5E, 0x8E, 0x51, 0x03, 0x8B, 0xD0, 0x8B, 0xF8, 0xE8, 0x65, 0x09, 0x6E, 0xFF, 0x85,
-            0xC0, 0x78, 0x20, 0x85, 0xFF, 0x78, 0x1C, 0x3B, 0x3D, 0x47, 0x8E, 0x51, 0x03, 0x73, 0x14, 0x45,
-            0x33, 0xC9, 0x48, 0x8D, 0x0D, 0x3B, 0x8E, 0x51, 0x03, 0x44, 0x8B, 0xC0, 0x8B, 0xD7, 0xE8, 0x3D,
-            0xE7, 0x6F, 0xFF, 0x48, 0x8B, 0x5C, 0x24, 0x30, 0x48, 0x83, 0xC4, 0x20, 0x5F, 0xC3,
-        };
-        constexpr std::uintptr_t kTypeByNameRva = 0x739918;
-        constexpr std::uint8_t kTypeByName[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x33, 0xC9, 0xE8, 0x5C, 0x03, 0xED, 0x01,
-            0x44, 0x8B, 0x03, 0x33, 0xD2, 0x45, 0x85, 0xC0, 0x74, 0x16, 0x48, 0x8D, 0x4B, 0x10, 0x39, 0x01,
-            0x74, 0x17, 0xFF, 0xC2, 0x48, 0x81, 0xC1, 0xE0, 0x01, 0x00, 0x00, 0x41, 0x3B, 0xD0, 0x72, 0xEE,
-            0x83, 0xC8, 0xFF, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3, 0x8B, 0xC2, 0xEB, 0xF6,
-        };
-        constexpr std::uintptr_t kVariationByNameRva = 0x739DF0;
-        constexpr std::uint8_t kVariationByName[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x8B, 0xDA, 0x48, 0x8B, 0xF9, 0x49,
-            0x8B, 0xD0, 0x33, 0xC9, 0xE8, 0x7B, 0xFE, 0xEC, 0x01, 0x44, 0x8B, 0xC0, 0x8B, 0xD3, 0x48, 0x8B,
-            0xCF, 0x48, 0x8B, 0x5C, 0x24, 0x30, 0x48, 0x83, 0xC4, 0x20, 0x5F, 0xE9, 0x94, 0xFF, 0xFF, 0xFF,
-        };
-        constexpr std::uintptr_t kVariationByKeyRva = 0x739DB4;
-        constexpr std::uint8_t kVariationByKey[] = {
-            0x8B, 0xC2, 0x33, 0xD2, 0x4C, 0x69, 0xC8, 0xE0, 0x01, 0x00, 0x00, 0x45, 0x0F, 0xB7, 0x94, 0x09,
-            0xD0, 0x01, 0x00, 0x00, 0x45, 0x85, 0xD2, 0x74, 0x1B, 0x4D, 0x8B, 0x8C, 0x09, 0xC8, 0x01, 0x00,
-            0x00, 0x8B, 0xC2, 0x48, 0x6B, 0xC8, 0x44, 0x46, 0x39, 0x04, 0x09, 0x74, 0x0B, 0xFF, 0xC2, 0x41,
-            0x3B, 0xD2, 0x72, 0xED, 0x83, 0xC8, 0xFF, 0xC3,
-        };
-        constexpr std::uintptr_t kSetVariationRva = 0x757BEC;
-        constexpr std::uint8_t kSetVariation[] = {
-            0x40, 0x53, 0x4C, 0x8B, 0xD1, 0x44, 0x8B, 0xDA, 0x33, 0xC9, 0x45, 0x85, 0xC0, 0x79, 0x0F, 0x45,
-            0x8A, 0xC1, 0x41, 0x8B, 0xD3, 0x49, 0x8B, 0xCA, 0x5B, 0xE9, 0xDE, 0x46, 0xFD, 0xFF, 0x49, 0x69,
-            0xD3, 0xE0, 0x01, 0x00, 0x00, 0x49, 0x8B, 0xC3, 0x42, 0x0F, 0xB7, 0x84, 0x12, 0xD0, 0x01, 0x00,
-            0x00, 0x66, 0x85, 0xC0, 0x74, 0x66, 0x0F, 0xB7, 0xC0, 0x44, 0x3B, 0xC0, 0x7D, 0x5E, 0x49, 0x63,
-            0x9A, 0xB8, 0x3E, 0x00, 0x00, 0x85, 0xDB, 0x7E, 0x17, 0x48, 0x8B, 0xC1, 0x45, 0x39, 0x9C, 0x82,
-            0x38, 0x3E, 0x00, 0x00, 0x74, 0x0D, 0xFF, 0xC1, 0x48, 0xFF, 0xC0, 0x48, 0x3B, 0xC3, 0x7C, 0xEC,
-            0x83, 0xC9, 0xFF, 0x83, 0xF9, 0xFF, 0x74, 0x1D, 0x8D, 0x43, 0xFF, 0x48, 0x63, 0xC9, 0x41, 0x89,
-            0x82, 0xB8, 0x3E, 0x00, 0x00, 0x41, 0x8B, 0x84, 0x9A, 0x34, 0x3E, 0x00, 0x00, 0x41, 0x89, 0x84,
-            0x8A, 0x38, 0x3E, 0x00, 0x00, 0x41, 0x8B, 0xC0, 0x48, 0x6B, 0xC8, 0x44, 0x4A, 0x8B, 0x84, 0x12,
-            0xC8, 0x01, 0x00, 0x00, 0x8B, 0x0C, 0x01, 0x42, 0x89, 0x4C, 0x12, 0x14, 0x5B, 0xC3,
-        };
-        constexpr std::uintptr_t kClearVariationRva = 0x72C2E8;
-        constexpr std::uint8_t kClearVariation[] = {
-            0x33, 0xC0, 0x44, 0x8B, 0xCA, 0x45, 0x84, 0xC0, 0x74, 0x10, 0x49, 0x69, 0xD1, 0xE0, 0x01, 0x00,
-            0x00, 0x8B, 0x44, 0x0A, 0x10, 0x89, 0x44, 0x0A, 0x14, 0xC3, 0x4C, 0x63, 0x91, 0xB8, 0x3E, 0x00,
-            0x00, 0x45, 0x85, 0xD2, 0x7E, 0x17, 0x48, 0x8B, 0xD0, 0x44, 0x39, 0x8C, 0x91, 0x38, 0x3E, 0x00,
-            0x00, 0x74, 0x0D, 0xFF, 0xC0, 0x48, 0xFF, 0xC2, 0x49, 0x3B, 0xD2, 0x7C, 0xEC, 0x83, 0xC8, 0xFF,
-            0x83, 0xF8, 0xFF, 0x75, 0x12, 0x41, 0x8D, 0x42, 0x01, 0x89, 0x81, 0xB8, 0x3E, 0x00, 0x00, 0x46,
-            0x89, 0x8C, 0x91, 0x38, 0x3E, 0x00, 0x00, 0xC3,
-        };
-
-        constexpr std::uintptr_t kTimecycleRva = 0x4A96E80; // T
-        constexpr std::uintptr_t kWeatherRva = 0x45722E0;   // W
-        constexpr std::uintptr_t kUnitRva = 0x330C7A8;      // .rdata 1.0f (the cleared strength)
+        // SET_TIMECYCLE_MODIFIER's handler, found by its native hash where the
+        // natives are registered (lea rdx, handler; mov rcx, hash): a jump to
+        // the setter. SET_TIMECYCLE_MODIFIER_STRENGTH's handler, found the same
+        // way: movss [T+0x2774], xmm0.
+        const sig::Signature kSetModifierNative{"timecycle_set_modifier_native",
+            "48 8D 15 ?? ?? ?? ?? 48 B9 A7 2D A8 5E 2A 72 08 FA E8 ?? ?? ?? ??", 0xFAC630};
+        const sig::Signature kSetModifierHandler{"timecycle_set_modifier_handler", kSetModifierNative,
+            sig::Rel32{0x03, 0x07}, "48 8B 49 10 48 8B 09 E9 ?? ?? ?? ??", 0xF8F4E8};
+        const sig::Signature kStrengthNative{"timecycle_strength_native",
+            "48 8D 15 ?? ?? ?? ?? 48 B9 37 3F 4C C5 9C 4C B7 FD E8 ?? ?? ?? ??", 0xFAC657};
+        const sig::Signature kStrengthHandler{"timecycle_strength_handler", kStrengthNative, sig::Rel32{0x03, 0x07},
+            "48 8B 41 10 F3 0F 10 00 F3 0F 11 05 ?? ?? ?? ?? C3", 0xF8F4F4};
+        const sig::Signature kHandlerStrength{"timecycle_handler_strength", kStrengthHandler, sig::Rel32{0x0C, 0x10}, "",
+            0x4A995F4};
+        // The setter: lea rcx, [T]; the index of the name's hash; the transition
+        // -1 (T+0x2778) and the index (T+0x2770).
+        const sig::Signature kSetModifier{"timecycle_set_modifier", kSetModifierHandler, sig::Rel32{0x08, 0x0C},
+            "40 53 48 83 EC 20 48 8B D1 33 C9 E8 ?? ?? ?? ?? 45 33 C9 89 44 24 38 4C 8D 05 ?? ?? ?? ?? 48 8D 54 24 38 "
+            "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 0D ?? ?? ?? ?? FF 8B 1D ?? ?? ?? ?? 89 05 ?? ?? ?? ??",
+            0xFA2758};
+        const sig::Signature kTimecycle{"timecycle_object", kSetModifier, sig::Rel32{0x26, 0x2A}, "", 0x4A96E80}; // T
+        const sig::Signature kSetModifierTransition{"timecycle_set_modifier_transition", kSetModifier,
+            sig::Rel32{0x31, 0x36}, "", 0x4A995F8};
+        const sig::Signature kSetModifierIndex{"timecycle_set_modifier_index", kSetModifier, sig::Rel32{0x3E, 0x42},
+            "", 0x4A995F0};
+        // The index of a hash: the alias (T+0x18, count T+0x38), then the map at
+        // T+0x50 through the sorted map's find.
+        const sig::Signature kModifierIndex{"timecycle_modifier_index", kSetModifier, sig::Rel32{0x2B, 0x2F},
+            "40 53 48 83 EC 20 8B 02 48 8B D9 48 8D 54 24 30 89 44 24 30 E8 ?? ?? ?? ?? 44 0F B7 4B 48 33 D2 66 41 3B "
+            "D1 73 16 4C 8B 43 40 0F B7 CA 49 39 04 C8 74 12 66 FF C2 66 41 3B D1 72 EE 83 C8 FF 48 83 C4 20 5B C3 0F "
+            "B7 C2 EB F5",
+            0x2B2ED78};
+        const sig::Signature kModifierAlias{"timecycle_modifier_alias", kModifierIndex, sig::Rel32{0x15, 0x19},
+            "40 53 48 83 EC 20 44 8B 02 33 DB 45 85 C0 75 04 33 C0 EB 41 44 89 44 24 38 39 59 38 74 1E 8B C3 7E 1A 8B "
+            "D0 44 39 44 D1 18 74 09 FF C0 3B 41 38 7C F0 EB 08 8B 44 D1 1C 89 44 24 38 48 83 C1 50 48 8D 54 24 38 E8 "
+            "?? ?? ?? ?? 48 85 C0 74 03 48 8B 18 48 8B C3 48 83 C4 20 5B C3",
+            0x2B2ED1C};
+        const sig::Signature kSortedMapFind{"timecycle_sorted_map_find", kModifierAlias, sig::Rel32{0x46, 0x4A},
+            "48 89 5C 24 08 48 89 7C 24 10 33 FF 4C 8B D2 66 39 79 10 76 5D 4C 8B 59 08 0F B7 49 10 4D 8B C3 44 8B C9 "
+            "48 85 C9 74 30 8B 1A 49 8B D1 48 D1 FA 48 8B C2 48 03 C0 41 39 1C C0 73 14 4D 8D 04 C0 48 83 C8 FF 48 2B "
+            "C2 49 83 C0 10 4C 03 C8 EB 03 4C 8B CA 4D 85 C9 7F D2 48 C1 E1 04 49 03 CB 4C 3B C1 74 0E 41 8B 02 41 39 "
+            "00 75 06 49 8D 40 08 EB 02 33 C0 48 8B 5C 24 08 48 8B 7C 24 10 C3",
+            0x450210};
+        // The per frame update of the fields (rbx is T): +0x2780 * frame time into
+        // +0x277C, the end at +0x2774, the index +0x2770, the fade byte +0x2784.
+        const sig::Signature kModifierUpdate{"timecycle_modifier_update",
+            "F3 0F 10 05 ?? ?? ?? ?? F3 0F 59 83 80 27 00 00 F3 0F 58 83 7C 27 00 00 F3 0F 11 83 7C 27 00 00 EB 08 F3 "
+            "0F 10 83 7C 27 00 00 F3 0F 10 8B 74 27 00 00 0F 2F C1 72 12 83 8B 78 27 00 00 FF 89 83 70 27 00 00 E9 ?? "
+            "?? ?? ?? 8B 8B 70 27 00 00 85 C9 78 24 8B C1 F3 0F 5C C8 48 8B 4B 40 48 8B 0C C1 0F 28 D1 E8 ?? ?? ?? ?? "
+            "F3 0F 10 83 7C 27 00 00 8B 83 78 27 00 00 8B C8 0F 28 C8 E9 ?? ?? ?? ?? 8B 83 70 27 00 00 85 C0 0F 88 ?? "
+            "?? ?? ?? 8B C8 48 8B 43 40 48 8B 0C C8 40 38 B3 84 27 00 00",
+            0xF22BC8};
+        // CLEAR_TIMECYCLE_MODIFIER, found by its native hash where the natives are
+        // registered (lea rdx, handler; mov rcx, hash): its handler jumps to the
+        // clear, which writes the 1.0 of the .rdata as the strength and -1 to the
+        // index and the transition, and 0 to the fade byte.
+        const sig::Signature kClearNative{"timecycle_clear_native",
+            "48 8D 15 ?? ?? ?? ?? 48 B9 FB 91 34 D6 F2 4A 3F 0E E8 ?? ?? ?? ??", 0xFAC6CC};
+        const sig::Signature kClearHandler{"timecycle_clear_handler", kClearNative, sig::Rel32{0x03, 0x07},
+            "E9 ?? ?? ?? ??", 0xF8AC84};
+        const sig::Signature kClearModifier{"timecycle_clear_modifier", kClearHandler, sig::Rel32{0x01, 0x05},
+            "48 89 5C 24 08 57 48 83 EC 20 F3 0F 10 05 ?? ?? ?? ?? 83 C8 FF 8B 3D ?? ?? ?? ?? 33 DB F3 0F 11 05 ?? ?? "
+            "?? ?? 89 05 ?? ?? ?? ?? 89 05 ?? ?? ?? ?? 88 1D ?? ?? ?? ??",
+            0xF93770};
+        const sig::Signature kUnit{"timecycle_unit", kClearModifier, sig::Rel32{0x0E, 0x12}, "", 0x330C7A8};
+        const sig::Signature kClearStrength{"timecycle_clear_strength", kClearModifier, sig::Rel32{0x21, 0x25}, "",
+            0x4A995F4};
+        const sig::Signature kClearIndex{"timecycle_clear_index", kClearModifier, sig::Rel32{0x27, 0x2B}, "",
+            0x4A995F0};
+        const sig::Signature kClearTransition{"timecycle_clear_transition", kClearModifier, sig::Rel32{0x2D, 0x31}, "",
+            0x4A995F8};
+        const sig::Signature kClearFade{"timecycle_clear_fade", kClearModifier, sig::Rel32{0x33, 0x37}, "", 0x4A99604};
+        // _SET_WEATHER_VARIATION, found by its native hash: the handler jumps to
+        // the implementation, which uses lea rcx, [W] four times: the type by
+        // hash, the variation by name (then by key), and the setter (W, type,
+        // variation, 0).
+        const sig::Signature kVariationNative{"timecycle_variation_native",
+            "48 8D 15 ?? ?? ?? ?? 48 B9 48 AF 7C AF 9B 77 73 33 E8 ?? ?? ?? ??", 0x1062C2A};
+        const sig::Signature kSetVariationHandler{"timecycle_set_variation_handler", kVariationNative,
+            sig::Rel32{0x03, 0x07}, "48 8B 49 10 48 8B 51 08 48 8B 09 E9 ?? ?? ?? ??", 0x1047A2C};
+        const sig::Signature kSetVariationImpl{"timecycle_set_variation_impl", kSetVariationHandler,
+            sig::Rel32{0x0C, 0x10},
+            "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B D1 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 4C 8B C3 48 8D 0D ?? "
+            "?? ?? ?? 8B D0 8B F8 E8 ?? ?? ?? ?? 85 C0 78 20 85 FF 78 1C 3B 3D ?? ?? ?? ?? 73 14 45 33 C9 48 8D 0D ?? "
+            "?? ?? ?? 44 8B C0 8B D7 E8 ?? ?? ?? ?? 48 8B 5C 24 30 48 83 C4 20 5F C3",
+            0x105945C};
+        const sig::Signature kWeather{"timecycle_weather", kSetVariationImpl, sig::Rel32{0x13, 0x17}, "",
+            0x45722E0}; // W
+        const sig::Signature kTypeByName{"timecycle_type_by_name", kSetVariationImpl, sig::Rel32{0x18, 0x1C},
+            "40 53 48 83 EC 20 48 8B D9 33 C9 E8 ?? ?? ?? ?? 44 8B 03 33 D2 45 85 C0 74 16 48 8D 4B 10 39 01 74 17 FF "
+            "C2 48 81 C1 E0 01 00 00 41 3B D0 72 EE 83 C8 FF 48 83 C4 20 5B C3 8B C2 EB F6",
+            0x739918};
+        const sig::Signature kWeatherByName{"timecycle_weather_by_name", kSetVariationImpl, sig::Rel32{0x22, 0x26}, "",
+            0x45722E0};
+        const sig::Signature kVariationByName{"timecycle_variation_by_name", kSetVariationImpl, sig::Rel32{0x2B, 0x2F},
+            "48 89 5C 24 08 57 48 83 EC 20 8B DA 48 8B F9 49 8B D0 33 C9 E8 ?? ?? ?? ?? 44 8B C0 8B D3 48 8B CF 48 8B "
+            "5C 24 30 48 83 C4 20 5F E9 ?? ?? ?? ??",
+            0x739DF0};
+        const sig::Signature kWeatherCount{"timecycle_weather_count", kSetVariationImpl, sig::Rel32{0x39, 0x3D}, "",
+            0x45722E0};
+        const sig::Signature kWeatherSet{"timecycle_weather_set", kSetVariationImpl, sig::Rel32{0x45, 0x49}, "",
+            0x45722E0};
+        const sig::Signature kSetVariation{"timecycle_set_variation", kSetVariationImpl, sig::Rel32{0x4F, 0x53},
+            "40 53 4C 8B D1 44 8B DA 33 C9 45 85 C0 79 0F 45 8A C1 41 8B D3 49 8B CA 5B E9 ?? ?? ?? ?? 49 69 D3 E0 01 "
+            "00 00 49 8B C3 42 0F B7 84 12 D0 01 00 00 66 85 C0 74 66 0F B7 C0 44 3B C0 7D 5E 49 63 9A B8 3E 00 00 85 "
+            "DB 7E 17 48 8B C1 45 39 9C 82 38 3E 00 00 74 0D FF C1 48 FF C0 48 3B C3 7C EC 83 C9 FF 83 F9 FF 74 1D 8D "
+            "43 FF 48 63 C9 41 89 82 B8 3E 00 00 41 8B 84 9A 34 3E 00 00 41 89 84 8A 38 3E 00 00 41 8B C0 48 6B C8 44 "
+            "4A 8B 84 12 C8 01 00 00 8B 0C 01 42 89 4C 12 14 5B C3",
+            0x757BEC};
+        const sig::Signature kVariationByKey{"timecycle_variation_by_key", kVariationByName, sig::Rel32{0x2C, 0x30},
+            "8B C2 33 D2 4C 69 C8 E0 01 00 00 45 0F B7 94 09 D0 01 00 00 45 85 D2 74 1B 4D 8B 8C 09 C8 01 00 00 8B C2 "
+            "48 6B C8 44 46 39 04 09 74 0B FF C2 41 3B D2 72 ED 83 C8 FF C3",
+            0x739DB4};
+        const sig::Signature kClearVariation{"timecycle_clear_variation", kSetVariation, sig::Rel32{0x1A, 0x1E},
+            "33 C0 44 8B CA 45 84 C0 74 10 49 69 D1 E0 01 00 00 8B 44 0A 10 89 44 0A 14 C3 4C 63 91 B8 3E 00 00 45 85 "
+            "D2 7E 17 48 8B D0 44 39 8C 91 38 3E 00 00 74 0D FF C0 48 FF C2 49 3B D2 7C EC 83 C8 FF 83 F8 FF 75 12 41 "
+            "8D 42 01 89 81 B8 3E 00 00 46 89 8C 91 38 3E 00 00 C3",
+            0x72C2E8};
 
         // T's fields (timecycle_track.h).
         constexpr std::uintptr_t kModifierPointers = 0x40; // u64 array
@@ -152,6 +145,10 @@ namespace replay::tcstate
         constexpr std::uintptr_t kMapData = 0x58;          // map at 0x50: data at +0x8
         constexpr std::uintptr_t kMapCount = 0x60;         // u16 at map +0x10
         constexpr std::uintptr_t kFields = 0x2770;         // index, strength, transition, progress, speed, fade byte
+        constexpr std::uintptr_t kIndexField = 0x2770;
+        constexpr std::uintptr_t kStrengthField = 0x2774;
+        constexpr std::uintptr_t kTransitionField = 0x2778;
+        constexpr std::uintptr_t kFadeField = 0x2784;
         constexpr std::size_t kFieldBytes = 0x15;
         // W's weather types.
         constexpr std::uintptr_t kTypeStride = 0x1E0;
@@ -167,80 +164,74 @@ namespace replay::tcstate
         bool g_checked = false;
         bool g_ok = false;
         std::string g_error;
-        std::uintptr_t g_base = 0;
+        std::uintptr_t g_timecycle = 0;    // T
+        std::uintptr_t g_weather = 0;      // W
+        std::uintptr_t g_setVariation = 0; // the engine's setter
 
-        bool Site(std::uintptr_t rva, const std::uint8_t* bytes, std::size_t size, const RipOperand* operands, std::size_t count)
+        bool Found(std::initializer_list<const sig::Signature*> list)
         {
-            const std::uintptr_t site = g_base + rva;
-            if (!mem::Matches(reinterpret_cast<const void*>(site), bytes, size))
-                return false;
-            for (std::size_t n = 0; n < count; ++n)
-            {
-                std::int32_t disp = 0;
-                if (!mem::Read(site + operands[n].dispOffset, disp))
+            for (const sig::Signature* s : list)
+                if (!sig::Find(*s))
                     return false;
-                const std::uintptr_t target =
-                    site + operands[n].insnEnd + static_cast<std::uintptr_t>(static_cast<std::intptr_t>(disp));
-                if (target != g_base + operands[n].targetRva)
-                    return false;
-            }
             return true;
+        }
+
+        // A reference that must land on `address` (T or W plus a field): the
+        // code agrees on the global it uses.
+        bool At(const sig::Signature& s, std::uintptr_t address)
+        {
+            return address && sig::Find(s) == address;
         }
 
         bool Check(std::string& error)
         {
-            g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-            constexpr std::uintptr_t T = kTimecycleRva;
-            constexpr std::uintptr_t W = kWeatherRva;
-            const RipOperand setHandler[] = {{0x08, 0x0C, kSetModifierRva}, {0x18, 0x1C, T + 0x2774}};
-            const RipOperand setModifier[] = {{0x26, 0x2A, T}, {0x2B, 0x2F, kModifierIndexRva}, {0x31, 0x36, T + 0x2778}, {0x3E, 0x42, T + 0x2770}};
-            const RipOperand modifierIndex[] = {{0x15, 0x19, kModifierAliasRva}};
-            const RipOperand modifierAlias[] = {{0x46, 0x4A, kSortedMapFindRva}};
-            const RipOperand clearHandler[] = {{0x01, 0x05, kClearModifierRva}};
-            const RipOperand clearModifier[] = {
-                {0x0E, 0x12, kUnitRva}, {0x21, 0x25, T + 0x2774}, {0x27, 0x2B, T + 0x2770}, {0x2D, 0x31, T + 0x2778}, {0x33, 0x37, T + 0x2784}};
-            const RipOperand variationHandler[] = {{0x0C, 0x10, kSetVariationImplRva}};
-            const RipOperand variationImpl[] = {{0x13, 0x17, W}, {0x18, 0x1C, kTypeByNameRva}, {0x22, 0x26, W}, {0x2B, 0x2F, kVariationByNameRva},
-                {0x39, 0x3D, W}, {0x45, 0x49, W}, {0x4F, 0x53, kSetVariationRva}};
-            const RipOperand variationByName[] = {{0x2C, 0x30, kVariationByKeyRva}};
-            const RipOperand setVariation[] = {{0x1A, 0x1E, kClearVariationRva}};
-            if (!Site(kSetModifierHandlerRva, kSetModifierHandler, sizeof(kSetModifierHandler), setHandler, 2))
+            const std::uintptr_t t = sig::Find(kTimecycle);
+            const std::uintptr_t w = sig::Find(kWeather);
+            if (!Found({&kSetModifierHandler, &kHandlerStrength}))
                 error = "set_modifier_handler_mismatch";
-            else if (!Site(kSetModifierRva, kSetModifier, sizeof(kSetModifier), setModifier, 4))
+            else if (!t || !At(kHandlerStrength, t + kStrengthField) ||
+                     !At(kSetModifierTransition, t + kTransitionField) || !At(kSetModifierIndex, t + kIndexField))
                 error = "set_modifier_mismatch";
-            else if (!Site(kModifierIndexRva, kModifierIndex, sizeof(kModifierIndex), modifierIndex, 1))
+            else if (!Found({&kModifierIndex}))
                 error = "modifier_index_mismatch";
-            else if (!Site(kModifierAliasRva, kModifierAlias, sizeof(kModifierAlias), modifierAlias, 1))
+            else if (!Found({&kModifierAlias}))
                 error = "modifier_alias_mismatch";
-            else if (!Site(kSortedMapFindRva, kSortedMapFind, sizeof(kSortedMapFind), nullptr, 0))
+            else if (!Found({&kSortedMapFind}))
                 error = "sorted_map_mismatch";
-            else if (!Site(kModifierUpdateRva, kModifierUpdate, sizeof(kModifierUpdate), nullptr, 0))
+            else if (!Found({&kModifierUpdate}))
                 error = "modifier_update_mismatch";
-            else if (!Site(kClearHandlerRva, kClearHandler, sizeof(kClearHandler), clearHandler, 1))
+            else if (!Found({&kClearNative, &kClearHandler}))
                 error = "clear_handler_mismatch";
-            else if (!Site(kClearModifierRva, kClearModifier, sizeof(kClearModifier), clearModifier, 5))
+            else if (!Found({&kClearModifier, &kUnit}) || !At(kClearStrength, t + kStrengthField) ||
+                     !At(kClearIndex, t + kIndexField) || !At(kClearTransition, t + kTransitionField) ||
+                     !At(kClearFade, t + kFadeField))
                 error = "clear_modifier_mismatch";
-            else if (!Site(kSetVariationHandlerRva, kSetVariationHandler, sizeof(kSetVariationHandler), variationHandler, 1))
+            else if (!Found({&kVariationNative, &kSetVariationHandler}))
                 error = "set_variation_handler_mismatch";
-            else if (!Site(kSetVariationImplRva, kSetVariationImpl, sizeof(kSetVariationImpl), variationImpl, 7))
+            else if (!w || !At(kWeatherByName, w) || !At(kWeatherCount, w) || !At(kWeatherSet, w))
                 error = "set_variation_impl_mismatch";
-            else if (!Site(kTypeByNameRva, kTypeByName, sizeof(kTypeByName), nullptr, 0))
+            else if (!Found({&kTypeByName}))
                 error = "type_by_name_mismatch";
-            else if (!Site(kVariationByNameRva, kVariationByName, sizeof(kVariationByName), variationByName, 1))
+            else if (!Found({&kVariationByName}))
                 error = "variation_by_name_mismatch";
-            else if (!Site(kVariationByKeyRva, kVariationByKey, sizeof(kVariationByKey), nullptr, 0))
+            else if (!Found({&kVariationByKey}))
                 error = "variation_by_key_mismatch";
-            else if (!Site(kSetVariationRva, kSetVariation, sizeof(kSetVariation), setVariation, 1))
+            else if (!Found({&kSetVariation}))
                 error = "set_variation_mismatch";
-            else if (!Site(kClearVariationRva, kClearVariation, sizeof(kClearVariation), nullptr, 0))
+            else if (!Found({&kClearVariation}))
                 error = "clear_variation_mismatch";
             else
+            {
+                g_timecycle = t;
+                g_weather = w;
+                g_setVariation = sig::Find(kSetVariation);
                 return true;
+            }
             return false;
         }
 
-        std::uintptr_t TimecycleAt(std::uintptr_t offset) { return g_base + kTimecycleRva + offset; }
-        std::uintptr_t WeatherAt(std::uintptr_t offset) { return g_base + kWeatherRva + offset; }
+        std::uintptr_t TimecycleAt(std::uintptr_t offset) { return g_timecycle + offset; }
+        std::uintptr_t WeatherAt(std::uintptr_t offset) { return g_weather + offset; }
 
         // The modifier array and map, copied again when their header moved
         // (pointer or count): both are built at load, so normally once.
@@ -300,18 +291,11 @@ namespace replay::tcstate
             return true;
         }
 
-        using SetVariationFn = void(__fastcall*)(void* weather, std::uint32_t type, std::int32_t variation, std::uint8_t immediate);
-        bool GuardedSetVariation(std::uintptr_t base, std::uint32_t type, std::int32_t variation, std::uint8_t immediate)
+        bool GuardedSetVariation(std::uintptr_t setter, std::uintptr_t weather, std::uint32_t type,
+            std::int32_t variation, std::uint8_t immediate)
         {
-            __try
-            {
-                reinterpret_cast<SetVariationFn>(base + kSetVariationRva)(reinterpret_cast<void*>(base + kWeatherRva), type, variation, immediate);
-                return true;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kTimecycleSetVariation, setter, reinterpret_cast<void*>(weather), type, variation,
+                immediate);
         }
 
         bool TypeCount(std::uint32_t& count)
@@ -428,7 +412,7 @@ namespace replay::tcstate
         if (!g_ok)
             return false;
         // A written index must be inside the array the engine indexes
-        // unchecked (0xF22B60: [T+0x40][index]).
+        // unchecked (the per frame update: [T+0x40][index]).
         const std::size_t count = ModifierCount();
         if ((f.index >= 0 && static_cast<std::size_t>(f.index) >= count) ||
             (f.transitionIndex >= 0 && static_cast<std::size_t>(f.transitionIndex) >= count))
@@ -483,13 +467,13 @@ namespace replay::tcstate
                 ++result.missing;
                 break;
             case tctrack::VariationStep::Clear:
-                if (GuardedSetVariation(g_base, i, -1, 1))
+                if (GuardedSetVariation(g_setVariation, g_weather, i, -1, 1))
                     ++result.cleared;
                 else
                     ++result.faults;
                 break;
             case tctrack::VariationStep::Set:
-                if (GuardedSetVariation(g_base, i, index, 0))
+                if (GuardedSetVariation(g_setVariation, g_weather, i, index, 0))
                     ++result.set;
                 else
                     ++result.faults;

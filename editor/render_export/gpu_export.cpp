@@ -2,6 +2,7 @@
 
 #include "gpu_export.h"
 
+#include "shaders/export_convert_dxil.h"
 #include "shaders/export_convert_spirv.h"
 #include "thread_names.h"
 
@@ -14,6 +15,50 @@ namespace render_export
     namespace
     {
         constexpr std::uint32_t kConstantWords = sizeof(ExportConstants) / 4;
+
+        // D3D12 copies between a texture and a buffer in rows of a multiple
+        // of D3D12_TEXTURE_DATA_PITCH_ALIGNMENT (256 bytes; ReShade's D3D12
+        // copy_texture_to_buffer rounds the row up to it). The output image
+        // row is exactly that, so its bytes stay tight in the staging slot
+        // under both APIs.
+        constexpr std::uint32_t kD3D12RowPitchAlignment = 256;
+        static_assert((kOutputRowWords * 4) % kD3D12RowPitchAlignment == 0, "output row must be a multiple of the D3D12 row pitch");
+        // Tag cells are copied at kTagStride offsets: D3D12 placed footprints
+        // start on D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT (512).
+        constexpr std::uint32_t kD3D12PlacementAlignment = 512;
+
+        const char* ApiName(device_api api)
+        {
+            switch (api)
+            {
+            case device_api::vulkan: return "vulkan";
+            case device_api::d3d12: return "d3d12";
+            case device_api::d3d11: return "d3d11";
+            case device_api::d3d10: return "d3d10";
+            case device_api::d3d9: return "d3d9";
+            case device_api::opengl: return "opengl";
+            }
+            return "unknown";
+        }
+
+        const char* FormatName(format f)
+        {
+            switch (f)
+            {
+            case format::r8g8b8a8_unorm: return "r8g8b8a8_unorm";
+            case format::r8g8b8a8_unorm_srgb: return "r8g8b8a8_unorm_srgb";
+            case format::r8g8b8a8_typeless: return "r8g8b8a8_typeless";
+            case format::b8g8r8a8_unorm: return "b8g8r8a8_unorm";
+            case format::b8g8r8a8_unorm_srgb: return "b8g8r8a8_unorm_srgb";
+            case format::b8g8r8a8_typeless: return "b8g8r8a8_typeless";
+            case format::b8g8r8x8_unorm: return "b8g8r8x8_unorm";
+            case format::r10g10b10a2_unorm: return "r10g10b10a2_unorm";
+            case format::r10g10b10a2_typeless: return "r10g10b10a2_typeless";
+            case format::b10g10r10a2_unorm: return "b10g10r10a2_unorm";
+            case format::r16g16b16a16_float: return "r16g16b16a16_float";
+            default: return "other";
+            }
+        }
     }
 
     // CallQueryResultsApi20 passes these as plain integers.
@@ -29,7 +74,11 @@ namespace render_export
             const HMODULE module = reshade::internal::get_reshade_module_handle();
             if (!module)
                 return std::string();
+            // Under the editor's own host (host/host_log.cpp) the same text is
+            // RedemptionEditorHostVersion: a ReShadeVersion export would stop ReShade.
             const auto* exported = reinterpret_cast<const char* const*>(GetProcAddress(module, "ReShadeVersion"));
+            if (!exported)
+                exported = reinterpret_cast<const char* const*>(GetProcAddress(module, "RedemptionEditorHostVersion"));
             if (!exported || !*exported)
                 return std::string();
             return std::string(*exported).substr(0, 64);
@@ -159,11 +208,35 @@ namespace render_export
         m_timings = {};
         device* dev = runtime->get_device();
         m_device = dev;
-        if (dev->get_api() != device_api::vulkan)
+        m_api = dev->get_api();
+        // The compute shaders exist as SPIR-V (Vulkan) and DXIL (D3D12), from
+        // the same HLSL (shaders/export_convert.hlsl has the bindings).
+        if (m_api != device_api::vulkan && m_api != device_api::d3d12)
         {
-            error = "unsupported_api (the export compute shaders are SPIR-V; the game must run in Vulkan)";
+            error = std::string("unsupported_api (") + ApiName(m_api) + "; the export runs in Vulkan or DirectX 12)";
             return false;
         }
+        // D3D12: the timestamps and the compute work go on the immediate
+        // command list of the queue that presents. A copy queue has neither
+        // compute nor direct-queue timestamps (it would need a copy queue
+        // timestamp heap): refused. Only checked under D3D12 (Vulkan as
+        // before this check). A DXGI swapchain is made on a direct
+        // queue, so this is a guard, not an expected case.
+        {
+            command_queue* queue = runtime->get_command_queue();
+            m_queueType = queue ? static_cast<std::uint32_t>(queue->get_type()) : 0u;
+            if (!queue || (m_api == device_api::d3d12 && (queue->get_type() & command_queue_type::compute) == 0))
+            {
+                error = "unsupported_api (the presenting queue has no compute; queue_type=" + std::to_string(m_queueType) + ")";
+                return false;
+            }
+        }
+        // D3D12 readback heap buffers are created in COPY_DEST and can never
+        // leave it (CreateCommittedResource refuses any other state on a
+        // READBACK heap): no barriers on them, the timestamp after the copy
+        // (a fence per query in ReShade's D3D12 query heaps) is what proves
+        // the bytes landed. Vulkan keeps its host-read barrier.
+        m_readbackFixedState = m_api == device_api::d3d12;
         {
             std::string version;
             m_queryAbi = DetectReShadeQueryAbi(version);
@@ -216,8 +289,14 @@ namespace render_export
             return false;
         }
 
-        // Layout: set 0 = {0 picture, 1 sum, 2 output} as push descriptors,
-        // then 12 words of push constants.
+        // Vulkan layout: set 0 = {0 picture, 1 sum, 2 output} as push
+        // descriptors, then 12 words of push constants.
+        // D3D12 layout: table {t0 picture}, table {u0 sum, u1 output}, 12 root
+        // constants at b0. ReShade's D3D12 push_descriptors allocates a fresh
+        // descriptor table on every call and fills only the bindings it was
+        // given, so the three Vulkan-style pushes into one table would leave
+        // the first two descriptors stale; one push per table instead (an SRV
+        // and a UAV cannot share one push: one descriptor type per update).
         descriptor_range ranges[3];
         ranges[0].binding = 0;
         ranges[0].dx_register_index = 0;
@@ -234,12 +313,36 @@ namespace render_export
         ranges[2].count = 1;
         ranges[2].visibility = shader_stage::compute;
         ranges[2].type = descriptor_type::texture_unordered_access_view;
-        pipeline_layout_param params[2];
-        params[0].type = pipeline_layout_param_type::push_descriptors_with_ranges;
-        params[0].descriptor_table.count = 3;
-        params[0].descriptor_table.ranges = ranges;
-        params[1] = pipeline_layout_param(constant_range{0, 0, 0, kConstantWords, shader_stage::compute});
-        if (!dev->create_pipeline_layout(2, params, &m_layout))
+        bool layoutMade = false;
+        if (m_api == device_api::vulkan)
+        {
+            pipeline_layout_param params[2];
+            params[0].type = pipeline_layout_param_type::push_descriptors_with_ranges;
+            params[0].descriptor_table.count = 3;
+            params[0].descriptor_table.ranges = ranges;
+            params[1] = pipeline_layout_param(constant_range{0, 0, 0, kConstantWords, shader_stage::compute});
+            m_constantsParam = 1;
+            layoutMade = dev->create_pipeline_layout(2, params, &m_layout);
+        }
+        else
+        {
+            descriptor_range srv = ranges[0]; // t0, table offset 0
+            descriptor_range uavs = ranges[1]; // u0..u1, table offsets 0..1
+            uavs.binding = 0;
+            uavs.dx_register_index = 0;
+            uavs.count = 2;
+            pipeline_layout_param params[3];
+            params[0].type = pipeline_layout_param_type::push_descriptors_with_ranges;
+            params[0].descriptor_table.count = 1;
+            params[0].descriptor_table.ranges = &srv;
+            params[1].type = pipeline_layout_param_type::push_descriptors_with_ranges;
+            params[1].descriptor_table.count = 1;
+            params[1].descriptor_table.ranges = &uavs;
+            params[2] = pipeline_layout_param(constant_range{0, 0, 0, kConstantWords, shader_stage::compute});
+            m_constantsParam = 2;
+            layoutMade = dev->create_pipeline_layout(3, params, &m_layout);
+        }
+        if (!layoutMade)
         {
             error = "pipeline_layout";
             End(dev);
@@ -253,8 +356,11 @@ namespace render_export
             pipeline_subobject subobject{pipeline_subobject_type::compute_shader, 1, &shader};
             return dev->create_pipeline(m_layout, 1, &subobject, &out);
         };
-        if (!makePipeline(spirv::kAccumulate, sizeof(spirv::kAccumulate), "CSAccumulate", m_accumulate) ||
-            !makePipeline(spirv::kResolve, sizeof(spirv::kResolve), "CSResolve", m_resolve))
+        const bool vk = m_api == device_api::vulkan;
+        if (!(vk ? makePipeline(spirv::kAccumulate, sizeof(spirv::kAccumulate), "CSAccumulate", m_accumulate)
+                 : makePipeline(dxil::kAccumulate, sizeof(dxil::kAccumulate), "CSAccumulate", m_accumulate)) ||
+            !(vk ? makePipeline(spirv::kResolve, sizeof(spirv::kResolve), "CSResolve", m_resolve)
+                 : makePipeline(dxil::kResolve, sizeof(dxil::kResolve), "CSResolve", m_resolve)))
         {
             error = "compute_pipelines";
             End(dev);
@@ -266,7 +372,7 @@ namespace render_export
         for (Slot& slot : m_slots)
         {
             if (!dev->create_resource(resource_desc(m_readbackBytes, memory_heap::gpu_to_cpu, resource_usage::copy_dest), nullptr,
-                    resource_usage::cpu_access, &slot.buffer))
+                    ReadbackInitialState(), &slot.buffer))
             {
                 error = "staging_ring";
                 End(dev);
@@ -296,9 +402,10 @@ namespace render_export
             m_tags.assign(kTagSlots, TagSlot{});
             for (TagSlot& tag : m_tags)
                 dev->create_resource(resource_desc(kTagStride * replay::exportchannel::kTagCells, memory_heap::gpu_to_cpu, resource_usage::copy_dest),
-                    nullptr, resource_usage::cpu_access, &tag.buffer);
+                    nullptr, ReadbackInitialState(), &tag.buffer);
             dev->create_query_heap(query_type::timestamp, kTagSlots, &m_tagQueries);
         }
+        // (D3D12: no reset to wait for; the wait is harmless and once.)
         // create_query_heap recorded vkCmdResetQueryPool and submitted it
         // (ReShade flushes the immediate list there) without waiting. Until the
         // reset runs on the GPU the queries are uninitialized, and reading them
@@ -309,6 +416,19 @@ namespace render_export
         m_sequence = 0;
         m_ready = true;
         return true;
+    }
+
+    std::string GpuExporter::Describe() const
+    {
+        // Every per-API difference the export takes, for the export log.
+        const bool d3d12 = m_api == device_api::d3d12;
+        return std::string("api=") + ApiName(m_api) + ",bytecode=" + (d3d12 ? "dxil_cs_6_0" : "spirv") +
+            ",back_format=" + FormatName(m_config.backFormat) + "(" + std::to_string(static_cast<std::uint32_t>(m_config.backFormat)) + ")" +
+            ",scratch_format=" + FormatName(format_to_typeless(m_config.backFormat)) +
+            ",output_row_bytes=" + std::to_string(kOutputRowWords * 4) + (d3d12 ? ",row_pitch_align=" + std::to_string(kD3D12RowPitchAlignment) : std::string()) +
+            ",tag_stride=" + std::to_string(kTagStride) + ",readback_state=" + (m_readbackFixedState ? "copy_dest_fixed" : "barriers") +
+            ",layout=" + (d3d12 ? "srv_table+uav_table+root_constants" : "push_set0+push_constants") + ",queue_type=" + std::to_string(m_queueType) +
+            ",timestamp_hz=" + std::to_string(m_timestampFrequency);
     }
 
     bool GpuExporter::SlotDone(device* dev, Slot& slot, std::uint32_t index)
@@ -431,12 +551,23 @@ namespace render_export
             const resource_view srv = m_scratchSrv;
             const resource_view sum = m_sumUav;
             const resource_view output = m_outputUav;
-            cmd->push_descriptors(shader_stage::compute, m_layout, 0,
-                descriptor_table_update{{}, 0, 0, 1, descriptor_type::texture_shader_resource_view, &srv});
-            cmd->push_descriptors(shader_stage::compute, m_layout, 0, descriptor_table_update{{}, 1, 0, 1, descriptor_type::texture_unordered_access_view, &sum});
-            cmd->push_descriptors(shader_stage::compute, m_layout, 0,
-                descriptor_table_update{{}, 2, 0, 1, descriptor_type::texture_unordered_access_view, &output});
-            cmd->push_constants(shader_stage::compute, m_layout, 1, 0, kConstantWords, &pc);
+            if (m_api == device_api::vulkan)
+            {
+                cmd->push_descriptors(shader_stage::compute, m_layout, 0,
+                    descriptor_table_update{{}, 0, 0, 1, descriptor_type::texture_shader_resource_view, &srv});
+                cmd->push_descriptors(shader_stage::compute, m_layout, 0, descriptor_table_update{{}, 1, 0, 1, descriptor_type::texture_unordered_access_view, &sum});
+                cmd->push_descriptors(shader_stage::compute, m_layout, 0,
+                    descriptor_table_update{{}, 2, 0, 1, descriptor_type::texture_unordered_access_view, &output});
+            }
+            else
+            {
+                const resource_view uavs[2] = {sum, output};
+                cmd->push_descriptors(shader_stage::compute, m_layout, 0,
+                    descriptor_table_update{{}, 0, 0, 1, descriptor_type::texture_shader_resource_view, &srv});
+                cmd->push_descriptors(shader_stage::compute, m_layout, 1,
+                    descriptor_table_update{{}, 0, 0, 2, descriptor_type::texture_unordered_access_view, uavs});
+            }
+            cmd->push_constants(shader_stage::compute, m_layout, m_constantsParam, 0, kConstantWords, &pc);
         };
 
         // 2. Accumulate (motion blur).
@@ -460,10 +591,12 @@ namespace render_export
         cmd->end_query(m_queries, query_type::timestamp, q + 3);
         Slot& slot = m_slots[slotIndex];
         cmd->barrier(m_output, resource_usage::unordered_access, resource_usage::copy_source);
-        cmd->barrier(slot.buffer, resource_usage::cpu_access, resource_usage::copy_dest);
+        if (!m_readbackFixedState)
+            cmd->barrier(slot.buffer, resource_usage::cpu_access, resource_usage::copy_dest);
         // The whole image, rows tight: the frame's bytes in order from offset 0.
         cmd->copy_texture_to_buffer(m_output, 0, nullptr, slot.buffer, 0, kOutputRowWords, m_outputRows);
-        cmd->barrier(slot.buffer, resource_usage::copy_dest, resource_usage::cpu_access); // visible to the map
+        if (!m_readbackFixedState)
+            cmd->barrier(slot.buffer, resource_usage::copy_dest, resource_usage::cpu_access); // visible to the map
         cmd->barrier(m_output, resource_usage::copy_source, resource_usage::unordered_access);
         cmd->end_query(m_queries, query_type::timestamp, q + 4);
         slot.recordedPresent = m_present;
@@ -485,7 +618,9 @@ namespace render_export
         command_list* cmd = runtime->get_command_queue()->get_immediate_command_list();
         const resource back = runtime->get_current_back_buffer();
         cmd->barrier(back, resource_usage::present, resource_usage::copy_source);
-        cmd->barrier(tag.buffer, resource_usage::cpu_access, resource_usage::copy_dest);
+        if (!m_readbackFixedState)
+            cmd->barrier(tag.buffer, resource_usage::cpu_access, resource_usage::copy_dest);
+        static_assert(kTagStride % kD3D12PlacementAlignment == 0, "tag cells on D3D12 placement alignment");
         for (std::uint32_t cell = 0; cell < replay::exportchannel::kTagCells; ++cell)
         {
             const std::uint32_t x = static_cast<std::uint32_t>(replay::exportchannel::TagCellCentreX(cell) * m_config.width);
@@ -493,7 +628,8 @@ namespace render_export
             const subresource_box box{x, y, 0, x + 1, y + 1, 1};
             cmd->copy_texture_to_buffer(back, 0, &box, tag.buffer, static_cast<std::uint64_t>(cell) * kTagStride, 0, 0);
         }
-        cmd->barrier(tag.buffer, resource_usage::copy_dest, resource_usage::cpu_access);
+        if (!m_readbackFixedState)
+            cmd->barrier(tag.buffer, resource_usage::copy_dest, resource_usage::cpu_access);
         cmd->barrier(back, resource_usage::copy_source, resource_usage::present);
         cmd->end_query(m_tagQueries, query_type::timestamp, index);
         tag.inFlight = true;

@@ -88,7 +88,7 @@ namespace
             for (const auto& port : replay::soundfx::kPorts)
                 Check(site.rva + site.size <= port.rva || site.rva >= port.rva + 5u,
                     (std::string("site on a hooked prologue: ") + site.name + " / " + port.id).c_str());
-            Check(site.rva + site.size <= replay::windreplay::kGateRva || site.rva >= replay::windreplay::kGateRva + 5u,
+            Check(site.rva + site.size <= replay::windreplay::kGate.rva || site.rva >= replay::windreplay::kGate.rva + 5u,
                 (std::string("site on the weather gate's prologue: ") + site.name).c_str());
         }
         Check(kWeatherRva + kWindBlock + kWindStrength == kWeatherRva + 0x4F44, "wind strength at W+0x4F44");

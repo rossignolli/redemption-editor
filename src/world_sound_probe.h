@@ -14,13 +14,12 @@
 //   farther than the settings' distance, 0x320E615) or ended; with the slot's
 //   max distance and the distance to the nearest listener point;
 // - GROUP_AUDIO: each active horse group (manager [0x5BF7EA8]) once per
-//   WorldSoundProbeGroupMs of clip time and when its loop starts or stops:
+//   groupMs (1000) of clip time and when its loop starts or stops:
 //   members, replay members (puppets in play, recorded entities in rec),
 //   movers by gait, mean speed and position, the loop (such as 0xd9388);
 // - WORLD_SOUND_PROBE_TOTAL: per pass (a recording or a playback).
 //
-// Ini: WorldSoundProbe (default: the VolumeProbe value), WorldSoundProbeGroupMs
-// (1000). Lines per minute of wall time: 300 PTFX_AUDIO_SLOT, 600 GROUP_AUDIO
+// On with VolumeProbe; GROUP_AUDIO every 1000 ms. Lines per minute of wall time: 300 PTFX_AUDIO_SLOT, 600 GROUP_AUDIO
 // (the rest counted as lines_dropped).
 
 #include "replay_context.h"

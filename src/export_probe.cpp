@@ -9,6 +9,11 @@
 //   Capture    one tick per motion blur sample, the playhead and the world
 //              both at the sample's time
 //   Flush      tag drawn again, the last pictures reach the present
+//   (screens)  in Preroll, Capture or Flush (export_hold.h): the quit
+//              alert, the pause menu or a close request cancel the export
+//              (the finished segments kept); a loading screen holds it: Hold
+//              ticks, the clock and the playhead stand still, then a tagged
+//              resync; the state stays the same, the channel's `hold` says it
 //   Finishing  timer and sound back; the add-on drains the encoder
 //   AudioSeek / AudioPass / AudioDone (Settings::audio == RealtimePass):
 //              the range plays again at 1x on the wall clock while the
@@ -20,6 +25,7 @@
 
 #include "export_audio_mute.h"
 #include "export_channel.h"
+#include "export_hold.h"
 #include "export_schedule.h"
 #include "export_timer.h"
 #include "mod_identity.h" // [Export] layered with the player's settings file
@@ -57,13 +63,15 @@ namespace replay::exportprobe
         std::uint64_t g_baseMs = 0;
         std::uint64_t g_wallMs = 0;
         std::uint32_t g_requestSeq = 0;
-        std::uint32_t g_timerLead = 1; // [Export] TimerLead
         std::uint32_t g_waitTicks = 0;
         std::int64_t g_publishedStepNs = 0; // the step the next game timer update uses
         std::int64_t g_previousTickStepNs = 0;
         std::uint64_t g_captureStartQpc = 0;
         std::uint64_t g_checkLogs = 0;
         std::uint64_t g_audioDeadlineQpc = 0;
+        std::uint64_t g_audioTailQpc = 0;      // the audio pass ends here (the range end + kAudioTailMs)
+        std::uint64_t g_audioLostStartMs = 0;  // Transport::LostMs when the audio pass began
+        constexpr std::uint64_t kAudioTailMs = 250;
         std::uint64_t g_audioAckWaitQpc = 0; // the settled AudioSeek began waiting for the capture (0: not yet)
         std::uint64_t g_lastProgressFrame = 0;
         ec::State g_seenState = ec::State::Off;
@@ -78,6 +86,14 @@ namespace replay::exportprobe
         std::uint64_t g_blurSpans = 0;
         std::uint64_t g_frameBelowMinimum = 0;
         std::uint64_t g_clampedTicks = 0;
+        // The hold (export_hold.h).
+        replay::exporthold::Machine g_hold;
+        std::uint32_t g_holdEpoch = 0;
+        std::uint64_t g_holdStartQpc = 0;
+        bool g_holdReleasing = false;     // the current tick is the last Hold tick
+        std::uint32_t g_seenCloseRequests = 0;
+        std::uint64_t g_holds = 0;
+        std::uint64_t g_heldMsTotal = 0;
 
         std::int64_t ClampMinNs()
         {
@@ -122,8 +138,13 @@ namespace replay::exportprobe
             g_tickValid = false;
             g_seekPending = false;
             g_publishedStepNs = 0;
+            g_hold.Reset();
+            g_holdReleasing = false;
             if (g_channel)
+            {
                 g_channel->timerLocked.store(0);
+                g_channel->hold.store(0);
+            }
         }
 
         void Fail(std::uint32_t error, const char* reason, std::ostream& log)
@@ -158,9 +179,9 @@ namespace replay::exportprobe
                 << ",clamp_max=" << stats.clampMax << ",period=" << stats.period;
         }
 
-        // The step of the tick after g_tick (TimerLead=1: the timer updates
-        // at the start of the frame, before the scripts run, so the step of
-        // tick n+1 must be in place when tick n ends).
+        // The step of the tick after g_tick (the timer updates at the start of
+        // the frame, before the scripts run, so the step of tick n+1 must be in
+        // place when tick n ends).
         std::int64_t PeekNextStepNs()
         {
             ex::Clock copy = g_clock;
@@ -181,7 +202,7 @@ namespace replay::exportprobe
             // the clamp). The first tick ran on the real clock.
             if (g_tick.serial == 0 || !g_channel)
                 return;
-            const std::int64_t planned = g_timerLead ? g_tick.stepNs : g_previousTickStepNs;
+            const std::int64_t planned = g_tick.stepNs;
             const replay::exporttimer::Stats stats = replay::exporttimer::Snapshot();
             // The engine's minimum step counts (a step clamped up to it hides
             // under the 0.2 ms tolerance at 100 %), and on the tick the world
@@ -200,23 +221,114 @@ namespace replay::exportprobe
                 ++g_checkLogs;
                 log << "RENDER_EXPORT,phase=timer_check,serial=" << g_tick.serial << ",tick_phase=" << static_cast<std::uint32_t>(g_tick.phase)
                     << ",frame=" << g_tick.frame << ",sample=" << g_tick.sample << ",step_ns=" << g_tick.stepNs
-                    << ",prev_step_ns=" << g_previousTickStepNs << ",lead=" << g_timerLead << ",frame_time=" << input.frameTime
+                    << ",prev_step_ns=" << g_previousTickStepNs << ",frame_time=" << input.frameTime
                     << ",world_scale=" << input.worldScale << ",system_step=" << stats.lastSystemStep << ",game_step=" << stats.lastGameStep
                     << ",error_ticks=" << stats.errorTicks << ",mismatch=" << (mismatch ? 1 : 0)
                     << ",check=" << (check == ex::TimerCheck::Clamped ? "clamped" : mismatch ? "mismatch" : "match")
                     << ",samples=" << g_tick.samples << ",prev_world_scale=" << g_previousWorldScale << '\n';
             }
         }
+
+        void ResetHold()
+        {
+            g_hold.Reset();
+            g_holdReleasing = false;
+            g_holds = 0;
+            g_heldMsTotal = 0;
+            if (!g_channel)
+                return;
+            g_channel->hold.store(0);
+            g_channel->holdReasons.store(0);
+            g_seenCloseRequests = g_channel->closeRequests.load();
+        }
+
+        // The screens (export_hold.h), before the clock's tick: true when this
+        // tick is a Hold tick (g_tick is it, the plan is filled) or the
+        // export was cancelled (the plan pauses).
+        bool HoldTick(const TickInput& input, TickPlan& plan, std::ostream& log)
+        {
+            namespace eh = replay::exporthold;
+            std::uint32_t signals = input.screenSignals & eh::kScreenSignals;
+            // The game paused itself: no frame time under a positive step.
+            if (input.frameTime <= 0.0f && g_publishedStepNs > 0 && replay::exporttimer::Locked())
+                signals |= eh::SignalPaused;
+            const std::uint32_t closes = g_channel->closeRequests.load();
+            if (closes != g_seenCloseRequests)
+            {
+                g_seenCloseRequests = closes;
+                signals |= eh::SignalClose;
+            }
+            if (const char* why = eh::CancelReason(signals))
+            {
+                // A screen that waits for the player: cancelled as the Cancel
+                // button does (the add-on keeps the finished segments), so the
+                // game runs again and draws the screen. Never held: under the
+                // export's timer the frontend never drew the quit alert.
+                log << "RENDER_EXPORT,phase=screen_cancel,reason=" << why << ",signals=" << eh::SignalNames(signals)
+                    << ",state=" << static_cast<std::uint32_t>(State()) << ",frame=" << g_tick.frame << ",sample=" << g_tick.sample
+                    << ",serial=" << g_tick.serial << ",playhead_ms=" << input.playheadMs << ",frame_time=" << input.frameTime
+                    << ",encoded=" << g_channel->framesEncoded.load() << ",held=" << (g_hold.CurrentPhase() != eh::Phase::Run ? 1 : 0) << '\n';
+                Cancel(why, log);
+                plan.pause = true;
+                return true;
+            }
+            // Each resync has its own epoch (a menu back in the resync holds
+            // again, and the next resync is checked again).
+            const bool acknowledged = g_hold.CurrentPhase() == eh::Phase::Resync && g_channel->holdAck.load() == g_holdEpoch;
+            const eh::Decision d = g_hold.Update(signals, acknowledged);
+            g_holdReleasing = false;
+            if (!d.hold)
+                return false;
+            if (d.started)
+            {
+                ++g_holds;
+                g_holdStartQpc = Qpc();
+                // A tick's world step was already given to this frame: the
+                // world moved one step with the playhead held.
+                log << "RENDER_EXPORT,phase=held,reason=" << eh::SignalNames(d.signals) << ",signals=" << eh::SignalNames(signals)
+                    << ",hold=" << g_holds << ",state=" << static_cast<std::uint32_t>(State()) << ",frame=" << g_tick.frame
+                    << ",sample=" << g_tick.sample << ",serial=" << g_tick.serial << ",playhead_ms=" << input.playheadMs
+                    << ",frame_time=" << input.frameTime << ",encoded=" << g_channel->framesEncoded.load() << '\n';
+            }
+            if (d.resyncStarted)
+            {
+                ++g_holdEpoch;
+                g_channel->holdEpoch.store(g_holdEpoch); // before hold says 2
+                log << "RENDER_EXPORT,phase=hold_resync,epoch=" << g_holdEpoch << ",reasons=" << eh::SignalNames(g_hold.Reasons())
+                    << ",frame_time=" << input.frameTime << '\n';
+            }
+            g_channel->holdReasons.store(g_hold.Reasons());
+            g_channel->hold.store(d.phase == eh::Phase::Held ? 1u : 2u);
+            g_previousTickStepNs = g_tickValid ? g_tick.stepNs : 0;
+            g_tick = g_clock.HoldTick();
+            g_tick.stepNs = eh::HoldStepNs(ClampMinNs()); // the step the timer gives the Hold ticks
+            g_tickValid = true;
+            if (d.releasing)
+            {
+                g_holdReleasing = true;
+                const std::uint64_t heldMs = static_cast<std::uint64_t>(QpcSeconds(Qpc() - g_holdStartQpc) * 1000.0);
+                g_heldMsTotal += heldMs;
+                g_channel->hold.store(0);
+                log << "RENDER_EXPORT,phase=released,held_ms=" << heldMs << ",hold=" << g_holds << ",epoch=" << g_holdEpoch
+                    << ",reasons=" << eh::SignalNames(g_hold.Reasons()) << ",hold_ticks=" << g_hold.HoldTicks()
+                    << ",resync_ticks=" << g_hold.ResyncTicks() << ",acknowledged=" << (d.timedOut ? 0 : 1)
+                    << ",frame=" << g_tick.frame << ",sample=" << g_tick.sample
+                    << ",playhead_ms=" << input.playheadMs << ",encoded=" << g_channel->framesEncoded.load() << '\n';
+                if (d.timedOut)
+                    log << "RENDER_EXPORT,phase=warning,reason=hold_resync_timeout,epoch=" << g_holdEpoch
+                        << " (the add-on did not acknowledge the resync; frames after it may belong to another tick)\n";
+            }
+            plan.active = true;
+            plan.holdTime = true;
+            plan.drawTag = d.phase == eh::Phase::Resync;
+            plan.tagSerial = g_tick.serial;
+            return true;
+        }
     }
 
     void Configure(const std::string& iniPath)
     {
         g_enabled = replay::identity::ProfileIntA("Export", "Enabled", 1, iniPath.c_str()) != 0;
-#if defined(REDEMPTION_DEV) // a developer key; the public build keeps the default (1)
-        g_timerLead = replay::identity::ProfileIntA("Export", "TimerLead", 1, iniPath.c_str()) != 0 ? 1u : 0u;
-#else
-        g_timerLead = 1u;
-#endif
         {
             const std::size_t slash = iniPath.find_last_of("\\/");
             replay::exportmute::Configure(slash == std::string::npos ? std::string(".") : iniPath.substr(0, slash));
@@ -252,6 +364,14 @@ namespace replay::exportprobe
     bool Active() { return g_clock.Active(); }
 
     bool ShowsExporting() { return Enabled() && !Idle(State()); }
+
+    bool WantsScreenSignals()
+    {
+        if (!Enabled())
+            return false;
+        const ec::State state = State();
+        return state == ec::State::Arming || state == ec::State::Preroll || state == ec::State::Capture || state == ec::State::Flush;
+    }
 
     bool HidesHud()
     {
@@ -297,6 +417,10 @@ namespace replay::exportprobe
             g_channel->projectFramesBefore.store(0);
             g_channel->projectFramesTotal.store(0);
         }
+        else
+        {
+            g_channel->resume.store(0); // a project's piece is never a resume
+        }
         g_waitTicks = 0;
         g_checkLogs = 0;
         g_lastProgressFrame = 0;
@@ -311,19 +435,30 @@ namespace replay::exportprobe
         g_channel->audioCapture.store(static_cast<std::uint32_t>(ec::AudioAck::Pending));
         g_channel->frameTimeMismatches.store(0);
         g_channel->timerErrorTicks.store(0);
+        ResetHold();
         // The exact frame count, at the speeds the span plays at (a 50 % slow
         // motion doubles it): the capture ends on it (Clock maxFrames).
         const std::uint64_t framesAt1x = (settings.endMs - settings.startMs) * settings.rate.num / (1000ull * settings.rate.den);
         const std::uint64_t frames = outputFrames ? outputFrames(settings.startMs, settings.endMs, settings.rate) : framesAt1x;
         g_channel->framesTotalHint.store(frames ? frames : framesAt1x);
+        g_channel->rangeFrames.store(g_channel->framesTotalHint.load());
+        // A segmented export resumed: the clock takes the add-on's exact count
+        // (the pre-roll and the missing segments), from its start.
+        const bool resume = g_channel->resume.load() != 0;
+        if (resume)
+            g_channel->framesTotalHint.store(g_channel->resumeFrames.load());
         g_seekPending = true;
         SetState(ec::State::Requested);
         log << "RENDER_EXPORT,phase=request,start_ms=" << settings.startMs << ",end_ms=" << settings.endMs
             << ",fps=" << settings.rate.num << '/' << settings.rate.den << ",samples=" << settings.samples
             << ",shutter=" << settings.shutterDegrees << ",preset=" << static_cast<std::uint32_t>(settings.preset)
             << ",audio=" << static_cast<std::uint32_t>(settings.audio) << ",letterbox=" << settings.letterboxAspect
-            << ",grain=" << settings.grain << ",lead=" << g_timerLead << ",frames=" << g_channel->framesTotalHint.load()
-            << ",frames_at_1x=" << framesAt1x << '\n';
+            << ",grain=" << settings.grain << ",frames=" << g_channel->framesTotalHint.load()
+            << ",frames_at_1x=" << framesAt1x;
+        if (resume)
+            log << ",resume=1,resume_start_ms=" << g_channel->resumeStartMs.load() << ",resume_frames=" << g_channel->resumeFrames.load()
+                << ",range_frames=" << g_channel->rangeFrames.load();
+        log << '\n';
     }
 
     bool RequestSegment(std::uint32_t requestSeq, const Segment& segment, std::ostream& log, OutputFramesFn outputFrames)
@@ -441,9 +576,12 @@ namespace replay::exportprobe
             {
                 // The script seeks (paused) and the seek settle
                 // (seek_settle.h) loads the scene around the camera; the
-                // preroll then runs the world with the playhead still.
+                // preroll then runs the world with the playhead still. A
+                // resume starts at its pre-roll, before the first missing
+                // segment.
+                const std::uint64_t startMs = g_channel->resume.load() ? g_channel->resumeStartMs.load() : settings.startMs;
                 plan.seekToStart = true;
-                plan.startMs = settings.startMs < input.durationMs ? settings.startMs : 0;
+                plan.startMs = startMs < input.durationMs ? startMs : 0;
                 g_seekPending = false;
                 return plan;
             }
@@ -458,7 +596,7 @@ namespace replay::exportprobe
                 }
                 const replay::exporttimer::Stats stats = replay::exporttimer::Snapshot();
                 log << "RENDER_EXPORT,phase=timer_locked,period=" << stats.period << ",clamp_min=" << stats.clampMin
-                    << ",clamp_max=" << stats.clampMax << ",lead=" << g_timerLead << '\n';
+                    << ",clamp_max=" << stats.clampMax << '\n';
                 const double minStepS = static_cast<double>(stats.clampMin);
                 const double sampleStepS = static_cast<double>(ex::FrameStartNs(settings.rate, 1)) * 1e-9 *
                     (settings.shutterDegrees / 360.0) / static_cast<double>(settings.samples ? settings.samples : 1);
@@ -487,6 +625,28 @@ namespace replay::exportprobe
             {
                 if (++g_waitTicks > kAddonReadyTimeoutTicks)
                     Fail(kErrorChannelMissing, "addon_not_ready", log);
+                return plan;
+            }
+            if (g_channel->resume.load() && g_channel->resumeFrames.load() == 0)
+            {
+                // A resume with every segment done: no video pass, straight to
+                // the audio pass (or the join).
+                StopClock();
+                replay::exportmute::Restore();
+                plan.pause = true;
+                log << "RENDER_EXPORT,phase=video_skipped,reason=resume_segments_done\n";
+                if (settings.audio == ec::AudioMode::RealtimePass)
+                {
+                    g_seekPending = true;
+                    g_audioAckWaitQpc = 0;
+                    SetState(ec::State::AudioSeek);
+                    log << "RENDER_EXPORT,phase=audio_seek\n";
+                }
+                else
+                {
+                    SetState(ec::State::Finishing);
+                    log << "RENDER_EXPORT,phase=finishing,frames=0\n";
+                }
                 return plan;
             }
             {
@@ -524,6 +684,8 @@ namespace replay::exportprobe
         case ec::State::Capture:
         case ec::State::Flush:
         {
+            if (HoldTick(input, plan, log))
+                return plan;
             g_previousTickStepNs = g_tickValid ? g_tick.stepNs : 0;
             g_tick = g_clock.Next();
             g_tickValid = g_tick.phase != ex::Phase::Done && g_tick.phase != ex::Phase::Idle;
@@ -538,7 +700,7 @@ namespace replay::exportprobe
                     << ",mismatches=" << g_channel->frameTimeMismatches.load() << ",clamped_ticks=" << g_clampedTicks
                     << ",blur_spans=" << g_blurSpans << ",blur_reduced_frames=" << g_blurReducedFrames
                     << ",blur_min_samples=" << g_blurMinSamples << ",blur_asked=" << settings.samples
-                    << ",frames_below_minimum=" << g_frameBelowMinimum;
+                    << ",frames_below_minimum=" << g_frameBelowMinimum << ",holds=" << g_holds << ",held_ms=" << g_heldMsTotal;
                 LogTimerStats(log);
                 LogStages(log);
                 log << '\n';
@@ -559,9 +721,7 @@ namespace replay::exportprobe
                 }
                 return plan;
             }
-            if (g_timerLead == 0)
-                PublishStep(g_tick.stepNs);
-            else if (g_tick.serial == 0)
+            if (g_tick.serial == 0)
                 PublishStep(g_tick.stepNs); // this frame's update already ran on the real clock
             if (g_tick.phase == ex::Phase::Capture && !g_captureStartQpc)
             {
@@ -668,21 +828,38 @@ namespace replay::exportprobe
                 LARGE_INTEGER frequency{};
                 QueryPerformanceFrequency(&frequency);
                 // The pass plays the span at its speeds in real time: the
-                // video's length, twice, and 10 s.
-                const std::uint64_t videoMs = g_channel->framesTotalHint.load() * 1000ull * settings.rate.den / settings.rate.num;
+                // video's length, twice, and 10 s (the whole range's, also
+                // after a resume's shorter video pass).
+                const std::uint64_t rangeFrames = std::max(g_channel->rangeFrames.load(), g_channel->framesTotalHint.load());
+                const std::uint64_t videoMs = rangeFrames * 1000ull * settings.rate.den / settings.rate.num;
                 g_audioDeadlineQpc = Qpc() + static_cast<std::uint64_t>(frequency.QuadPart) * (videoMs * 2 / 1000 + 10);
+                g_audioTailQpc = 0;
+                g_audioLostStartMs = input.transportLostMs;
             }
             SetState(ec::State::AudioPass);
             log << "RENDER_EXPORT,phase=audio_pass,start_ms=" << settings.startMs << ",end_ms=" << settings.endMs << '\n';
             return plan;
         case ec::State::AudioPass:
-            if (input.playheadMs >= settings.endMs || Qpc() > g_audioDeadlineQpc)
+            // The end of the range: the pass plays kAudioTailMs more before the
+            // capture stops, so the sound still in flight (the loopback's
+            // latency) is captured too; the WAV is cut at the video's length.
+            // Without it the last 20 to 80 ms were missing (tested in game
+            // audio_short).
+            if (input.playheadMs >= settings.endMs && g_audioTailQpc == 0)
             {
+                LARGE_INTEGER frequency{};
+                QueryPerformanceFrequency(&frequency);
+                g_audioTailQpc = Qpc() + static_cast<std::uint64_t>(frequency.QuadPart) * kAudioTailMs / 1000;
+            }
+            if ((g_audioTailQpc != 0 && Qpc() >= g_audioTailQpc) || Qpc() > g_audioDeadlineQpc)
+            {
+                g_audioTailQpc = 0;
                 g_channel->audioEndQpc.store(Qpc());
                 plan.pause = true;
                 SetState(ec::State::AudioDone);
                 log << "RENDER_EXPORT,phase=audio_done,playhead_ms=" << input.playheadMs
                     << ",audio_s=" << QpcSeconds(g_channel->audioEndQpc.load() - g_channel->audioStartQpc.load())
+                    << ",lost_ms=" << (input.transportLostMs > g_audioLostStartMs ? input.transportLostMs - g_audioLostStartMs : 0)
                     << ",deadline=" << (input.playheadMs >= settings.endMs ? 0 : 1) << '\n';
             }
             return plan;
@@ -709,6 +886,14 @@ namespace replay::exportprobe
         (void)log;
         if (!g_tickValid || !g_channel)
             return;
+        if (g_tick.phase == ex::Phase::Hold)
+        {
+            // Tagged in the resync only (the add-on reads the tags then).
+            ec::WriteStamp(*g_channel, g_tick, static_cast<std::uint32_t>(playheadMs),
+                g_channel->hold.load() == 2u || g_holdReleasing);
+            PublishStep(g_holdReleasing ? PeekNextStepNs() : g_tick.stepNs);
+            return;
+        }
         // The samples of a frame that starts on the next tick, from the lowest
         // world scale it can meet (the clock reads the cap only at a frame's
         // first sample, so the peek below and the next tick agree).
@@ -722,8 +907,7 @@ namespace replay::exportprobe
         ec::WriteStamp(*g_channel, g_tick, static_cast<std::uint32_t>(playheadMs), tagged);
         if (g_tick.phase == ex::Phase::Capture && playheadMs >= g_channel->settings.endMs)
             g_clock.Finish(); // the frame being sampled completes, then flush
-        if (g_timerLead)
-            PublishStep(PeekNextStepNs());
+        PublishStep(PeekNextStepNs());
     }
 
     bool BenchRequest(const void* settings, std::uint32_t settingsBytes, std::ostream& log)
@@ -734,6 +918,7 @@ namespace replay::exportprobe
             return false;
         }
         std::memcpy(&g_channel->settings, settings, sizeof(ec::Settings));
+        g_channel->resume.store(0);
         g_channel->cancel.store(0);
         g_channel->error.store(0);
         const std::uint32_t seq = g_channel->requestSeq.fetch_add(1) + 1;

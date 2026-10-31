@@ -1,4 +1,7 @@
 #include "frag_observer.h"
+#include "engine_sigs.h"
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "mod_clock.h"
 
@@ -14,11 +17,18 @@
 
 namespace replay::frag
 {
+    using enginesig::kFragInstVtable;
+    using enginesig::kVehicleBreakOff;
+
     namespace
     {
-        constexpr std::uintptr_t kPartsBrokeOffRva = 0x6EAE68;
-        constexpr std::uint8_t kPartsBrokeOffSignature[] = {
-            0x48, 0x8B, 0xC4, 0x4C, 0x89, 0x40, 0x18, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08, 0x55};
+        namespace sig = replay::sig;
+
+        // The parts-broke-off callback (parent inst, groups, piece inst).
+        const sig::Signature kFragPartsBrokeOff{"frag_parts_broke_off",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC 98 "
+            "00 00 00 33 DB",
+            0x6EAE68};
         using PartsBrokeOffFn = void(__fastcall*)(void* parent, const void* groups, void* pieceInst);
 
         constexpr std::uint64_t kRing = 256;
@@ -29,11 +39,6 @@ namespace replay::frag
         void* g_target = nullptr;
         std::atomic<int> g_inFlight{0};
         LARGE_INTEGER g_frequency{};
-
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size); // guarded_memory.h
-        }
 
         bool GuardedCopy(void* out, const void* source, std::size_t size)
         {
@@ -53,15 +58,15 @@ namespace replay::frag
             call.parent = reinterpret_cast<std::uint64_t>(parent);
             // `parent` is the fragment inst (live: its vtable is not an
             // entity's); its entity is the inst's user data +0xA0 when the
-            // +0xA8 bit 0 flag is set (insertion callback 0x6E38AC).
+            // +0xA8 bit 0 flag is set (the insertion callback).
             std::uint64_t user = 0;
             std::uint8_t flags = 0;
             if (parent && GuardedCopy(&user, static_cast<const std::uint8_t*>(parent) + 0xA0, 8) &&
                 GuardedCopy(&flags, static_cast<const std::uint8_t*>(parent) + 0xA8, 1) && (flags & 1))
                 call.parentEntity = user & ~0xFull;
             call.pieceInst = reinterpret_cast<std::uint64_t>(pieceInst);
-            // The piece's entity the same way (0x15796CE reads it
-            // right after BreakOffAbove returns).
+            // The piece's entity the same way (the vehicle's break-off
+            // reads it right after BreakOffAbove returns).
             call.pieceEntity = 0;
             if (pieceInst && GuardedCopy(&user, static_cast<const std::uint8_t*>(pieceInst) + 0xA0, 8) &&
                 GuardedCopy(&flags, static_cast<const std::uint8_t*>(pieceInst) + 0xA8, 1) && (flags & 1))
@@ -81,9 +86,8 @@ namespace replay::frag
     {
         if (g_target)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* target = base + kPartsBrokeOffRva;
-        if (!GuardedCompare(target, kPartsBrokeOffSignature, sizeof(kPartsBrokeOffSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kFragPartsBrokeOff));
+        if (!target)
         {
             error = "frag_parts_broke_off_signature_mismatch";
             return false;
@@ -137,39 +141,42 @@ namespace replay::frag
     // Vehicle fragment groups in playback (see the header).
     namespace
     {
-        constexpr std::uintptr_t kDeleteAboveGroupRva = 0x296AD24;
-        // 24 bytes: DeleteGroups 0x296AF00 shares the first 16.
-        constexpr std::uint8_t kDeleteAboveGroupSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x10, 0x48,
-            0x89, 0x78, 0x18, 0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57};
-        using DeleteAboveGroupFn = void(__fastcall*)(void* inst, std::uint16_t group);
+        // DeleteAboveGroup(inst, group); DeleteGroups shares its first 16 bytes.
+        const sig::Signature kFragDeleteAboveGroup{"frag_delete_above_group",
+            "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D A8 38 FF FF FF 48 81 EC A0 "
+            "01 00 00 48 8B 01 44 0F B7 FA",
+            0x296AD24};
         // BreakOffAboveGroup(inst, group, ptr, flag) -> the new
         // piece's inst (0: group out of range or already gone, no free cache
-        // entry). It checks group < numGroups itself (0x2965F96), not the root.
-        constexpr std::uintptr_t kBreakOffAboveGroupRva = 0x2965F2C;
-        constexpr std::uint8_t kBreakOffAboveGroupSignature[] = {
-            0x40, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8D, 0x6C,
-            0x24, 0x20, 0x48, 0x8B, 0x81, 0x38, 0x01, 0x00, 0x00, 0x45, 0x8A, 0xF9};
-        using BreakOffAboveGroupFn = void*(__fastcall*)(void* inst, std::uint16_t group, void* data, bool flag);
+        // entry). It checks group < numGroups itself, not the root.
+        const sig::Signature kFragBreakOffAboveGroup{"frag_break_off_above_group",
+            "40 55 41 56 41 57 48 83 EC 20 48 8D 6C 24 20 48 8B 81 38 01 00 00 45 8A F9 48 89 5D 20 44 0F B7 F2 48 89 "
+            "75 28 33 DB 48 89 7D 30 48 8B F1 48 8B B8 90 00 00 00 4C 89 65 38 4D 8B E0",
+            0x2965F2C};
         int g_breakOffState = -1; // -1 unchecked, 0 off, 1 on
-        constexpr std::uintptr_t kFragInstVtableRva = 0x33CBDB8;
-        // The offsets read below, as the engine itself uses them.
-        struct OffsetSite
-        {
-            std::uintptr_t rva;
-            std::uint8_t bytes[11];
-            std::size_t size;
-        };
-        const OffsetSite kOffsetSites[] = {
-            {0x15794F8, {0x48, 0x8B, 0xA9, 0x38, 0x09, 0x00, 0x00}, 7},       // mov rbp,[rcx+0x938]: vehicle fragInst
-            {0x6EB0D4, {0x8B, 0x8F, 0xD8, 0x0B, 0x00, 0x00}, 6},             // door count [veh+0xBD8]
-            {0x6EB0E8, {0x4C, 0x6B, 0xC0, 0x70, 0x4C, 0x03, 0x87, 0xD0, 0x0B, 0x00, 0x00}, 11}, // doors [veh+0xBD0], 0x70 each
-            {0x6EB0F8, {0x66, 0x45, 0x39, 0x60, 0x08}, 5},                   // door child u16 +8
-            {0x6EB120, {0x8B, 0x8F, 0xC0, 0x0B, 0x00, 0x00}, 6},             // wheel count [veh+0xBC0]
-            {0x6EB135, {0x48, 0x8B, 0x87, 0xB8, 0x0B, 0x00, 0x00}, 7},       // wheels [veh+0xBB8]
-            {0x6EB145, {0x66, 0x44, 0x39, 0xA2, 0x30, 0x01, 0x00, 0x00}, 8}, // wheel child u16 +0x130
-        };
+        std::uintptr_t g_breakOffAboveGroup = 0;
+        // The offsets read below, as the engine itself uses them: the vehicle's
+        // break-off reads its fragInst, the parts-broke-off callback its doors
+        // and wheels.
+        const sig::Signature kFragVehicleInst{"frag_vehicle_inst", kVehicleBreakOff, sig::Offset{0x70},
+            "48 8B A9 38 09 00 00", 0x15794F8}; // mov rbp,[rcx+0x938]: vehicle fragInst
+        const sig::Signature kFragDoorCount{"frag_door_count", kFragPartsBrokeOff, sig::Offset{0x26C},
+            "8B 8F D8 0B 00 00", 0x6EB0D4}; // door count [veh+0xBD8]
+        const sig::Signature kFragDoors{"frag_doors", kFragPartsBrokeOff, sig::Offset{0x280},
+            "4C 6B C0 70 4C 03 87 D0 0B 00 00", 0x6EB0E8}; // doors [veh+0xBD0], 0x70 each
+        const sig::Signature kFragDoorChild{"frag_door_child", kFragPartsBrokeOff, sig::Offset{0x290}, "66 45 39 60 08",
+            0x6EB0F8}; // door child u16 +8
+        const sig::Signature kFragWheelCount{"frag_wheel_count", kFragPartsBrokeOff, sig::Offset{0x2B8},
+            "8B 8F C0 0B 00 00", 0x6EB120}; // wheel count [veh+0xBC0]
+        const sig::Signature kFragWheels{"frag_wheels", kFragPartsBrokeOff, sig::Offset{0x2CD}, "48 8B 87 B8 0B 00 00",
+            0x6EB135}; // wheels [veh+0xBB8]
+        const sig::Signature kFragWheelChild{"frag_wheel_child", kFragPartsBrokeOff, sig::Offset{0x2DD},
+            "66 44 39 A2 30 01 00 00", 0x6EB145}; // wheel child u16 +0x130
+        const sig::Signature* const kVehicleSites[] = {&kFragDeleteAboveGroup, &kFragInstVtable, &kFragVehicleInst,
+            &kFragDoorCount, &kFragDoors, &kFragDoorChild, &kFragWheelCount, &kFragWheels, &kFragWheelChild};
         int g_vehicleGroupsState = -1; // -1 unchecked, 0 off, 1 on
+        std::uintptr_t g_deleteAboveGroup = 0;
+        std::uintptr_t g_fragInstVtable = 0;
 
         struct VehicleFragView
         {
@@ -179,7 +186,7 @@ namespace replay::frag
 
         // Every read the call depends on, guarded. No objects with a
         // destructor here (__try).
-        void GuardedVehicleFragView(std::uint64_t vehicle, std::uintptr_t base, std::uint16_t group, VehicleFragView& view,
+        void GuardedVehicleFragView(std::uint64_t vehicle, std::uintptr_t vtable, std::uint16_t group, VehicleFragView& view,
             bool keepWheelsAndDoors, const std::uint16_t* reserved, int reservedCount)
         {
             __try
@@ -190,7 +197,7 @@ namespace replay::frag
                     return;
                 }
                 const std::uint64_t inst = *reinterpret_cast<const std::uint64_t*>(vehicle + 0x938);
-                if (!inst || *reinterpret_cast<const std::uint64_t*>(inst) != base + kFragInstVtableRva ||
+                if (!inst || *reinterpret_cast<const std::uint64_t*>(inst) != vtable ||
                     !(*reinterpret_cast<const std::uint8_t*>(inst + 0xA8) & 1) ||
                     (*reinterpret_cast<const std::uint64_t*>(inst + 0xA0) & ~0xFull) != vehicle)
                 {
@@ -300,31 +307,28 @@ namespace replay::frag
             }
         }
 
-        bool GuardedDeleteAboveGroup(std::uintptr_t base, std::uint64_t inst, std::uint16_t group)
+        bool GuardedDeleteAboveGroup(std::uintptr_t fn, std::uint64_t inst, std::uint16_t group)
         {
-            __try
-            {
-                reinterpret_cast<DeleteAboveGroupFn>(base + kDeleteAboveGroupRva)(reinterpret_cast<void*>(inst), group);
-                return true;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kFragDeleteAboveGroup, fn, reinterpret_cast<void*>(inst), group);
         }
 
-        void* GuardedBreakOffAboveGroup(std::uintptr_t base, std::uint64_t inst, std::uint16_t group, bool& faulted)
+        void* GuardedBreakOffAboveGroup(std::uintptr_t fn, std::uint64_t inst, std::uint16_t group, bool& faulted)
         {
-            __try
-            {
-                return reinterpret_cast<BreakOffAboveGroupFn>(base + kBreakOffAboveGroupRva)(
-                    reinterpret_cast<void*>(inst), group, nullptr, false);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
+            void* piece = nullptr;
+            if (!engine::Call(engine::kFragBreakOffAboveGroup, fn, piece, reinterpret_cast<void*>(inst), group, nullptr, false))
                 faulted = true;
-                return nullptr;
+            return piece;
+        }
+
+        // BreakOffAboveGroup, checked once for both break-off paths.
+        bool BreakOffReady()
+        {
+            if (g_breakOffState < 0)
+            {
+                g_breakOffAboveGroup = sig::Find(kFragBreakOffAboveGroup);
+                g_breakOffState = g_breakOffAboveGroup ? 1 : 0;
             }
+            return g_breakOffState == 1;
         }
 
         // 1 gone, 0 present, -1 unreadable.
@@ -349,10 +353,11 @@ namespace replay::frag
     {
         if (g_vehicleGroupsState < 0)
         {
-            const auto* base = reinterpret_cast<const std::uint8_t*>(GetModuleHandleW(nullptr));
-            bool ok = GuardedCompare(base + kDeleteAboveGroupRva, kDeleteAboveGroupSignature, sizeof(kDeleteAboveGroupSignature));
-            for (const OffsetSite& site : kOffsetSites)
-                ok = ok && GuardedCompare(base + site.rva, site.bytes, site.size);
+            bool ok = true;
+            for (const sig::Signature* site : kVehicleSites)
+                ok = ok && sig::Find(*site) != 0;
+            g_deleteAboveGroup = ok ? sig::Find(kFragDeleteAboveGroup) : 0;
+            g_fragInstVtable = ok ? sig::Find(kFragInstVtable) : 0;
             g_vehicleGroupsState = ok ? 1 : 0;
         }
         return g_vehicleGroupsState == 1;
@@ -365,12 +370,11 @@ namespace replay::frag
             return VehicleGroupResult::Unsupported;
         if (!vehicle)
             return VehicleGroupResult::NoInst;
-        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
         VehicleFragView view;
-        GuardedVehicleFragView(vehicle, base, group, view, true, reserved, reservedCount);
+        GuardedVehicleFragView(vehicle, g_fragInstVtable, group, view, true, reserved, reservedCount);
         if (view.result >= 0)
             return static_cast<VehicleGroupResult>(view.result);
-        if (!GuardedDeleteAboveGroup(base, view.inst, group))
+        if (!GuardedDeleteAboveGroup(g_deleteAboveGroup, view.inst, group))
             return VehicleGroupResult::Fault;
         return GuardedInstGroupGone(view.inst, group) == 1 ? VehicleGroupResult::Deleted : VehicleGroupResult::NotRemoved;
     }
@@ -398,20 +402,16 @@ namespace replay::frag
         pieceEntity = 0;
         if (!VehicleGroupsSupported())
             return VehicleGroupResult::Unsupported;
-        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        if (g_breakOffState < 0)
-            g_breakOffState = GuardedCompare(reinterpret_cast<const void*>(base + kBreakOffAboveGroupRva),
-                kBreakOffAboveGroupSignature, sizeof(kBreakOffAboveGroupSignature)) ? 1 : 0;
-        if (g_breakOffState != 1)
+        if (!BreakOffReady())
             return VehicleGroupResult::Unsupported;
         if (!vehicle)
             return VehicleGroupResult::NoInst;
         VehicleFragView view;
-        GuardedVehicleFragView(vehicle, base, group, view, false, nullptr, 0);
+        GuardedVehicleFragView(vehicle, g_fragInstVtable, group, view, false, nullptr, 0);
         if (view.result >= 0)
             return static_cast<VehicleGroupResult>(view.result);
         bool faulted = false;
-        void* piece = GuardedBreakOffAboveGroup(base, view.inst, group, faulted);
+        void* piece = GuardedBreakOffAboveGroup(g_breakOffAboveGroup, view.inst, group, faulted);
         if (faulted)
             return VehicleGroupResult::Fault;
         if (!piece)
@@ -423,29 +423,41 @@ namespace replay::frag
     // Object fragments (see the header).
     namespace
     {
-        struct ObjectSite
-        {
-            std::uintptr_t rva;
-            std::uint8_t bytes[12];
-            std::size_t size;
-        };
-        const ObjectSite kObjectSites[] = {
-            // mov eax,[rcx+0xB0]; mov sil,r8b; shr eax,6: bIsFrag (0xE30560, the
-            // object path of BREAK_OBJECT_FRAGMENT_CHILD)
-            {0xE30574, {0x8B, 0x81, 0xB0, 0x00, 0x00, 0x00, 0x41, 0x8A, 0xF0, 0xC1, 0xE8, 0x06}, 12},
-            {0xE30587, {0x48, 0x8B, 0x59, 0x38}, 4},                         // mov rbx,[rcx+0x38]: the fragInst
-            {0x2974F57, {0x48, 0x8B, 0x83, 0x28, 0x01, 0x00, 0x00}, 7},      // mov rax,[rbx+0x128]: cache entry
-            {0x2974F63, {0x44, 0x0F, 0xB7, 0xB8, 0x80, 0x01, 0x00, 0x00}, 8}, // movzx r15d,word [rax+0x180]: root group
-            {0x2974F70, {0x0F, 0xB7, 0xBE, 0x40, 0x01, 0x00, 0x00}, 7},      // movzx edi,word [rsi+0x140]: group count
-            {0x2974F9B, {0x48, 0x8B, 0x86, 0xC8, 0x00, 0x00, 0x00}, 7},      // mov rax,[rsi+0xC8]: group table
-            {0x2974FE6, {0x41, 0x0F, 0xB7, 0x50, 0x06}, 5},                  // movzx edx,word [r8+6]: parent group
-            {0x29651B5, {0x49, 0x8B, 0x86, 0x48, 0x01, 0x00, 0x00}, 7},      // mov rax,[r14+0x148]: slots
-        };
+        // The object path of BREAK_OBJECT_FRAGMENT_CHILD.
+        const sig::Signature kFragObjectBreakChild{"frag_object_break_child",
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 8B 81 B0 00 00 00", 0xE30560};
+        // mov eax,[rcx+0xB0]; mov sil,r8b; shr eax,6: bIsFrag
+        const sig::Signature kFragObjectIsFrag{"frag_object_is_frag", kFragObjectBreakChild, sig::Offset{0x14},
+            "8B 81 B0 00 00 00 41 8A F0 C1 E8 06", 0xE30574};
+        const sig::Signature kFragObjectInst{"frag_object_inst", kFragObjectBreakChild, sig::Offset{0x27}, "48 8B 59 38",
+            0xE30587}; // mov rbx,[rcx+0x38]: the fragInst
+        // The fragInst's break-off of a group's children (it calls
+        // BreakOffAboveGroup).
+        const sig::Signature kFragInstBreakGroup{"frag_inst_break_group",
+            "40 55 57 41 54 41 56 41 57 48 83 EC 60 48 8D 6C 24 30 48 8B 81 38 01 00 00 4C 8B E2 48 89 5D 68", 0x2974EFC};
+        const sig::Signature kFragCacheEntry{"frag_cache_entry", kFragInstBreakGroup, sig::Offset{0x5B},
+            "48 8B 83 28 01 00 00", 0x2974F57}; // mov rax,[rbx+0x128]: cache entry
+        const sig::Signature kFragRootGroup{"frag_root_group", kFragInstBreakGroup, sig::Offset{0x67},
+            "44 0F B7 B8 80 01 00 00", 0x2974F63}; // movzx r15d,word [rax+0x180]: root group
+        const sig::Signature kFragGroupCount{"frag_group_count", kFragInstBreakGroup, sig::Offset{0x74},
+            "0F B7 BE 40 01 00 00", 0x2974F70}; // movzx edi,word [rsi+0x140]: group count
+        const sig::Signature kFragGroupTable{"frag_group_table", kFragInstBreakGroup, sig::Offset{0x9F},
+            "48 8B 86 C8 00 00 00", 0x2974F9B}; // mov rax,[rsi+0xC8]: group table
+        const sig::Signature kFragParentGroup{"frag_parent_group", kFragInstBreakGroup, sig::Offset{0xEA},
+            "41 0F B7 50 06", 0x2974FE6}; // movzx edx,word [r8+6]: parent group
+        // A fragInst's walk of its groups.
+        const sig::Signature kFragInstGroupState{"frag_inst_group_state",
+            "48 89 5C 24 10 48 89 6C 24 18 56 57 41 54 41 56 41 57 48 83 EC 30 48 8B 81 38 01 00 00", 0x2965078};
+        const sig::Signature kFragGroupSlots{"frag_group_slots", kFragInstGroupState, sig::Offset{0x13D},
+            "49 8B 86 48 01 00 00", 0x29651B5}; // mov rax,[r14+0x148]: slots
+        const sig::Signature* const kObjectSites[] = {&kFragObjectIsFrag, &kFragObjectInst, &kFragCacheEntry,
+            &kFragRootGroup, &kFragGroupCount, &kFragGroupTable, &kFragParentGroup, &kFragGroupSlots, &kFragInstVtable};
         int g_objectGroupsState = -1; // -1 unchecked, 0 off, 1 on
+        std::uintptr_t g_objectFragVtable = 0;
 
         // 0 ok, 1 not a fragment object, 2 fault. No objects with a
         // destructor here (__try).
-        int GuardedReadObjectFrag(std::uint64_t object, std::uintptr_t base, ObjectFragState& out, std::uint64_t& instOut)
+        int GuardedReadObjectFrag(std::uint64_t object, std::uintptr_t vtable, ObjectFragState& out, std::uint64_t& instOut)
         {
             __try
             {
@@ -453,7 +465,7 @@ namespace replay::frag
                     !((*reinterpret_cast<const std::uint32_t*>(object + 0xB0) >> 6) & 1))
                     return 1;
                 const std::uint64_t inst = *reinterpret_cast<const std::uint64_t*>(object + 0x38);
-                if (!inst || *reinterpret_cast<const std::uint64_t*>(inst) != base + kFragInstVtableRva ||
+                if (!inst || *reinterpret_cast<const std::uint64_t*>(inst) != vtable ||
                     !(*reinterpret_cast<const std::uint8_t*>(inst + 0xA8) & 1) ||
                     (*reinterpret_cast<const std::uint64_t*>(inst + 0xA0) & ~0xFull) != object)
                     return 1;
@@ -498,10 +510,10 @@ namespace replay::frag
     {
         if (g_objectGroupsState < 0)
         {
-            const auto* base = reinterpret_cast<const std::uint8_t*>(GetModuleHandleW(nullptr));
             bool ok = true;
-            for (const ObjectSite& site : kObjectSites)
-                ok = ok && GuardedCompare(base + site.rva, site.bytes, site.size);
+            for (const sig::Signature* site : kObjectSites)
+                ok = ok && sig::Find(*site) != 0;
+            g_objectFragVtable = ok ? sig::Find(kFragInstVtable) : 0;
             g_objectGroupsState = ok ? 1 : 0;
         }
         return g_objectGroupsState == 1;
@@ -516,7 +528,7 @@ namespace replay::frag
         if (!object || !ObjectGroupsSupported())
             return false;
         std::uint64_t inst = 0;
-        return GuardedReadObjectFrag(object, reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)), out, inst) == 0;
+        return GuardedReadObjectFrag(object, g_objectFragVtable, out, inst) == 0;
     }
 
     VehicleGroupResult BreakOffObjectGroup(std::uint64_t object, std::uint16_t group, std::uint64_t& pieceEntity)
@@ -524,11 +536,7 @@ namespace replay::frag
         pieceEntity = 0;
         if (!ObjectGroupsSupported())
             return VehicleGroupResult::Unsupported;
-        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        if (g_breakOffState < 0)
-            g_breakOffState = GuardedCompare(reinterpret_cast<const void*>(base + kBreakOffAboveGroupRva),
-                kBreakOffAboveGroupSignature, sizeof(kBreakOffAboveGroupSignature)) ? 1 : 0;
-        if (g_breakOffState != 1)
+        if (!BreakOffReady())
             return VehicleGroupResult::Unsupported;
         if (!object)
             return VehicleGroupResult::NoInst;
@@ -536,7 +544,7 @@ namespace replay::frag
         static ObjectFragState state;
         std::memset(state.gone, 0, sizeof(state.gone));
         std::uint64_t inst = 0;
-        const int read = GuardedReadObjectFrag(object, base, state, inst);
+        const int read = GuardedReadObjectFrag(object, g_objectFragVtable, state, inst);
         if (read == 2)
             return VehicleGroupResult::Fault;
         if (read != 0)
@@ -548,7 +556,7 @@ namespace replay::frag
         if ((state.gone[group / 8] >> (group % 8)) & 1)
             return VehicleGroupResult::AlreadyGone;
         bool faulted = false;
-        void* piece = GuardedBreakOffAboveGroup(base, inst, group, faulted);
+        void* piece = GuardedBreakOffAboveGroup(g_breakOffAboveGroup, inst, group, faulted);
         if (faulted)
             return VehicleGroupResult::Fault;
         if (!piece)

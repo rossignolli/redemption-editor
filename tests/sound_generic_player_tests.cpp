@@ -26,6 +26,15 @@ namespace
 
     int g_failures = 0;
 
+    // FamilyOf with the caller named by the 1491.50 ranges (the player names
+    // it with the game's).
+    owner::Family FamilyNamed(owner::PacketKey key, const owner::Cover& cover,
+        const owner::ShotWindows* shots = nullptr)
+    {
+        owner::NameCaller(key, owner::KnownCallerRanges());
+        return owner::FamilyOf(key, cover, shots);
+    }
+
     void Check(bool condition, const char* message)
     {
         if (condition)
@@ -186,6 +195,8 @@ namespace
     player::Config TestConfig()
     {
         player::Config c;
+        c.code = KnownWrapperCode();
+        c.callers = owner::KnownCallerRanges();
         c.preloadMs = 500;
         c.preloadDelayMs = 100;
         c.holdMs = 150;
@@ -215,10 +226,10 @@ namespace
         key.stableId = kSetA & 0x00FFFFFFFFFFull;
         key.caller = kGameCaller;
         key.timeMs = 5000;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Owned, "table: an owned sound of no known system is owned");
+        Check(FamilyNamed(key, cover) == owner::Family::Owned, "table: an owned sound of no known system is owned");
         key.owner = kNoOwner;
         key.cls = OwnerClass::World;
-        Check(owner::FamilyOf(key, cover) == owner::Family::World, "table: no owner is world");
+        Check(FamilyNamed(key, cover) == owner::Family::World, "table: no owner is world");
         key.owner = kPed;
         key.cls = OwnerClass::Ped;
         // The cover first: the entity sound track carries the same sound.
@@ -226,59 +237,68 @@ namespace
         // entry of the set is another sound (the hoof step 0x800005002f4361 is
         // not the skid's 0x80000e002f4361).
         cover.Add(kPed, 0x00000005ull << 32 | (kSetA & 0xFFFFFFFFull), 5300, owner::Family::EntitySound);
-        Check(owner::FamilyOf(key, cover) == owner::Family::Owned, "table: another entry of the set is not covered");
+        Check(FamilyNamed(key, cover) == owner::Family::Owned, "table: another entry of the set is not covered");
         cover.Add(kPed, kSetA & 0x00FFFFFFFFFFull, 5300, owner::Family::EntitySound);
-        Check(owner::FamilyOf(key, cover) == owner::Family::EntitySound, "table: the cover names the track (same set and entry, other bank, 300 ms)");
+        Check(FamilyNamed(key, cover) == owner::Family::EntitySound, "table: the cover names the track (same set and entry, other bank, 300 ms)");
         key.timeMs = 5800;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Owned, "table: the cover's tolerance is 400 ms (500 ms is outside)");
+        Check(FamilyNamed(key, cover) == owner::Family::Owned, "table: the cover's tolerance is 400 ms (500 ms is outside)");
         cover.Clear();
         // The wet hoof set before the caller.
         key.stableId = kHoofRef & 0x00FFFFFFFFFFull;
         key.caller = 0x0318CEC0; // inside the step layer helper
-        Check(owner::FamilyOf(key, cover) == owner::Family::HorseStep, "table: the wet hoof set is the horse step family");
+        Check(FamilyNamed(key, cover) == owner::Family::HorseStep, "table: the wet hoof set is the horse step family");
         // The caller ranges.
         key.stableId = kSetA & 0x00FFFFFFFFFFull;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Footstep, "table: the step layer helper is a footstep");
+        Check(FamilyNamed(key, cover) == owner::Family::Footstep, "table: the step layer helper is a footstep");
         key.caller = 0x0318DAFE; // the main step sound's return
-        Check(owner::FamilyOf(key, cover) == owner::Family::Footstep, "table: the step function is a footstep");
+        Check(FamilyNamed(key, cover) == owner::Family::Footstep, "table: the step function is a footstep");
         key.caller = 0x0318A2A1; // inside the melee hit entry
-        Check(owner::FamilyOf(key, cover) == owner::Family::Melee, "table: the melee hit entry");
+        Check(FamilyNamed(key, cover) == owner::Family::Melee, "table: the melee hit entry");
         key.caller = 0x0318EEB1; // inside the body impact entry
-        Check(owner::FamilyOf(key, cover) == owner::Family::Melee, "table: the body impact entry");
+        Check(FamilyNamed(key, cover) == owner::Family::Melee, "table: the body impact entry");
         key.caller = 0x03193E6F; // inside the movement update
-        Check(owner::FamilyOf(key, cover) == owner::Family::Movement, "table: the movement update");
+        Check(FamilyNamed(key, cover) == owner::Family::Movement, "table: the movement update");
         key.caller = 0x02588FF0;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Collision, "table: the collision entry");
+        Check(FamilyNamed(key, cover) == owner::Family::Collision, "table: the collision entry");
         key.caller = 0x02FA0E00;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Speech, "table: the speech line");
+        Check(FamilyNamed(key, cover) == owner::Family::Speech, "table: the speech line");
         key.caller = 0x0318C150 - 1;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Owned, "table: one byte before a range is outside");
+        Check(FamilyNamed(key, cover) == owner::Family::Owned, "table: one byte before a range is outside");
         key.caller = 0x0318C4C4;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Owned, "table: the end of a range is outside");
+        Check(FamilyNamed(key, cover) == owner::Family::Owned, "table: the end of a range is outside");
         // The weapon audio base after the caller.
         key.caller = kGameCaller;
         key.audioKnown = true;
         key.audioBase = AudioBase::WeaponAudio;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Gunshot, "table: a sound on the weapon's audio is a shot");
+        Check(FamilyNamed(key, cover) == owner::Family::Gunshot, "table: a sound on the weapon's audio is a shot");
         key.audioKnown = false;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Owned, "table: an unknown audio base says nothing");
+        Check(FamilyNamed(key, cover) == owner::Family::Owned, "table: an unknown audio base says nothing");
         key.audioKnown = true;
         key.audioBase = AudioBase::PedHolder;
-        Check(owner::FamilyOf(key, cover) == owner::Family::Owned, "table: the ped holder says nothing");
+        Check(FamilyNamed(key, cover) == owner::Family::Owned, "table: the ped holder says nothing");
         // The ranges themselves: ordered inside, no overlap.
+        const owner::CallerRanges known = owner::KnownCallerRanges();
         bool sane = true;
         for (std::size_t a = 0; a < owner::kCallerRangeCount; ++a)
         {
-            const owner::CallerRange& x = owner::kCallerRanges[a];
-            sane = sane && x.begin < x.end;
+            const owner::CallerRange& x = known.range[a];
+            sane = sane && x.begin && x.begin < x.end;
             for (std::size_t b = a + 1; b < owner::kCallerRangeCount; ++b)
             {
-                const owner::CallerRange& y = owner::kCallerRanges[b];
+                const owner::CallerRange& y = known.range[b];
                 sane = sane && (x.end <= y.begin || y.end <= x.begin);
             }
         }
         Check(sane, "table: the caller ranges are ordered and do not overlap");
         Check(owner::kCallerRangeCount == 12, "table: twelve caller ranges");
+        // The 1491.50 extents (.pdata) the tails end on: the collision entry and the step queue.
+        Check(known.range[0].begin == 0x02588FE8u && known.range[0].end == 0x02589056u &&
+                  known.range[11].begin == 0x03193F20u && known.range[11].end == 0x031942CEu,
+            "table: the known ranges end where the functions end");
+        // No range found: no caller names a family.
+        key.caller = 0x0318DAFE;
+        owner::NameCaller(key, owner::CallerRanges{});
+        Check(!key.callerNamed, "table: no ranges, no caller family");
     }
 
     void TestOwnerTableTakers()
@@ -881,16 +901,9 @@ namespace
 
 namespace
 {
-    // SoundGenericEntityMode's pure part.
+    // The entity mode's pure part.
     void TestEntityMode()
     {
-        Check(EntityModeOfText("a") == EntityMode::Detached && EntityModeOfText("") == EntityMode::Detached &&
-                EntityModeOfText("zz") == EntityMode::Detached,
-            "entity mode: a, empty and unknown are detached");
-        Check(EntityModeOfText(" B ") == EntityMode::Override && EntityModeOfText("override") == EntityMode::Override,
-            "entity mode: b is override");
-        Check(EntityModeOfText("c\r\n") == EntityMode::GameQueue && EntityModeOfText("Game_Queue") == EntityMode::GameQueue,
-            "entity mode: c is the game queue");
         Check(std::strcmp(EntityModeLetter(EntityMode::GameQueue), "c") == 0 &&
                 std::strcmp(EntityModeName(EntityMode::Override), "override") == 0,
             "entity mode: letters and names");

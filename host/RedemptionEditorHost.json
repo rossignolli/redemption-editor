@@ -1,0 +1,14 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_redemption_editor",
+        "type": "GLOBAL",
+        "library_path": ".\\RedemptionEditorHost.dll",
+        "api_version": "1.3.0",
+        "implementation_version": "1",
+        "description": "Redemption Editor host: the replay editor for Red Dead Redemption 2 without ReShade",
+        "functions": {
+            "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
+        }
+    }
+}

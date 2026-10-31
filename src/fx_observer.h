@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "entity_events.h" // entity::FxSettings
+#include "game_sig_core.h"
 
 namespace replay::fx
 {
@@ -38,9 +39,9 @@ namespace replay::fx
     // instance as the engine finished setting it up, matched with the
     // trigger call that returned the instance (effect and asset hashes,
     // caller) and with the attach call on it (entity and bone). Instance
-    // layout, offline evidence in the build 1491.50 dump (script start
-    // 0x2C50C88, set matrix 0x29E4274, world parent 0x29E2754, attach core
-    // 0x2C2FB60): +0x210 parent matrix (identity for a world effect), +0x250
+    // layout, offline evidence (the fx start, the set matrix, the world parent
+    // setter, the attach core, the instance initializer in fx_observer.cpp):
+    // +0x210 parent matrix (identity for a world effect), +0x250
     // base matrix (4 x float4; the offset on the bone when attached, the
     // world matrix otherwise; +0x280 is its position row), +0x394 zoom,
     // +0x580 flags, +0x5D0 mode (1 attached, 2 world).
@@ -72,33 +73,65 @@ namespace replay::fx
     constexpr std::size_t kInstParentMatrix = 0x210;
     constexpr std::size_t kInstMatrix = 0x250;
     constexpr std::size_t kInstMode = 0x5D0;
-    // The evolution setter (0x29E33CC, offline) stores value * 255 at
-    // inst + 0x3E0 + index, the index from the rule's evolution table.
+    // The evolution setter stores value * 255 at inst + 0x3E0 + index, the
+    // index from the rule's evolution table.
     constexpr std::size_t kInstEvolutions = 0x3E0;
     constexpr std::size_t kEvolutionBytes = 16;
 
-    // Build 1491.50 weapon vfx call sites of the trigger (return address in
-    // the caller of the one-argument wrapper), from a live log: every shot
-    // triggered one effect from each, the muzzle one constant per weapon and
-    // the impact one varying with the surface.
-    constexpr std::uint32_t kMuzzleFlashSite = 0x1452671;
-    constexpr std::uint32_t kBulletImpactSite = 0x144D33A;
-    // Offline in the same dump:
-    // - the ped foot vfx one-shot site (0x1453178, whose only caller is the
-    //   per-ped foot vfx 0x14357D0 at 0x1435D15): dust, mud and splash puffs
-    //   of feet and hooves (ped_foot_dust 0x83E666D7 among them), placed in
-    //   the world. The recording keeps every one (FXEV, caller 0x145320F);
-    //   during playback the puppets and the hidden player raise their own on
-    //   top (about twice the recorded count), puffs at feet the replay does
-    //   not show.
-    // - the camera ambient registered effects (0x1469DC1, the loop of
+    // The recorded sites: the return address of an effect call, as an RVA of
+    // this exe (the call's signature + 5), and kNoSite when the game has not
+    // the call (never a recorded value: an unknown caller is recorded as 0).
+    // Resolved once.
+    constexpr std::uint32_t kNoSite = 0xFFFFFFFFu;
+    // The weapon vfx call sites of the trigger (the return address in the
+    // caller of the one-argument wrapper), from a live log: every shot
+    // triggered one effect from each, the muzzle one constant per weapon
+    // (weapon_fx_intent_core.h kWeaponMuzzleCall) and the impact one varying
+    // with the surface (shot_fx_audit_core.h kShotImpactCall).
+    std::uint32_t MuzzleFlashSite();
+    std::uint32_t BulletImpactSite();
+    // Offline:
+    // - the ped foot vfx one-shot site (kFxFootVfx, whose only caller is the
+    //   per-ped foot vfx): dust, mud and splash puffs of feet and hooves
+    //   (ped_foot_dust 0x83E666D7 among them), placed in the world. The
+    //   recording keeps every one (FXEV, FootVfxSite); during playback the
+    //   puppets and the hidden player raise their own on top (about twice the
+    //   recorded count), puffs at feet the replay does not show.
+    // - the camera ambient registered effects (kFxCameraAmbient, the loop of
     //   ambient definitions placing each one `distance` metres ahead of the
     //   rendered camera, [r12+0x30] + forward * [entry+4]): recorded as a
     //   world track they would play along the recorded camera's path; the
     //   engine makes its own ahead of the replay camera.
-    constexpr std::uint32_t kFootVfxSite = 0x145320F;
-    constexpr std::uint32_t kCameraAmbientFxSite = 0x1469DC1;
-    // While on, the engine's own triggers from kFootVfxSite get no instance
+    inline const sig::Signature kFxFootVfx{"fx_foot_vfx",
+        "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC D0 01 "
+        "00 00 0F 29 70 C8 4C 8B E9",
+        0x1453178};
+    inline const sig::Signature kFxFootVfxCall{"fx_foot_vfx_call", kFxFootVfx, sig::Offset{0x92},
+        "E8 ?? ?? ?? ?? 48 8B F8 48 85 C0", 0x145320A};
+    inline const sig::Signature kFxCameraAmbient{"fx_camera_ambient",
+        "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D 68 98 48 81 EC 40 01 00 00 0F "
+        "29 70 C8 4C 8B E9",
+        0x1469B78};
+    inline const sig::Signature kFxCameraAmbientCall{"fx_camera_ambient_call", kFxCameraAmbient, sig::Offset{0x244},
+        "E8 ?? ?? ?? ?? 48 8B D8 48 85 C0", 0x1469DBC};
+    std::uint32_t FootVfxSite();
+    std::uint32_t CameraAmbientFxSite();
+    // The sites of the other headers: the bullet's body hit effect
+    // (shot_fx_audit_core.h kShotBodyCall), the shell's registered get
+    // (weapon_fx_intent_core.h kWeaponShellCall), the script looped start and
+    // its per-frame get (script_fx_loop.h), the hoof dust's registered get and
+    // the registry's restart of an entry (fx_motion_rule.h).
+    std::uint32_t BodyHitSite();
+    std::uint32_t ShellRegisteredSite();
+    std::uint32_t ScriptLoopStartSite();
+    std::uint32_t ScriptLoopKeepAliveSite();
+    std::uint32_t HoofRegisteredSite();
+    std::uint32_t RegistryRestartSite();
+    // The weapon fx globals (weapon_fx_intent_core.h kWeaponMuzzleInfoTable,
+    // kWeaponViewport) in this exe, 0 when not found.
+    std::uintptr_t MuzzleInfoTable();
+    std::uintptr_t Viewport();
+    // While on, the engine's own triggers from FootVfxSite get no instance
     // (the site skips a null one). The replay's recorded puffs are played by
     // our own code (another caller) and are not affected. The refused calls
     // stay in the trigger ring with instance=false (the play histogram shows
@@ -107,7 +140,7 @@ namespace replay::fx
     std::uint64_t SuppressedFootVfx();
     // The weapon sites stay out of the one-shot
     // owner rule only for a clip whose shot track makes the weapon effects
-    // (recorded before WeaponFxEvents); a clip with them as events has the
+    // (recorded before the weapon effects were events); a clip with them as events has the
     // engine's own on the puppets killed like any other.
     void SetWeaponSitesExempt(bool exempt);
 
@@ -128,7 +161,7 @@ namespace replay::fx
         float scale,
         std::string& error);
     // Muzzle flash as the game's weapon vfx plays it (call site
-    // kMuzzleFlashSite, default branch): triggered instance, attached to
+    // MuzzleFlashSite, default branch): triggered instance, attached to
     // `entity` at `bone`, then the attachment flags that branch sets (bit 14
     // cleared, bits 22-23 set: the emitted particles do not stay glued to
     // the bone), a zero offset, the zoom, and start.
@@ -220,7 +253,7 @@ namespace replay::fx
     // puppet's own effect: the recorded one is played by the fx track. The
     // start detour lets the engine start it (so the instance is in the
     // engine's active list) and kills it right away through the engine's
-    // own stop (0x29E7C3C with 1: state 4, recycled by the engine, the path
+    // own stop (the instance stop with 1: state 4, recycled by the engine, the path
     // the registry and the replay's scrub already use) before its first
     // update emits anything. The weapon sites (muzzle, bullet impact) and
     // the hashes in `exempt` (the families with their own tracks: blood,
@@ -264,8 +297,8 @@ namespace replay::fx
     bool AttachInstance(std::uint64_t inst, void* entity, int bone, std::string& error);
 
     // Registered (continuous) effects: every call of the
-    // engine's get-or-create by key (owner address + id, effect hash; core
-    // 0x2C49B08, 118 call sites in build 1491.50): the instance it returned
+    // engine's get-or-create by key (owner address + id, effect hash; the
+    // registered core, 118 call sites): the instance it returned
     // and whether it was created by this call. Read-only detour.
     struct RegisteredCall
     {
@@ -318,18 +351,18 @@ namespace replay::fx
         float start310[4] = {};     // +0x310: a tracer's start point, written only at creation
         float farClip3C4 = -1.0f;   // +0x3C4: far clip override (a triggered tracer's length)
         std::uint8_t byte341 = 0;   // +0x341
-        // Collision planes of the current quality level (offline: 0x29E41E0
-        // appends them at inst + lod * 0x310 + 0x630, count at + 0x930, lod
-        // from the byte at [[0x4F892F0] + 1]); a ground fire spawns its flames
+        // Collision planes of the current quality level (offline: the plane
+        // adder appends them at inst + lod * 0x310 + 0x630, count at + 0x930,
+        // lod from the byte at [[its quality global] + 1]); a ground fire spawns its flames
         // on them. Up to 16 planes of 3 float4 rows.
         std::uint32_t planeCount = 0;
         float planes[16 * 12] = {};
-        float aux350[4] = {}; // +0x350, set by 0x2C4F508 from the entity
+        float aux350[4] = {}; // +0x350, set by the engine's setter from the entity
         std::uint8_t quality = 0xFF;      // evidence
         std::uint32_t slotCounts[3] = {}; // evidence: counts at the three quality slots
         // The settings (entity::FxSettings) and +0x360,
-        // the inherited displacement per frame (0x2C523CE: the entity's
-        // velocity, vfunc +0xB0, times the step).
+        // the inherited displacement per frame (the attach update: the
+        // entity's velocity, vfunc +0xB0, times the step).
         entity::FxSettings settings;
         float veladd360[4] = {};
     };
@@ -338,8 +371,8 @@ namespace replay::fx
 
     // What says
     // an instance is still the one we made: its effect rule (the qword at
-    // +0, whose +0x200 is the effect hash the registered core compares,
-    // 0x2C49BAE), its state (+0x344: 2 playing, 3 stopping, 4 killed, 5
+    // +0, whose +0x200 is the effect hash the registered core compares),
+    // its state (+0x344: 2 playing, 3 stopping, 4 killed, 5
     // finished) and its world position (offset +0x250 composed with the
     // parent +0x210).
     struct InstanceIdentity
@@ -355,7 +388,7 @@ namespace replay::fx
     // The settings of an instance (guarded reads)
     // and written back on an instance of ours before its start (plain
     // writes of the fields of kApplied that are in the mask; +0x350 through
-    // the engine's setter 0x2C4F508 when it passed its check).
+    // the engine's setter when it passed its check).
     bool ReadInstanceSettings(std::uint64_t inst, entity::FxSettings& out);
     bool ApplyInstanceSettings(std::uint64_t inst, const entity::FxSettings& settings, std::string& error);
 
@@ -372,10 +405,10 @@ namespace replay::fx
     bool ReadMotionFields(std::uint64_t inst, MotionFields& out);
     // Clears the relocate bit (0x2 of +0x584) of
     // instances of ours under the particle manager's lock, the way the
-    // parent setter 0x29E2754 takes it (0x29E2773..0x29E27E3: manager
-    // [0x3EBD698], lock object +0x3E280, owner test 0x29DB42C, lock
-    // 0x25A1658, unlock 0x25A5694; every prologue and the global's load
-    // checked once). An `and` per instance, guarded. False with an error and
+    // parent setter takes it (its load of the manager global, the lock object
+    // +0x3E280, the owner test, the lock and the unlock it calls, and the
+    // relocation mark that sets the bit: all checked once). An `and` per
+    // instance, guarded. False with an error and
     // nothing written when a check failed. Each instance comes with the
     // effect hash it should hold; under the lock one that holds another
     // effect or is not playing/stopping is left alone and counted in `stale`
@@ -385,7 +418,7 @@ namespace replay::fx
     // The checks of ClearRelocateMarks alone (FX_MOTION_RULE at playback begin).
     bool RelocateMarkReady(std::string& error);
     // The entity's draw data the attach update
-    // tests (vfunc +0xA8, 0x1405B94: [[entity+0x28]+8]), guarded read.
+    // tests (vfunc +0xA8: [[entity+0x28]+8]), guarded read.
     bool ReadEntityDrawData(const void* entity, bool& present);
     // The replay's own placement scope (the placement marks its entity);
     // RelocateSkipped reads 0.
@@ -398,13 +431,12 @@ namespace replay::fx
         PlaceScope& operator=(const PlaceScope&) = delete;
     };
     std::uint64_t RelocateSkipped();
-    // A detour on the vfx update (FxPauseFreeze)
-    // 0x145C17C (one direct caller 0x145C15A, step in xmm1) that passes a
-    // step of 0 while the replay owns the world and its transport holds
-    // (paused). Offline: the caller 0x145C0EC itself passes 0 (0x145C14D)
-    // while the game's own pause flags are set, so 0 is a step the engine
-    // feeds it [binary]. With 0 the registry update 0x2C52554 returns early
-    // (0x2C52567): no restart, no emission while paused.
+    // A detour on the vfx update (FxPauseFreeze; one direct caller, step in
+    // xmm1) that passes a step of 0 while the replay owns the world and its
+    // transport holds (paused). Offline: the caller itself passes 0 while the
+    // game's own pause flags are set, so 0 is a step the engine feeds it
+    // [binary]. With 0 the registry update returns early: no restart, no
+    // emission while paused.
     bool InstallPauseFreeze(std::string& error);
     // A true is a lease of 1.5 s the paused
     // playback renews every tick; when it is not renewed the detour lets the
@@ -415,8 +447,8 @@ namespace replay::fx
 
     // Detours on the weapon system's two requests for a shot's effects
     // (weapon_fx_intent_core.h), before the engine's range and camera tests:
-    // the muzzle 0x14309A8 (manager, shooter, weapon, weapon object, bone,
-    // info, vector*, dword) and the shell 0x14308F0 (manager, shooter, weapon,
+    // the muzzle request (manager, shooter, weapon, weapon object, bone,
+    // info, vector*, dword) and the shell request (manager, shooter, weapon,
     // weapon object, dword, bone). Record only: every call goes to the
     // original unchanged; the arguments land in a ring the script thread
     // reads (CollectWeaponFxSince). Installed once, removed in Shutdown.
@@ -455,18 +487,18 @@ namespace replay::fx
         std::uint32_t code = 0;
         std::uint64_t rip = 0;        // RVA when inside the game image
         std::uint32_t starts = 0;     // instance starts on this thread during the call
-        std::uint32_t startsMuzzle = 0; // of them, of the muzzle site 0x1452671
-        std::uint32_t shellGets = 0;  // registered gets of the shell site 0x14513CE on this thread
+        std::uint32_t startsMuzzle = 0; // of them, of the muzzle site (MuzzleFlashSite)
+        std::uint32_t shellGets = 0;  // registered gets of the shell site (ShellRegisteredSite) on this thread
         std::uint32_t shellCreated = 0; // of them, the ones that made the instance
         const char* why = "none";
     };
     bool CallWeaponFxRequest(std::uint8_t kind, void* shooter, void* weapon, void* object, std::int32_t bone,
         const void* info, const float* vec16, std::int32_t argA, WeaponFxPlayResult& out);
-    // Stops an instance the way the engine's registry does (0x29E7C3C, the
-    // inst and a byte: 0 lets its particles die off, state 3; 1 kills it,
-    // state 4). Offline: the registry update 0x2C52554 calls it with 0 on
-    // every entry not got in the frame (0x2C52617, 0x2C52635), and the get
-    // core on the old inst of an entry asked for another effect (0x2C49BE6).
+    // Stops an instance the way the engine's registry does (the instance
+    // stop: the inst and a byte: 0 lets its particles die off, state 3; 1
+    // kills it, state 4). Offline: the registry update calls it with 0 on
+    // every entry not got in the frame, and the registered core on the old
+    // inst of an entry asked for another effect.
     // Prologue checked once; a mismatch disables it (error, no call).
     bool StopInstance(std::uint64_t inst, bool immediate, std::string& error);
     // Writes +0x310 (when not zero) and +0x3C4 (when >= 0) on an instance we
@@ -479,9 +511,9 @@ namespace replay::fx
         std::uint8_t arg8, std::uint8_t arg9, bool& created, std::string& error);
     // Writes the recorded state into an instance of ours (offset matrix,
     // parent matrix, evolutions, zoom) and starts it when asked.
-    // FxRegisteredParentOnce: writeParent false
+    // writeParent false
     // leaves the parent matrix to the engine's attach (an attached instance
-    // whose site never sets the parent, 0x146BEE0).
+    // whose site never sets the parent, the hoof dust's).
     bool ApplyInstanceState(std::uint64_t inst, const float matrix[16], const float parent[16],
         const std::uint8_t evolutions[kEvolutionBytes], float zoom, bool start, std::string& error,
         bool writeParent = true);

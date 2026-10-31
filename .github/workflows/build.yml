@@ -1,0 +1,86 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+# Builds and runs the unit tests (ReplayCoreTests, Release x64), public and developer headers.
+#
+# Not built here:
+# - ReplayProbe (the mod, dev and pub): it includes and links the Script Hook RDR2 SDK (inc\main.h,
+#   natives.h, lib\ScriptHookRDR2.lib), which is not in git and may not be redistributed.
+# - ReplayEditor: it needs FFmpeg built with vcpkg (tools\ffmpeg\install_ffmpeg.bat).
+#
+# ReplayCoreTests needs only the SDK's types.h (the handle aliases, through entity_appearance.h):
+# the job writes those aliases to a stand-in folder and turns the SDK check off for this build.
+
+jobs:
+  core-tests:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dev: ['false', 'true']
+    name: ReplayCoreTests (RedemptionDev=${{ matrix.dev }})
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true # external/reshade
+
+      # MinHook and Dear ImGui are submodules of ReShade (deps/minhook, deps/imgui): the first level
+      # does not bring them. The host's input tests (host/input_rules.h) include imgui.h.
+      - name: MinHook and Dear ImGui
+        run: git -C external/reshade submodule update --init --depth 1 deps/minhook deps/imgui
+
+      - uses: microsoft/setup-msbuild@v3
+
+      - name: Stand-in for the SDK's types.h
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk/inc"
+          cat > "$RUNNER_TEMP/sdk/inc/types.h" <<'H'
+          #pragma once
+          #include <windows.h>
+          #include <cstdint>
+          using Any = uint64_t;
+          using Void = uint64_t;
+          using ScrHandle = int;
+          using AnimScene = int;
+          using Blip = int;
+          using Cam = int;
+          using Entity = ScrHandle;
+          using FireId = int;
+          using Hash = unsigned int;
+          using Interior = int;
+          using ItemSet = ScrHandle;
+          using Object = ScrHandle;
+          using Ped = ScrHandle;
+          using PersChar = ScrHandle;
+          using Pickup = int;
+          using Player = unsigned int;
+          using PopZone = int;
+          using Prompt = int;
+          using PropSet = int;
+          using Vehicle = ScrHandle;
+          using Volume = ScrHandle;
+          #define ALIGN8 __declspec(align(8))
+          struct Vector3
+          {
+              ALIGN8 float x;
+              ALIGN8 float y;
+              ALIGN8 float z;
+          };
+          static_assert(sizeof(Vector3) == 24, "");
+          H
+
+      - name: Build ReplayCoreTests
+        shell: cmd
+        run: >
+          msbuild ReplayCoreTests.vcxproj /t:Build /p:Configuration=Release /p:Platform=x64
+          /p:RedemptionDev=${{ matrix.dev }} /p:DeployAfterBuild=false
+          /p:RedemptionUsesScriptHookSdk=false /p:ScriptHookRdr2SdkDir=%RUNNER_TEMP%\sdk\
+          /m /nologo /v:minimal
+
+      - name: Run ReplayCoreTests
+        shell: cmd
+        run: bin\Release\ReplayCoreTests.exe

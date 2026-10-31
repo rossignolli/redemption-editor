@@ -7,16 +7,11 @@
 // the replay shows up even when it goes through a path no track hooks
 // (a developer tool compares the recording and playback slices).
 //
-// Where it listens (build 1491.50, static analysis): the two sound instance
-// creators 0x2516CAC and 0x2516900 are the only callers of the requested-sound
-// slot allocator 0x251BAC4, so every top-level sound the game creates passes
-// one of them. Both take (sound manager, u64 metadata ref, audEntity*,
-// audSound** out or null, audSoundInitParams* or null) and return the sound (0
-// when refused). Callers: the persistent cores by ref 0x2589124 (41 sites) and
-// by hash 0x2589058, the create-and-play queue consumer 0x2588DD8 (0x258A350
-// drains the one-shots 0x2589A40 queued), and the 0x2588D1F/0x2588FA4 entries.
-// Child sounds of a sound are made by the mixer from the parent's metadata and
-// are not seen here.
+// Where it listens: the two sound instance creators (kCreatorA, kCreatorB),
+// the only callers of the requested-sound slot allocator, so every top-level
+// sound the game creates passes one of them. Child sounds are made by the
+// mixer and are not seen here. Evidence: offline dump.
+// Research: docs/research/audio-generic-sounds.md
 //
 // This header holds what needs no engine: the row, the fields read from
 // the init params, the placement class, the owner table (address ranges to
@@ -33,7 +28,30 @@
 
 namespace replay::census
 {
-    // audSoundInitParams fields read (ctor 0x487E34 defaults in brackets).
+    // The two creators, each with its call of the slot allocator (the fact
+    // that makes them the only creators): sound_census.cpp hooks both or
+    // neither.
+    inline const sig::Signature kCreatorA{"census_creator_a",
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 A9 48 81 EC F0 00 00 00 "
+        "4C 8B F1 4D 8B F8",
+        0x2516CAC};
+    inline const sig::Signature kCreatorAAllocCall{"census_creator_a_alloc_call", kCreatorA, sig::Offset{0x7E},
+        "E8 ?? ?? ?? ??", 0x2516D2A};
+    inline const sig::Signature kCreatorAAlloc{"census_creator_a_alloc", kCreatorAAllocCall, sig::Rel32{0x01, 0x05},
+        "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8D B1 28 F8 00 00 48 8B D9 48 8B CE E8 ?? ?? ?? ??",
+        0x251BAC4};
+    inline const sig::Signature kCreatorB{"census_creator_b",
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 54 41 55 41 56 41 57 48 8D 6C 24 E9 48 81 EC E8 00 00 00 48 8D 81 "
+        "28 F8 00 00",
+        0x2516900};
+    inline const sig::Signature kCreatorBAllocCall{"census_creator_b_alloc_call", kCreatorB, sig::Offset{0x73},
+        "E8 ?? ?? ?? ??", 0x2516973};
+    inline const sig::Signature kCreatorBAlloc{"census_creator_b_alloc", kCreatorBAllocCall, sig::Rel32{0x01, 0x05},
+        "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8D B1 28 F8 00 00 48 8B D9 48 8B CE E8 ?? ?? ?? ??",
+        0x251BAC4};
+
+    // audSoundInitParams fields read (the params constructor's defaults in
+    // brackets).
     // +0xA4/+0xA8 are the two dword floats after the four 1.0 scales and
     // before the s16 pair at +0xAC/+0xAE [0, -1], in the usual order of stored
     // init params (Volume, Pitch, Pan), so +0xA4 is taken as the volume in dB
@@ -56,7 +74,7 @@ namespace replay::census
     struct Row
     {
         std::uint64_t timeUs = 0;
-        std::uint8_t core = 0; // 0: 0x2516CAC, 1: 0x2516900
+        std::uint8_t core = 0; // 0: creator A, 1: creator B
         std::uint64_t ref = 0;
         std::uint64_t audio = 0; // audEntity*
         bool hasParams = false;

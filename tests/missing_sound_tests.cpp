@@ -20,6 +20,21 @@ namespace
     using namespace replay::soundgeneric::player;
     namespace owner = replay::soundowner;
     namespace census = replay::census;
+
+    // The 1491.50 exe's call sites (audio::CensusCallSites in the game).
+    census::CallSites KnownSites()
+    {
+        census::CallSites s;
+        const std::uint32_t queue[census::kQueueFrames] = {0x258A469u, 0x2F1D23Eu, 0x2F1CEF8u, 0x2EE86B1u, 0x25A74DBu};
+        for (std::size_t n = 0; n < census::kQueueFrames; ++n)
+            s.queue[n] = queue[n];
+        s.speechWave = 0x2FA10CFu;
+        s.speechLayer = 0x2FA0DCCu;
+        s.creatorEntry = 0x251688Du;
+        s.byRefCore = 0x2589214u;
+        s.byHashCore = 0x25890E7u;
+        return s;
+    }
     namespace rules = replay::speech::rules;
     namespace hs = replay::horsesound;
     using census::OwnerClass;
@@ -97,6 +112,8 @@ namespace
     player::Config PacketsConfig()
     {
         player::Config c;
+        c.code = KnownWrapperCode();
+        c.callers = owner::KnownCallerRanges();
         c.packets = true;
         c.enabled = true;
         return c;
@@ -225,7 +242,10 @@ namespace
                 play.Cover(ms - 33 < from ? from : ms - 33, ms);
             }
         }
-        census::DiffResult Run() const { return census::Diff(rec.summary, play.summary, play.acc.Passes(), census::IgnoreList{}); }
+        census::DiffResult Run() const
+        {
+            return census::Diff(rec.summary, play.summary, play.acc.Passes(), census::IgnoreList{}, KnownSites());
+        }
     };
 
     census::SummaryKey Key(std::uint32_t who, OwnerClass cls, std::uint64_t ref, std::uint32_t a, std::uint32_t b,
@@ -338,22 +358,22 @@ namespace
         census::SummaryKey wave = Key(census::kNoOwner, OwnerClass::LivePlayer, 0x80000400438196ull, 0x251688d, 0x2589214, 0,
             0x2fa10cf, 0x2fa02fa);
         census::SummaryKey key = wave;
-        census::ProxySpeechKey(false, kPlayer, key);
+        census::ProxySpeechKey(false, kPlayer, key, KnownSites());
         Check(key.cls == OwnerClass::LivePlayer, "proxy off: the hidden player's");
-        census::ProxySpeechKey(true, kPlayer, key);
+        census::ProxySpeechKey(true, kPlayer, key, KnownSites());
         Check(key.cls == OwnerClass::Player && key.owner == kPlayer, "proxy on: the line's wave is the recorded player's");
         census::SummaryKey layer = Key(census::kNoOwner, OwnerClass::LivePlayer, 0x80000200436a9cull, 0x251688d, 0x2589214, 0,
             0x2fa0dcc, 0x2fb44a6);
-        census::ProxySpeechKey(true, kPlayer, layer);
+        census::ProxySpeechKey(true, kPlayer, layer, KnownSites());
         Check(layer.owner == kPlayer, "proxy on: a type 2 layer too");
         census::SummaryKey step = Key(census::kNoOwner, OwnerClass::LivePlayer, 0x80000600342babull, 0x2588eda, 0x258a469,
             0x2f1d23e, 0x2ee86b1, 0x25a74db);
-        census::ProxySpeechKey(true, kPlayer, step);
+        census::ProxySpeechKey(true, kPlayer, step, KnownSites());
         Check(step.cls == OwnerClass::LivePlayer, "proxy on: the hidden player's own step stays his");
         census::SummaryKey puppet = wave;
         puppet.cls = OwnerClass::Ped;
         puppet.owner = kWeapon;
-        census::ProxySpeechKey(true, kPlayer, puppet);
+        census::ProxySpeechKey(true, kPlayer, puppet, KnownSites());
         Check(puppet.owner == kWeapon, "proxy on: a puppet's line stays the puppet's");
 
         Pair p;
@@ -363,7 +383,7 @@ namespace
         recorded.cls = OwnerClass::Player;
         p.rec.Add(21700, recorded);
         census::SummaryKey hidden = wave;
-        census::ProxySpeechKey(true, kPlayer, hidden);
+        census::ProxySpeechKey(true, kPlayer, hidden, KnownSites());
         p.play.Add(21720, hidden);
         Check(p.Run().findings.empty(), "proxy on: the heard line is not missing");
     }

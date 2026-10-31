@@ -61,34 +61,18 @@ namespace replay::playback
     // The missing puppet detector (puppet_watch.h) pauses while
     // the seek settle or the clip load wait holds the playhead.
     void SetWatchHeld(bool held);
-    // PuppetLodMultiplier, PuppetAlwaysPrerender, PuppetForceAnimUpdate,
-    // PuppetScriptPose (puppet_lod.h).
+    // PuppetScriptPose, RecordPedAnimLod0 (puppet_lod.h).
     void SetPuppetLod(const lod::Config& config);
-    // HatFix (default 1, hat_chain.h): a puppet's hat fitted again where the
-    // recording has the bind pose; 0 plays the recorded hat (A/B).
-    void SetHatFix(bool on);
-    // HideNeverAnimated (default 1, tpose_check.h):
-    // 1): a body whose record never changed pose and whose recorded pose is
-    // its model's bind pose (the T-pose) is not shown; 0 shows it as
-    // recorded; 2 also hides a never animated record whose bind pose could
-    // not be read. TPoseWatch (default 1): the T-pose detector on what the
-    // shown puppets draw (POSE_V2_TPOSE, POSE_V2_TPOSE_SUMMARY).
-    void SetTPose(int hideNeverAnimated, bool watch);
-    // TPoseSettleMs (default 1500; 0 = judge at once) and TPoseOnScreenOnly
-    // (default 1): the watch does not judge while the replay prepares or the
-    // screen is faded, for settleMs after a pause, resume, scrub or jump, nor
-    // (onScreenOnly) a body off screen.
-    void SetTPoseGate(std::uint32_t settleMs, bool onScreenOnly);
-    // SegmentSwitchInTick (default 1, segment_switch.h): a skeleton change
-    // re-armed in the tick it is seen; 0 releases then arms (A/B).
-    void SetSegmentSwitchInTick(bool on);
-    // NoRecordMapNow (default 1, no_record_fallback.h): a posed body whose
-    // skeleton changed to a bone count no record has is armed through the
-    // skeleton map at once (0: hidden through six layer retries first);
-    // NoRecordAltAppearance (default 0): behind the mapped pose, the entity's
-    // other recorded appearances of the segment are tried for one that builds
-    // the record.
-    void SetNoRecordFallback(bool mapNow, bool alternates);
+    // A puppet's hat is fitted again where the recording has the bind pose
+    // (hat_chain.h). A body whose record never changed pose and whose recorded
+    // pose is its model's bind pose (the T-pose) is not shown (tpose_check.h
+    // HideMode::BindProven); the T-pose detector watches what the shown puppets
+    // draw (POSE_V2_TPOSE, POSE_V2_TPOSE_SUMMARY), not while the replay prepares
+    // or the screen is faded, for kSettleMsDefault after a pause, resume, scrub
+    // or jump, nor a body off screen. A skeleton change is re-armed in the tick
+    // it is seen (segment_switch.h). A posed body whose skeleton changed to a
+    // bone count no record has is armed through the skeleton map at once
+    // (no_record_fallback.h), the recorded layers tried again behind it.
     // What the last Update left to build (bodies alive at the playhead).
     struct SettleState
     {

@@ -3,31 +3,11 @@
 // The recorded voice's wave bank of an animal, loaded and held ahead of its
 // lines.
 //
-// The speech manager (0x5BB9750, offline 1491.50) keeps one loaded bank per
-// animal type: 108 records of 0x48 bytes from +0x890, the record of type T
-// at +0x890 + T * 0x48 with its bank reference at +0x898 (the holder; +0x8A8
-// the reference's object, whose +0x20 is the bank slot entry), the type's
-// demand (float, +0x8B0), the next bank number to load (+0x8B4) and the
-// number of banks of the type (+0x8B4's modulus, +0x8B8). The manager's
-// update 0x2FC5E54 ends in 0x2FC65E0: with no load pending (+0x860/+0x870)
-// it asks 0x2F985B0 which type to load, finds a slot (0x2FA5C48: the horse
-// type 0x3B has its own slots, +0x850/+0x858; the others share the large
-// bank class +0x840/+0x848), builds the bank name "<TYPE>_NEAR_%.2u" from
-// the type's name (table at .data 0x3E276A0) and that number (0x2F9BD4C),
-// loads it (0x2FB1730: slot vtable +0x28, then the slot entry's +0x30 = the
-// joaat of the name, +0x38 = 0) and moves the number on ((n % count) + 1).
-// When the load completes, the type's holder takes the new slot.
-//
-// The voice of an animal line IS that name's hash: 0x6D4D0CB7, 0xC66C3EF8
-// and 0x94C95BAF (horse voices) are joaat("HORSE_NEAR_01" ... "_03"). A line
-// asked with a voice (the native "pinned" path) gets the type's slot (voice
-// source 9, 0x2FBCE38 -> 0x2FBD004) and finds its wave only when that slot
-// holds the voice's bank; otherwise the sound sets +0xEE bit 2 and the line
-// dies loading (reason 4). A line asked by context gets the voice of the
-// loaded bank (0x2F9DB84 -> 0x2FA6674 reads the entry's +0x30 when its state
-// is 5). The manager rotates the bank when a context's variations were all
-// played from it (+0x38, 0x2FCEF8C) or when the type is not loaded, so a
-// replay's manager left alone plays recorded horses with the wrong voices.
+// The speech manager keeps one loaded bank per animal type and rotates it on
+// its own; the voice of an animal line is the hash of its bank's name
+// (joaat("HORSE_NEAR_01") and so on), and a line finds its wave only when the
+// type's slot holds that bank, otherwise it dies loading. Left alone, a
+// replay's manager plays recorded horses with the wrong voices.
 //
 // The clip already says which bank each animal line needs (its voice), so the
 // replay plans, per animal type, the bank of the next line due within the lead
@@ -36,6 +16,10 @@
 // number set when the type does not hold the voice, and returns no type (0:
 // the loader skips, 0x2FC672C) instead of rotating a type that holds it.
 // Nothing else of the manager is written.
+//
+// Evidence: offline dump of build 1491.50.
+// Research: docs/research/speech-duck-and-slots.md
+//
 // This header is pure (unit tested in scenery_speech_tests.cpp).
 
 #include <algorithm>

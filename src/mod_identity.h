@@ -34,6 +34,7 @@ namespace replay::identity
     inline constexpr char kAsiFile[] = "RedemptionEditor.asi";
     inline constexpr wchar_t kAddonFileW[] = L"RedemptionEditor.addon64";
     inline constexpr wchar_t kCoreFileW[] = L"RedemptionEditorCore.dll";
+    inline constexpr wchar_t kHostFileW[] = L"RedemptionEditorHost.dll"; // RedemptionEditor\host\, the own overlay
     inline constexpr char kLogFile[] = "RedemptionEditor.log";
     inline constexpr char kLogStem[] = "RedemptionEditor"; // rotated: RedemptionEditor-<date>.log
     inline constexpr char kCrashLogFile[] = "RedemptionEditor.crash.log";

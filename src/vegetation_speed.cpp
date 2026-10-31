@@ -1,5 +1,6 @@
 #include "vegetation_speed.h"
 #include "fx_motion_rule.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 
 #include <windows.h>
@@ -10,15 +11,16 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace replay::vegetation
 {
     namespace
     {
-        constexpr std::uintptr_t kSpeedRva = 0xC32058;
-        constexpr std::uint8_t kSpeedSignature[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B, 0xD9, 0x48, 0x85, 0xD2, 0x0F, 0x84, 0x8F, 0x00};
+        const replay::sig::Signature kSpeed{"vegetation_speed",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 8A 42 30 3C 04 75 66",
+            0xC32058};
         using SpeedFn = float*(__fastcall*)(float* out, void* entity);
 
         // Published by the script thread, read by the detour: the entity
@@ -42,11 +44,6 @@ namespace replay::vegetation
         void* g_target = nullptr;
         std::atomic<int> g_inFlight{0};
         std::atomic<std::uint64_t> g_overrides{0};
-
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size);
-        }
 
         float* __fastcall SpeedDetour(float* out, void* entity)
         {
@@ -76,9 +73,8 @@ namespace replay::vegetation
     {
         if (g_target)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* target = base + kSpeedRva;
-        if (!GuardedCompare(target, kSpeedSignature, sizeof(kSpeedSignature)))
+        void* target = reinterpret_cast<void*>(replay::sig::Find(kSpeed));
+        if (!target)
         {
             error = "vegetation_speed_signature_mismatch";
             return false;
@@ -233,12 +229,11 @@ namespace replay::vegetation
 
     namespace
     {
-        // Build 1491.50: vfunc +0xB0 of the particle entity interface (vtable
-        // 0x3480CE0), no direct callers (called through the vtable at 0x2C523A9
-        // and by the site 0x1460A60).
-        constexpr std::uintptr_t kFxVelocityRva = 0x1405BA4;
-        constexpr std::uint8_t kFxVelocitySignature[] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57,
-            0x48, 0x83, 0xEC, 0x50, 0x0F, 0x29, 0x74, 0x24, 0x40, 0x0F, 0x57, 0xF6, 0x41};
+        // vfunc +0xB0 of the particle entity interface, no direct callers
+        // (called through the vtable by the attach update, and by one more site).
+        const replay::sig::Signature kFxVelocity{"vegetation_fx_velocity",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 50 0F 29 74 24 40 0F 57 F6 41 0F 11 30",
+            0x1405BA4};
         using FxVelocityFn = bool(__fastcall*)(void*, void*, float*);
         std::atomic<FxVelocityFn> g_fxVelocityOriginal{nullptr};
         void* g_fxVelocityTarget = nullptr;
@@ -282,11 +277,12 @@ namespace replay::vegetation
     {
         if (g_fxVelocityTarget)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* target = base + kFxVelocityRva;
-        if (!GuardedCompare(target, kFxVelocitySignature, sizeof(kFxVelocitySignature)))
+        void* target = reinterpret_cast<void*>(replay::sig::Find(kFxVelocity));
+        if (!target)
         {
-            error = "fx_velocity_sig_mismatch,rva=0x1405ba4";
+            char text[64];
+            std::snprintf(text, sizeof(text), "fx_velocity_sig_mismatch,rva=0x%x", kFxVelocity.rva);
+            error = text;
             return false;
         }
         const MH_STATUS init = MH_Initialize();

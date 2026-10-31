@@ -8,6 +8,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="editor\editor_loader.cpp" />
+    <ClCompile Include="host\host_core_loader.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{7E0D6C41-2F55-4B8A-9C1E-5A3F2B8D9E10}</ProjectGuid>
@@ -29,6 +30,7 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <RedemptionVersionBinary>3</RedemptionVersionBinary>
     <TargetName>RedemptionEditor</TargetName>
     <TargetExt>.addon64</TargetExt>
     <OutDir>bin\$(Configuration)\</OutDir>

@@ -228,78 +228,6 @@ namespace replay::norecord
         return text.empty() ? "none" : text;
     }
 
-    // ---- the other recorded appearances of the segment ----
-
-    struct Alternate
-    {
-        const entity::Appearance* appearance = nullptr;
-        std::uint32_t key = 0;    // AppearanceAt's key: 0 the segment's (or create packet's), n change n - 1
-        std::uint32_t timeMs = 0; // when it was recorded
-    };
-
-    constexpr std::size_t kMaxAlternates = 4;
-
-    // The entity's recorded appearances within the segment in force
-    // (`segment`, null: the create packet's span, up to its first segment):
-    // the segment's own and the changes recorded before the next segment,
-    // without the one worn (`wornPrint`, AppearancePrint), empty ones and
-    // repeats, nearest to the playhead first (the earlier on a tie), at
-    // most `cap`. They were all recorded on the record's skeleton.
-    inline std::vector<Alternate> Alternates(const AppearanceTrack* track, const std::vector<entity::PoseSegment>& segments,
-        entity::ReplayId id, const entity::PoseSegment* segment, const entity::Appearance& create, std::uint32_t playheadMs,
-        std::uint64_t wornPrint, std::size_t cap)
-    {
-        const std::uint32_t startMs = segment ? segment->startMs : 0u;
-        std::uint32_t endMs = 0xFFFFFFFFu;
-        for (const entity::PoseSegment& other : segments)
-        {
-            if (other.entity == id && other.startMs > startMs && other.startMs < endMs && &other != segment)
-                endMs = other.startMs;
-        }
-        std::vector<Alternate> all;
-        std::vector<std::uint64_t> prints{wornPrint};
-        auto consider = [&](const entity::Appearance& appearance, std::uint32_t key, std::uint32_t timeMs) {
-            if (appearance.assets.empty())
-                return;
-            const std::uint64_t print = AppearancePrint(appearance);
-            if (std::find(prints.begin(), prints.end(), print) != prints.end())
-                return;
-            prints.push_back(print);
-            all.push_back({&appearance, key, timeMs});
-        };
-        consider(segment ? segment->appearance : create, 0u, startMs);
-        if (track)
-            for (std::size_t index = 0; index < track->changes.size(); ++index)
-            {
-                const AppearanceChange& change = track->changes[index];
-                if (change.timeMs < startMs || change.timeMs >= endMs)
-                    continue;
-                consider(change.appearance, static_cast<std::uint32_t>(index + 1), change.timeMs);
-            }
-        auto distance = [playheadMs](std::uint32_t t) { return t > playheadMs ? t - playheadMs : playheadMs - t; };
-        std::stable_sort(all.begin(), all.end(), [&](const Alternate& a, const Alternate& b) {
-            const std::uint32_t da = distance(a.timeMs);
-            const std::uint32_t db = distance(b.timeMs);
-            return da != db ? da < db : a.timeMs < b.timeMs;
-        });
-        if (all.size() > cap)
-            all.resize(cap);
-        return all;
-    }
-
-    // The appearance behind an AppearanceAt key of the segment in force
-    // (0: the segment's, or the create packet's; n: change n - 1). Null for
-    // a key the track does not have.
-    inline const entity::Appearance* AppearanceForKey(const AppearanceTrack* track, const entity::PoseSegment* segment,
-        const entity::Appearance& create, std::uint32_t key)
-    {
-        if (!key)
-            return segment ? &segment->appearance : &create;
-        if (!track || key > track->changes.size())
-            return nullptr;
-        return &track->changes[key - 1].appearance;
-    }
-
     // ---- the steps behind the mapped pose ----
 
     constexpr std::uint64_t kStepMs = 400;      // the engine rebuilds the skeleton within it
@@ -309,8 +237,6 @@ namespace replay::norecord
     {
         Wait,      // nothing this tick
         Retry,     // apply the recorded layers again
-        Alternate, // apply alternates[alternateIndex]
-        Restore,   // the recorded layers back on (no alternate fit)
         Done,      // stays mapped
     };
 
@@ -319,8 +245,6 @@ namespace replay::norecord
         switch (step)
         {
         case Step::Retry: return "retry";
-        case Step::Alternate: return "alternate";
-        case Step::Restore: return "restore";
         case Step::Done: return "done";
         default: return "wait";
         }
@@ -333,15 +257,10 @@ namespace replay::norecord
         std::uint32_t record = 0;    // the segment's record being chased
         std::uint32_t wantBones = 0; // its bone count
         std::uint32_t retries = 0;
-        std::uint32_t alternates = 0;      // available when it began
-        std::uint32_t alternatesTried = 0;
         std::uint32_t lastBones = 0;
         std::uint32_t lastPresent = 0;
         bool haveLast = false;
         bool sameAnswer = false;
-        bool wearingAlternate = false;
-        std::uint32_t alternateIndex = 0; // the one a Step::Alternate asks for
-        std::uint32_t keys[kMaxAlternates] = {}; // the alternates' AppearanceAt keys, taken at Begin
         std::uint64_t dueAt = 0;
 
         // A no-record arm through the map for `record` (a new record: from
@@ -349,7 +268,7 @@ namespace replay::norecord
         // that built yet another bone count; once done, not again until
         // Reset: the restore re-maps the puppet).
         // True when it began (false: it goes on, or is done, for `record`).
-        bool Begin(std::uint32_t recordId, std::uint32_t bones, const std::vector<Alternate>& found, std::uint64_t now)
+        bool Begin(std::uint32_t recordId, std::uint32_t bones, std::uint64_t now)
         {
             if ((active || done) && record == recordId)
                 return false;
@@ -357,15 +276,9 @@ namespace replay::norecord
             active = true;
             record = recordId;
             wantBones = bones;
-            for (const Alternate& alternate : found)
-            {
-                if (alternates < kMaxAlternates)
-                    keys[alternates++] = alternate.key;
-            }
             dueAt = now + kStepMs;
             return true;
         }
-        std::uint32_t AlternateKey() const { return keys[alternateIndex < kMaxAlternates ? alternateIndex : 0]; }
         // The puppet armed exact for the record.
         void Finish()
         {
@@ -378,34 +291,23 @@ namespace replay::norecord
 
         // Once a tick while the body is mapped for `record`: the bone count
         // and the recorded layers present on the puppet now.
-        Step Next(std::uint32_t cloneBones, std::uint32_t present, std::uint64_t now, bool alternatesOn)
+        Step Next(std::uint32_t cloneBones, std::uint32_t present, std::uint64_t now)
         {
             if (!active || now < dueAt)
                 return Step::Wait;
-            if (haveLast && cloneBones == lastBones && present == lastPresent && !wearingAlternate)
+            if (haveLast && cloneBones == lastBones && present == lastPresent)
                 sameAnswer = true;
             haveLast = true;
             lastBones = cloneBones;
             lastPresent = present;
             dueAt = now + kStepMs;
-            if (!wearingAlternate && !sameAnswer && retries < kMaxRetries)
+            if (!sameAnswer && retries < kMaxRetries)
             {
                 ++retries;
                 return Step::Retry;
             }
-            if (alternatesOn && alternatesTried < alternates)
-            {
-                alternateIndex = alternatesTried++;
-                wearingAlternate = true;
-                return Step::Alternate;
-            }
             active = false;
             done = true;
-            if (wearingAlternate)
-            {
-                wearingAlternate = false;
-                return Step::Restore;
-            }
             return Step::Done;
         }
     };

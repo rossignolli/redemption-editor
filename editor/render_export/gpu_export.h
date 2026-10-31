@@ -24,9 +24,20 @@
 // waited for by polling its timestamp: it was submitted on an earlier
 // present, so it completes without a flush (backpressure, never a drop).
 //
-// The compute shaders are SPIR-V (shaders/export_convert_spirv.h, Vulkan,
-// the game's API). Under D3D12 Begin refuses (no DXIL yet): the export
-// fails with UnsupportedApi in the log.
+// The compute shaders come from one HLSL file, as SPIR-V for Vulkan
+// (shaders/export_convert_spirv.h) and DXIL for D3D12
+// (shaders/export_convert_dxil.h); Begin picks by device->get_api() and
+// refuses any other API (UnsupportedApi in the log). What differs per API
+// is explicit in Begin/Sample and logged once by Describe():
+//   - pipeline layout: Vulkan one push descriptor set (bindings 0..2);
+//     D3D12 an SRV table and a UAV table (ReShade's D3D12 push_descriptors
+//     writes a new table per call), constants at b0 in both;
+//   - readback buffers: D3D12 READBACK heap resources stay in COPY_DEST (no
+//     barriers on them), Vulkan transitions to and from host read;
+//   - row pitch: the output image row is 16384 bytes, a multiple of D3D12's
+//     256 byte copy pitch (static_assert), tight in both;
+//   - timestamps: on the immediate list of the presenting queue, which must
+//     have compute (a D3D12 swapchain queue is a direct queue).
 
 #include "convert_ref.h"
 #include "export_channel.h"
@@ -141,6 +152,9 @@ namespace render_export
         bool DrainTimedOut() const { return m_drainTimedOut; }
         QueryAbi Abi() const { return m_queryAbi; }
         std::uint64_t FrameBytes() const { return m_frameBytes; }
+        // The API and every per-API choice Begin made ("api=d3d12,..."), for
+        // the export log.
+        std::string Describe() const;
 
         // Latency tag reader (preroll and flush pictures): copies the tag
         // cells' centre pixels; Decode on a later present.
@@ -207,6 +221,14 @@ namespace render_export
         bool m_tag10Bit = false;
         QueryAbi m_queryAbi = QueryAbi::Unknown;
         bool m_drainTimedOut = false;
+        reshade::api::device_api m_api = reshade::api::device_api::vulkan;
+        std::uint32_t m_constantsParam = 1; // layout param of the push constants (Vulkan 1, D3D12 2)
+        std::uint32_t m_queueType = 0;
+        bool m_readbackFixedState = false; // D3D12: readback buffers stay in copy_dest
+        reshade::api::resource_usage ReadbackInitialState() const
+        {
+            return m_readbackFixedState ? reshade::api::resource_usage::copy_dest : reshade::api::resource_usage::cpu_access;
+        }
 
         static constexpr std::uint32_t kQueriesPerSlot = 5; // copy start, copy end, accumulate end, resolve end, readback end
         static constexpr std::uint32_t kTagSlots = 8;

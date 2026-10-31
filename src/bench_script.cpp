@@ -44,7 +44,7 @@ namespace replay::bench
             {"fight", 2, 2},       // id target: TASK_COMBAT_PED, two hostile groups (unarmed = fist fight)
             {"disarm", 1, 1},      // id|player: REMOVE_ALL_PED_WEAPONS (a fight becomes a fist fight)
             {"puppet_collision", 1, 1}, // off | on (collision) | nofreeze (collision, not frozen): horse puppets during a replay
-            {"still_pose", 2, 2},  // rule on|off, drawn check on|off (StillPoseEngine, ObjectDrawnCheck) for the next playbacks
+            {"still_pose", 1, 1},  // drawn check on|off (ObjectDrawnCheck) for the next playbacks
             {"music", 1, 1},       // off = the open world score off (the replay's MusicStop natives), on = back
             {"freecam", 1, 1},     // on | off, the replay's free camera from the rendered view
             {"focus", 1, 1},       // clear (CLEAR_FOCUS) | log (BENCH_FOCUS line)
@@ -79,15 +79,11 @@ namespace replay::bench
             {"explosion", 4, 5},   // type x y z [damage scale]
             {"fire", 3, 3},        // x y z
             {"fire_forget", 0, 0}, // research: the fire observer forgets the live fires it tracks (as if lit before it loaded)
-            {"fire_untracked", 1, 1}, // on|off: FireUntrackedInitial for this session
             {"fire_entity", 5, 5}, // model x y z intensity: START_ENTITY_FIRE on the nearest object of that model (research)
             {"vehicle_part", 2, 3}, // veh wheel|door|log [index]: _BREAK_OFF_VEHICLE_WHEEL (0..5) or SET_VEHICLE_DOOR_BROKEN (0..9); logs the lost parts
             {"vehicle_look", 2, 3}, // veh tint [livery]: _SET_VEHICLE_TINT / _SET_VEHICLE_LIVERY (-1 keeps), logs the readback
             {"clean_world", 4, 4}, // x y z radius: fires, particles, decals and area cleared; logs recorded decals still alive
             {"fx_replay", 1, 1},   // on|off: playback of the fx, registered fx and decal tracks (control runs)
-            {"fx_owner", 1, 1},    // on|off: the one-shot owner rule, A/B in one game
-            {"fx_split", 1, 1},    // on|off: one registered fx track per creation
-            {"fx_world", 1, 1},    // on|off: the world side of the owner rule
             {"research_windows", 1, 1}, // on|off: audio-path and fx-trigger evidence windows around shots, hits and speech (research, default off)
             {"restage", 0, 0},     // rebuild the stage objects in place (what a recording left on them goes)
             {"mem_snap", 2, 2},    // spawned_id tag: guarded memory graph of a spawned entity to a snapshot folder (research, read-only)
@@ -279,11 +275,10 @@ namespace replay::bench
                 return ArgInt(step, 0, i) && i >= 0 && i < 64 && ArgFloat(step, 1, f) && f > 0.1f && f <= 60.0f;
             if (step.op == "shoot_ped")
                 return ArgFloat(step, 2, f) && f > 0.0f;
-            if (step.op == "fx_registered" || step.op == "fx_replay" || step.op == "fx_owner" || step.op == "fx_split" || step.op == "fx_world" || step.op == "research_windows" || step.op == "puppet_velocity" || step.op == "music" ||
-                step.op == "fire_untracked")
+            if (step.op == "fx_registered" || step.op == "fx_replay" || step.op == "research_windows" || step.op == "puppet_velocity" || step.op == "music")
                 return step.args[0] == "on" || step.args[0] == "off";
             if (step.op == "still_pose")
-                return (step.args[0] == "on" || step.args[0] == "off") && (step.args[1] == "on" || step.args[1] == "off");
+                return step.args[0] == "on" || step.args[0] == "off";
             if (step.op == "freecam")
                 return step.args[0] == "on" || step.args[0] == "off";
             if (step.op == "focus")

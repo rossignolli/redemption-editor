@@ -1,6 +1,8 @@
 #include "game_listener.h"
 #include "game_listener_core.h"
 
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 
 #include <windows.h>
@@ -13,8 +15,8 @@
 #include <ostream>
 
 // game_listener.h. Every engine access goes through replay::mem (SEH, range
-// filtered) after the code sites of game_listener_core.h matched once; a
-// mismatch disables the module.
+// filtered) after the code sites of game_listener_core.h were all found by
+// signature; one missing disables the module.
 //
 // LSTN v2 records every volume point and the microphone hash; the microphone
 // is put back through the engine's own override hash +0x780
@@ -26,26 +28,21 @@ namespace replay::gamelistener
 {
     namespace
     {
-        bool g_record = true;
-        bool g_apply = false;
         bool g_logEverySecond = false;
         bool g_micReplay = true;
-        std::uint32_t g_micFallbackIni = 0;
-        float g_camMatchM = 1.0f;
+        // A marker camera within this many meters of the recorded camera counts
+        // as following it.
+        constexpr float kCamMatchM = 1.0f;
 
         enum class Proof : std::uint8_t { Unknown, Proven, Failed };
         Proof g_proof = Proof::Unknown;
         std::uintptr_t g_env = 0;
-        std::uintptr_t g_base = 0;
+        std::uintptr_t g_table = 0;  // the microphone table
+        std::uintptr_t g_lookup = 0; // the metadata lookup by hash
 
-        bool g_applied = false;       // the replay set the override bit and nobody else owns it
-        bool g_bitWasSet = false;     // the bit as found when the replay first set it
-        Why g_lastWhy = Why::Off;
-        bool g_lastWhyValid = false;
+        bool g_lastStateValid = false;
         std::uint64_t g_nextLineMs = 0;
         std::uint32_t g_lines = 0;
-        std::uint32_t g_applyTicks = 0;
-        std::uint32_t g_writeFailures = 0;
         std::uint32_t g_recordedSamples = 0;
         std::uint32_t g_recordFailures = 0;
         constexpr std::uint32_t kLineCap = 3600;
@@ -76,45 +73,41 @@ namespace replay::gamelistener
         {
             if (g_proof != Proof::Unknown)
                 return g_proof == Proof::Proven;
-            const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
             g_proof = Proof::Proven;
-            for (const Site& site : kSites)
+            for (const sig::Signature* site : kSites)
             {
-                std::uint8_t code[16]{};
-                if (!base || !mem::Copy(code, base + site.rva, site.size) || !SiteMatches(site, code))
+                if (!sig::Find(*site))
                 {
+                    // Not found in this game: no address holds it (readable=0).
                     g_proof = Proof::Failed;
-                    log << "GAME_LISTENER,phase=unproven,site=" << site.name << ",rva=0x" << std::hex << site.rva << std::dec
-                        << ",readable=" << (base && mem::Copy(code, base + site.rva, site.size) ? 1 : 0) << '\n';
+                    log << "GAME_LISTENER,phase=unproven,site=" << site->name << ",rva=0x" << std::hex << site->rva << std::dec
+                        << ",readable=0\n";
                     break;
                 }
             }
             if (g_proof == Proof::Proven)
             {
-                g_base = base;
-                g_env = base + kEnvironmentRva;
+                g_env = sig::Find(kEnvironment);
+                g_table = sig::Find(kMicTable);
                 log << "GAME_LISTENER,phase=proven,sites=" << (sizeof(kSites) / sizeof(kSites[0])) << ",env_rva=0x" << std::hex
-                    << kEnvironmentRva << std::dec << ",record=" << (g_record ? 1 : 0) << ",apply=" << (g_apply ? 1 : 0)
-                    << ",record_v2=1,mic_replay=" << (g_micReplay ? 1 : 0)
-                    << ",mic_fallback_ini=0x" << std::hex << g_micFallbackIni << std::dec << ",cam_match_m=" << g_camMatchM
+                    << (g_env - sig::ImageBase()) << std::dec << ",record_v2=1,mic_replay=" << (g_micReplay ? 1 : 0)
+                    << ",cam_match_m=" << kCamMatchM
                     << '\n';
             }
             return g_proof == Proof::Proven;
         }
 
-        // Rung 4: the metadata lookup by hash 0x252B584, prologue checked
-        // once (a mismatch leaves the hash unread, MicSource::None). The
-        // camera map 0x31DFCDC is not called: its answer is a metadata
-        // reference, not a hash. The hash of the metadata in use is read from
-        // the table's entries (rung 2) and proven by the forward lookup.
-        using LookupFn = std::uintptr_t(__fastcall*)(std::uintptr_t, std::uint32_t, std::uint8_t);
-
+        // Rung 4: the metadata lookup by hash (kMetadataLookup, found once: not
+        // found leaves the hash unread, MicSource::None). The camera map is not
+        // called: its answer is a metadata reference, not a hash. The hash of
+        // the metadata in use is read from the table's entries (rung 2) and
+        // proven by the forward lookup.
         bool ProveCalls(std::ostream& log)
         {
             if (g_callProof != CallProof::Unknown)
                 return g_callProof == CallProof::Proven;
-            const bool lookup = g_base && mem::Matches(reinterpret_cast<const void*>(g_base + kMetadataLookupRva),
-                kMetadataLookupSignature, sizeof(kMetadataLookupSignature));
+            g_lookup = g_table ? sig::Find(kMetadataLookup) : 0;
+            const bool lookup = g_lookup != 0;
             g_callProof = lookup ? CallProof::Proven : CallProof::Failed;
             log << "LISTENER_MIC,phase=calls,lookup=" << (lookup ? 1 : 0) << ",map_called=0\n";
             return g_callProof == CallProof::Proven;
@@ -123,15 +116,8 @@ namespace replay::gamelistener
         bool CallLookup(std::uint32_t hash, std::uintptr_t& out, std::uint32_t& code)
         {
             out = 0;
-            __try
-            {
-                out = reinterpret_cast<LookupFn>(g_base + kMetadataLookupRva)(g_base + kMicTableRva, hash, kMicMetadataType);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kListenerMetadataLookup, g_lookup, out, g_table, hash, kMicMetadataType) ||
+                engine::Failed(code);
         }
 
         // The hash of a metadata object, from
@@ -151,7 +137,7 @@ namespace replay::gamelistener
 
         std::uint32_t ScanHashOf(std::uintptr_t meta, const char*& why)
         {
-            const std::uintptr_t table = g_base + kMicTableRva;
+            const std::uintptr_t table = g_table;
             std::uint64_t chunks = 0;
             std::uint16_t count = 0;
             if (!mem::Read(table, chunks) || !mem::Read(table + 8, count) || !chunks || count > kMetaMaxChunks)
@@ -297,7 +283,7 @@ namespace replay::gamelistener
                 (e.pos[0] != 0.0f || e.pos[1] != 0.0f || e.pos[2] != 0.0f);
         }
 
-        // The microphone the live engine uses, as 0x31D8AE4
+        // The microphone the live engine uses, as the microphone chooser
         // chooses it: the override hash; else the camera map's hash when its
         // metadata is the one in use; else the default when it is in use.
         MicSource ResolveMic(const EngineListener& e, std::uint32_t& hash, std::ostream& log)
@@ -346,45 +332,9 @@ namespace replay::gamelistener
             log << '\n';
         }
 
-        // The engine's own volume listener override (game_listener_core.h):
-        // rows, then the position the volume points take while bit 0x100 of
-        // +0x650 is on.
-        bool WriteOverride(const float pos[3])
-        {
-            const float matrix[16] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
-                pos[0], pos[1], pos[2], 0.0f};
-            if (!mem::Put(g_env + kVolumeOverrideMatrix, matrix, sizeof(matrix)))
-                return false;
-            std::uint32_t flags = 0;
-            if (!mem::Read(g_env + kFlags, flags))
-                return false;
-            if (!(flags & kVolumeOverrideBit))
-            {
-                flags |= kVolumeOverrideBit;
-                if (!mem::Put(g_env + kFlags, &flags, sizeof(flags)))
-                    return false;
-            }
-            return true;
-        }
-
-        // Clears the bit the replay set; the engine itself resets the matrix
-        // on its next update once the bit is clear (0x31E824D).
-        bool ClearOverride()
-        {
-            std::uint32_t flags = 0;
-            if (!mem::Read(g_env + kFlags, flags))
-                return false;
-            if (flags & kVolumeOverrideBit)
-            {
-                flags &= ~kVolumeOverrideBit;
-                return mem::Put(g_env + kFlags, &flags, sizeof(flags));
-            }
-            return true;
-        }
-
         // The microphone override the way the engine's scene
-        // writer 0x3277E2C does it, crossfade first (0: at once), then the
-        // hash; given back the way the zeroers 0x3279874 / 0x327AB8C do it.
+        // writer does it, crossfade first (0: at once), then the hash; given
+        // back the way the scene zeroers do it.
         bool WriteMic(std::uint32_t hash)
         {
             const std::uint32_t crossfade = 0;
@@ -435,37 +385,30 @@ namespace replay::gamelistener
             if (target)
                 log << ",target=" << target[0] << ';' << target[1] << ';' << target[2] << ",target_err=" << Distance(e.pos, target);
             if (why)
-                log << ",why=" << why << ",applied=" << (g_applied ? 1 : 0) << ",mic_ours=0x" << std::hex << g_micOurs
-                    << std::dec;
+                log << ",why=" << why << ",mic_ours=0x" << std::hex << g_micOurs << std::dec;
             log << '\n';
         }
     }
 
-    void Configure(bool record, bool apply, bool logEverySecond)
+    void Configure(bool logEverySecond)
     {
-        g_record = record;
-        g_apply = apply;
         g_logEverySecond = logEverySecond;
     }
 
-    void ConfigureMic(bool micReplay, std::uint32_t fallbackHash, float camMatchM)
+    void ConfigureMic(bool micReplay)
     {
         g_micReplay = micReplay;
-        g_micFallbackIni = fallbackHash;
-        g_camMatchM = std::isfinite(camMatchM) && camMatchM >= 0.0f ? camMatchM : 1.0f;
     }
 
-    bool RecordEnabled() { return g_record; }
-    bool ApplyEnabled() { return g_apply; }
-    float CamMatchM() { return g_camMatchM; }
+    float CamMatchM() { return kCamMatchM; }
 
     void Record(Recording& clip, std::uint32_t timeMs, bool clockRunning, std::ostream& log)
     {
-        if ((!g_record && !g_logEverySecond) || !clockRunning)
+        if (!clockRunning)
             return;
         if (!Prove(log))
             return;
-        const bool due = g_record && SampleDue(clip.gameListener, timeMs);
+        const bool due = SampleDue(clip.gameListener, timeMs);
         const ULONGLONG now = GetTickCount64();
         const bool line = g_logEverySecond && now >= g_nextLineMs && g_lines < kLineCap;
         if (!due && !line)
@@ -520,14 +463,14 @@ namespace replay::gamelistener
     void Play(const Recording& clip, std::uint32_t playheadMs, bool recordedGameCamera, std::ostream& log, float camErrM,
         const char* source)
     {
-        if (!g_apply && !g_micReplay && !g_logEverySecond && !g_applied && !g_micOurs)
+        if (!g_micReplay && !g_logEverySecond && !g_micOurs)
             return;
         const bool proven = Prove(log);
         EngineListener e = proven ? ReadEngine() : EngineListener{};
 
         // The microphone first; while it is ours the bit 0x100
         // path stays off (it puts every point on point 0).
-        const std::uint32_t fallback = g_micFallbackIni ? g_micFallbackIni : g_micLearned;
+        const std::uint32_t fallback = g_micLearned; // the hash of the 2-point microphone read live
         const MicPlan plan = proven ? MicAt(clip.gameListener, playheadMs, fallback) : MicPlan{};
         MicInputs mi;
         mi.enabled = g_micReplay;
@@ -567,53 +510,23 @@ namespace replay::gamelistener
         }
         if (g_micOurs)
             ++g_micTicks;
-        const bool micActive = g_micOurs != 0;
 
         float target[3] = {};
         const bool haveTarget = proven && At(clip.gameListener, playheadMs, target) && Finite(target);
-        Inputs in;
-        in.enabled = g_apply && !micActive;
-        in.proven = proven && e.ok;
-        in.recordedGameCamera = recordedGameCamera;
-        in.haveTarget = haveTarget;
-        in.overrideBitSet = (e.flags & kVolumeOverrideBit) != 0;
-        in.overrideIsOurs = g_applied;
-        const Why why = Decide(in);
-        if (why == Why::Apply)
-        {
-            if (!g_applied)
-                g_bitWasSet = in.overrideBitSet;
-            if (WriteOverride(target))
-            {
-                g_applied = true;
-                ++g_applyTicks;
-            }
-            else if (g_writeFailures++ < 8)
-            {
-                log << "GAME_LISTENER,phase=write_failed,clip_ms=" << playheadMs << '\n';
-            }
-        }
-        else if (g_applied && proven)
-        {
-            if (!g_bitWasSet)
-                ClearOverride();
-            g_applied = false;
-        }
-        const bool stateChanged = !g_lastWhyValid || why != g_lastWhy || std::strcmp(micWhy, g_lastMicWhy) != 0 ||
+        const bool stateChanged = !g_lastStateValid || std::strcmp(micWhy, g_lastMicWhy) != 0 ||
             plan.who != g_lastMicWho || recordedGameCamera != g_lastFollows || plan.pointsRec != g_lastPointsRec ||
             e.points != g_lastPointsLive || micWriteFailed;
         if (stateChanged && g_stateLines < kStateLineCap)
         {
-            log << "GAME_LISTENER,phase=state,why=" << WhyName(why) << ",clip_ms=" << playheadMs << ",track="
+            log << "GAME_LISTENER,phase=state,clip_ms=" << playheadMs << ",track="
                 << clip.gameListener.samples.size() << ",recorded_camera=" << (recordedGameCamera ? 1 : 0)
-                << ",apply_ticks=" << g_applyTicks << ",source=" << (source ? source : "-") << ",cam_err_m=" << camErrM
+                << ",source=" << (source ? source : "-") << ",cam_err_m=" << camErrM
                 << ",points_rec=" << static_cast<int>(plan.pointsRec) << ",points_live=" << e.points
                 << ",mic_why=" << micWhy << ",mic_action=" << MicActionName(action) << ",mic_who=" << MicWhoName(plan.who)
                 << ",mic_hash=0x" << std::hex << plan.hash << ",mic_ours=0x" << g_micOurs << ",mic_now=0x" << e.micOverride
                 << std::dec << ",mic_written=" << g_micWrites << ",write_failed=" << (micWriteFailed ? 1 : 0) << '\n';
             ++g_stateLines;
-            g_lastWhy = why;
-            g_lastWhyValid = true;
+            g_lastStateValid = true;
             g_lastMicWhy = micWhy;
             g_lastMicWho = plan.who;
             g_lastFollows = recordedGameCamera;
@@ -631,29 +544,22 @@ namespace replay::gamelistener
         {
             g_nextLineMs = now + 1000;
             ++g_lines;
-            Line(log, "play", playheadMs, e, haveTarget ? target : nullptr, WhyName(why));
+            Line(log, "play", playheadMs, e, haveTarget ? target : nullptr, nullptr);
         }
     }
 
     void Release(const char* why, std::ostream& log)
     {
-        if (g_applied && g_proof == Proof::Proven && !g_bitWasSet)
-            ClearOverride();
         bool micRestored = false;
         if (g_micOurs && g_proof == Proof::Proven)
             micRestored = RestoreMic();
-        if (g_applied || g_applyTicks || g_micTicks || g_micWrites)
-            log << "GAME_LISTENER,phase=release,why=" << why << ",applied=" << (g_applied ? 1 : 0)
-                << ",apply_ticks=" << g_applyTicks << ",write_failures=" << g_writeFailures << ",mic_ours=0x" << std::hex
+        if (g_micTicks || g_micWrites)
+            log << "GAME_LISTENER,phase=release,why=" << why << ",mic_ours=0x" << std::hex
                 << g_micOurs << std::dec << ",mic_restored=" << (micRestored ? 1 : 0) << ",mic_ticks=" << g_micTicks
                 << ",mic_writes=" << g_micWrites << ",mic_restores=" << g_micRestores << ",mic_forgets=" << g_micForgets
                 << ",mic_write_failures=" << g_micWriteFailures << ",mic_learned=0x" << std::hex << g_micLearned << std::dec
                 << '\n';
-        g_applied = false;
-        g_bitWasSet = false;
-        g_lastWhyValid = false;
-        g_applyTicks = 0;
-        g_writeFailures = 0;
+        g_lastStateValid = false;
         g_micOurs = 0;
         g_micTicks = 0;
         g_micWrites = 0;

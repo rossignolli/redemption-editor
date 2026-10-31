@@ -12,6 +12,7 @@
 #include <cstring>
 #include <iterator>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace
@@ -169,25 +170,20 @@ namespace
     void TestWheelLayout()
     {
         using namespace replay::vehicle_pieces;
-        // The signatures as the dump has them (build 1491.50).
-        std::map<std::uintptr_t, std::vector<std::uint8_t>> code;
-        code[kWheelBreakReadRva] = std::vector<std::uint8_t>(std::begin(kWheelBreakReadSignature), std::end(kWheelBreakReadSignature));
-        code[kWheelMakerStoreRva] = std::vector<std::uint8_t>(std::begin(kWheelMakerStoreSignature), std::end(kWheelMakerStoreSignature));
-        code[kWheelMakerFrontRva] = std::vector<std::uint8_t>(std::begin(kWheelMakerFrontSignature), std::end(kWheelMakerFrontSignature));
-        code[kWheelMakerRearRva] = std::vector<std::uint8_t>(std::begin(kWheelMakerRearSignature), std::end(kWheelMakerRearSignature));
-        code[kWheelMakerPairRva] = std::vector<std::uint8_t>(std::begin(kWheelMakerPairSignature), std::end(kWheelMakerPairSignature));
-        const auto matches = [&](std::uintptr_t rva, const std::uint8_t* bytes, std::size_t size) {
-            const auto it = code.find(rva);
-            return it != code.end() && it->second.size() == size && std::memcmp(it->second.data(), bytes, size) == 0;
-        };
-        Check(WheelLayoutProven(matches), "wheel layout: proven on the dump's bytes");
-        Check(kWheelBreakReadSignature[3] == 0xE8 && kWheelBreakReadSignature[4] == 0x0E &&
-                  kWheelBreakReadSignature[11] == 0x38 && kWheelBreakReadSignature[12] == 0x0A,
+        // The signatures the game has (every one, as on the dump).
+        std::set<const replay::sig::Signature*> code = {
+            &kWheelBreakRead, &kWheelMakerStore, &kWheelMakerFront, &kWheelMakerRear, &kWheelMakerPair};
+        const auto found = [&](const replay::sig::Signature& s) { return code.count(&s) != 0; };
+        Check(WheelLayoutProven(found), "wheel layout: proven on the dump's bytes");
+        replay::sig::Pattern read, front, rear;
+        Check(replay::sig::Parse(kWheelBreakRead.pattern, read) && read.bytes[3] == 0xE8 && read.bytes[4] == 0x0E &&
+                  read.bytes[11] == 0x38 && read.bytes[12] == 0x0A,
             "wheel layout: the break reads +0xEE8 then +0xA38");
-        Check(kWheelMakerFrontSignature[10] == 0xB0 && kWheelMakerRearSignature[6] == 0xB4,
+        Check(replay::sig::Parse(kWheelMakerFront.pattern, front) && replay::sig::Parse(kWheelMakerRear.pattern, rear) &&
+                  front.bytes[10] == 0xB0 && rear.bytes[6] == 0xB4,
             "wheel layout: the maker reads the models at +0x5B0 and +0x5B4");
-        code[kWheelMakerStoreRva][0] = 0x90;
-        Check(!WheelLayoutProven(matches), "wheel layout: one byte off refuses it");
+        code.erase(&kWheelMakerStore);
+        Check(!WheelLayoutProven(found), "wheel layout: one site missing refuses it");
     }
 
     void TestWheelKeepAndCopy()
@@ -300,22 +296,15 @@ namespace
         Check(WheelChildBits(kRearWheel, same, -1.0f, 1.2f) == 0x01 && WheelChildBits(kRearWheel, same, -1.0f, -1.2f) == 0x14,
             "wheel bits: one model on both axles: ahead is the front");
 
-        std::map<std::uintptr_t, std::vector<std::uint8_t>> code;
-        code[kTintSetterModelInfoRva] =
-            std::vector<std::uint8_t>(std::begin(kTintSetterModelInfoSignature), std::end(kTintSetterModelInfoSignature));
-        code[kWheelBreakReadRva] = std::vector<std::uint8_t>(std::begin(kWheelBreakReadSignature), std::end(kWheelBreakReadSignature));
-        code[kWheelMakerStoreRva] = std::vector<std::uint8_t>(std::begin(kWheelMakerStoreSignature), std::end(kWheelMakerStoreSignature));
-        code[kWheelMakerFrontRva] = std::vector<std::uint8_t>(std::begin(kWheelMakerFrontSignature), std::end(kWheelMakerFrontSignature));
-        code[kWheelMakerRearRva] = std::vector<std::uint8_t>(std::begin(kWheelMakerRearSignature), std::end(kWheelMakerRearSignature));
-        code[kWheelMakerPairRva] = std::vector<std::uint8_t>(std::begin(kWheelMakerPairSignature), std::end(kWheelMakerPairSignature));
-        const auto matches = [&](std::uintptr_t rva, const std::uint8_t* bytes, std::size_t size) {
-            const auto it = code.find(rva);
-            return it != code.end() && it->second.size() == size && std::memcmp(it->second.data(), bytes, size) == 0;
-        };
-        Check(ModelInfoLayoutProven(matches), "model info layout: proven on the dump's bytes");
-        Check(kTintSetterModelInfoSignature[3] == 0x20, "model info layout: the tint setter reads [entity+0x20]");
-        code[kTintSetterModelInfoRva][3] = 0x28;
-        Check(!ModelInfoLayoutProven(matches), "model info layout: one byte off refuses it");
+        std::set<const replay::sig::Signature*> code = {&kTintSetterModelInfo, &kWheelBreakRead, &kWheelMakerStore,
+            &kWheelMakerFront, &kWheelMakerRear, &kWheelMakerPair};
+        const auto found = [&](const replay::sig::Signature& s) { return code.count(&s) != 0; };
+        Check(ModelInfoLayoutProven(found), "model info layout: proven on the dump's bytes");
+        replay::sig::Pattern tint;
+        Check(replay::sig::Parse(kTintSetterModelInfo.pattern, tint) && tint.bytes[3] == 0x20,
+            "model info layout: the tint setter reads [entity+0x20]");
+        code.erase(&kTintSetterModelInfo);
+        Check(!ModelInfoLayoutProven(found), "model info layout: one site missing refuses it");
 
         Check(PartsWanted(0x31, 0, 0x3F) == 0 && PartsWanted(0x31, 0, 0) == 0x31 && PartsWanted(0x231, 0, 0x14) == 0x221,
             "parts wanted: the kept wheels' bits are not applied, doors and other wheels are");

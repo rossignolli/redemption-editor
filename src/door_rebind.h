@@ -2,7 +2,7 @@
 
 // The map doors of the replay after the world clear.
 //
-// The world clear (CLEAR_AREA bit 0x200, core 0x7F9264) turns every map object
+// The world clear (CLEAR_AREA bit 0x200, in its core) turns every map object
 // back into a dummy, doors included; the engine's object population makes them
 // again during the replay with a new handle. A door resolved once at the
 // playback's start would, when made again, appear in the middle of the action
@@ -21,8 +21,7 @@ namespace replay::doors
 {
     struct Config
     {
-        std::uint32_t rebindMs = 250;   // DoorRebindMs (0: resolved once)
-        bool keepOpenRatio = true;      // DoorKeepOpenRatio: closed theater only
+        std::uint32_t rebindMs = 250;   // the doors re-resolved this often (0: resolved once)
         std::uint32_t mapWaitMs = 3000; // MapObjectsWaitMs (0: no wait)
     };
 
@@ -38,6 +37,13 @@ namespace replay::doors
     // The start's wait for the map objects: done once the object count has
     // held (within kTolerance) for kStableMs after kMinMs and no door near
     // the first camera is still missing, or after the cap.
+    //
+    // The cap ends the wait only when nothing else holds the start: in dense
+    // places the count was still rising at 3 s (867 at 1 s, 1550 at 3 s) while
+    // the load scene or the puppets kept the screen black for 2 s more
+    // (10 of 11 timeouts in the QA and bench logs). Past the cap
+    // the count keeps being judged until the rest is ready; the load wait's own
+    // timeout ends it (Stop).
     class MapSettle
     {
     public:
@@ -60,7 +66,8 @@ namespace replay::doors
             bool timedOut = false;
         };
 
-        Verdict Feed(std::uint64_t nowMs, std::uint32_t objects, std::uint32_t doorsMissing)
+        // othersHolding: the load scene or the puppets still hold the start.
+        Verdict Feed(std::uint64_t nowMs, std::uint32_t objects, std::uint32_t doorsMissing, bool othersHolding = false)
         {
             Verdict verdict;
             if (!m_active)
@@ -77,28 +84,47 @@ namespace replay::doors
             m_last = objects;
             m_doorsMissing = doorsMissing;
             const std::uint64_t elapsed = nowMs - m_start;
+            if (elapsed >= m_capMs && !m_capSeen)
+            {
+                m_capSeen = true;
+                m_objectsAtCap = objects;
+            }
             if (elapsed >= kMinMs && nowMs - m_changedAt >= kStableMs && doorsMissing == 0)
                 verdict.done = true;
-            else if (elapsed >= m_capMs)
+            else if (elapsed >= m_capMs && !othersHolding)
             {
                 verdict.done = true;
                 verdict.timedOut = true;
             }
             if (verdict.done)
-            {
-                m_active = false;
-                m_endMs = elapsed;
-                m_timedOut = verdict.timedOut;
-            }
+                End(elapsed, verdict.timedOut);
             return verdict;
+        }
+
+        // The load wait ended (its own timeout) with this wait still running.
+        void Stop(std::uint64_t nowMs)
+        {
+            if (m_active)
+                End(nowMs - m_start, true);
         }
 
         std::uint32_t LastObjects() const { return m_last; }
         std::uint32_t DoorsMissing() const { return m_doorsMissing; }
         std::uint64_t EndMs() const { return m_endMs; }
         bool TimedOut() const { return m_timedOut; }
+        // The time past the cap the wait went on for the rest of the start
+        // (0: ended within the cap), and the count when the cap passed.
+        std::uint64_t OverCapMs() const { return m_endMs > m_capMs ? m_endMs - m_capMs : 0; }
+        std::uint32_t ObjectsAtCap() const { return m_objectsAtCap; }
 
     private:
+        void End(std::uint64_t elapsed, bool timedOut)
+        {
+            m_active = false;
+            m_endMs = elapsed;
+            m_timedOut = timedOut;
+        }
+
         bool m_active = false;
         bool m_has = false;
         std::uint64_t m_start = 0;
@@ -109,6 +135,8 @@ namespace replay::doors
         std::uint32_t m_doorsMissing = 0;
         std::uint64_t m_endMs = 0;
         bool m_timedOut = false;
+        bool m_capSeen = false;
+        std::uint32_t m_objectsAtCap = 0;
     };
 
     // A door track with one sample is the door's state for the whole clip (the

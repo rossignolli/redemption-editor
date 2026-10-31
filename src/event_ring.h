@@ -30,12 +30,17 @@
 // readers (ForEachPublished) read what is published now and look again
 // next time.
 //
-// The payload copy is a plain copy of a trivially copyable value, checked
-// by the sequence afterwards; the fences order it against the sequence
-// loads and stores.
+// The payload lives in the slot as 64-bit atomic words. A writer fills a
+// local T and copies it in at Publish; the reader copies the words out to a
+// local T. Both copies are word-wise relaxed atomics (plain movs on x64), so
+// a reader racing a newer writer reads stale or mixed words, never a C++
+// data race; the sequence check afterwards throws such a copy away. The
+// fences order the words against the sequence loads and stores.
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 namespace replay::ring
@@ -46,10 +51,44 @@ namespace replay::ring
     template <typename T>
     struct Slot
     {
+        static_assert(std::is_trivially_copyable_v<T>, "a ring payload is copied while it may be rewritten");
+        static constexpr std::size_t kWords = (sizeof(T) + 7) / 8; // T padded to 8 bytes
+
         std::atomic<std::uint64_t> sequence{0};
         std::atomic<std::uint64_t> dropped{0};
-        T value;
+        std::atomic<std::uint64_t> words[kWords]; // the payload (StorePayload, LoadPayload)
     };
+
+    // Writer, between Claim and Publish: copies `value` into the slot.
+    template <typename T>
+    void StorePayload(Slot<T>& slot, const T& value) noexcept
+    {
+        // A reader that sees any of these words must also see the claim
+        // (its second sequence load then fails): release fence before them.
+        std::atomic_thread_fence(std::memory_order_release);
+        const unsigned char* bytes = reinterpret_cast<const unsigned char*>(&value);
+        for (std::size_t n = 0; n < Slot<T>::kWords; ++n)
+        {
+            const std::size_t at = n * 8;
+            std::uint64_t word = 0;
+            std::memcpy(&word, bytes + at, sizeof(T) - at < 8 ? sizeof(T) - at : 8);
+            slot.words[n].store(word, std::memory_order_relaxed);
+        }
+    }
+
+    // Reader: copies the slot's words into `out`; valid only if the sequence
+    // did not change around the call (TryRead checks it).
+    template <typename T>
+    void LoadPayload(const Slot<T>& slot, T& out) noexcept
+    {
+        unsigned char* bytes = reinterpret_cast<unsigned char*>(&out);
+        for (std::size_t n = 0; n < Slot<T>::kWords; ++n)
+        {
+            const std::size_t at = n * 8;
+            const std::uint64_t word = slot.words[n].load(std::memory_order_relaxed);
+            std::memcpy(bytes + at, &word, sizeof(T) - at < 8 ? sizeof(T) - at : 8);
+        }
+    }
 
     // What the protocol saw, process wide (logged at unload).
     struct Counters
@@ -71,7 +110,8 @@ namespace replay::ring
         {
             if ((seen & kWriting) != 0 || seen >= mine)
                 return false;
-            // acq_rel: the payload writes after this cannot move above it.
+            // acq_rel: the payload words after this cannot move above it
+            // (StorePayload adds the release fence the C++ model asks for).
             if (sequence.compare_exchange_weak(seen, mine | kWriting, std::memory_order_acq_rel, std::memory_order_acquire))
                 return true;
         }
@@ -92,9 +132,9 @@ namespace replay::ring
     }
 
     // The writer side of one event: takes a ticket, claims its slot and
-    // exposes `value` to fill (the slot's payload, or a per-thread scratch
-    // when the slot could not be claimed, so the writer's code is the same).
-    // Publish() makes it readable; a writer destroyed without Publish()
+    // exposes `value` to fill (a local copy, also when the slot could not be
+    // claimed, so the writer's code is the same). Publish() copies it into
+    // the slot and makes it readable; a writer destroyed without Publish()
     // gives the ticket up.
     template <typename T>
     class Writer
@@ -106,8 +146,7 @@ namespace replay::ring
         }
 
         Writer(Slot<T>* ring, std::uint64_t size, std::uint64_t ticket) noexcept
-            : m_slot(ring[ticket % size]), m_ticket(ticket), m_owned(Claim(m_slot.sequence, ticket)),
-              value(m_owned ? m_slot.value : Scratch())
+            : m_slot(ring[ticket % size]), m_ticket(ticket), m_owned(Claim(m_slot.sequence, ticket)), value(m_local)
         {
             if (!m_owned)
                 Drop(m_slot.dropped, ticket);
@@ -133,21 +172,18 @@ namespace replay::ring
             if (m_published)
                 return;
             m_published = true;
-            if (m_owned)
-                replay::ring::Publish(m_slot.sequence, m_ticket);
+            if (!m_owned)
+                return;
+            StorePayload(m_slot, m_local);
+            replay::ring::Publish(m_slot.sequence, m_ticket);
         }
 
     private:
-        static T& Scratch() noexcept
-        {
-            thread_local T scratch{};
-            return scratch;
-        }
-
         Slot<T>& m_slot;
         std::uint64_t m_ticket;
         bool m_owned;
         bool m_published = false;
+        T m_local{}; // filled through `value`, copied into the slot at Publish
 
     public:
         T& value; // what the writer fills
@@ -164,12 +200,11 @@ namespace replay::ring
     template <typename T>
     Read TryRead(const Slot<T>& slot, std::uint64_t ticket, T& out) noexcept
     {
-        static_assert(std::is_trivially_copyable_v<T>, "a ring payload is copied while it may be rewritten");
         const std::uint64_t mine = ticket + 1;
         const std::uint64_t before = slot.sequence.load(std::memory_order_acquire);
         if (before == mine)
         {
-            out = slot.value;
+            LoadPayload(slot, out);
             std::atomic_thread_fence(std::memory_order_acquire);
             if (slot.sequence.load(std::memory_order_relaxed) == mine)
                 return Read::Ready;

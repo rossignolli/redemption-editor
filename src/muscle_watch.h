@@ -2,18 +2,12 @@
 
 // Evidence for the horse muscle detail that flickers on a puppet.
 //
-// The engine's animation frame of a creature holds more than bones: every
-// DOF is (track, id) and the track names are a table in .rdata (build
-// 1491.50: names from 0x3624FE8, "animatedNormalMaps" at 0x3625100; the
-// parallel id bytes at 0x3624F90 give boneTranslation 0, boneRotation 1,
-// boneScale 2, visibility 4, blendShape 0x15, animatedNormalMaps 0x17).
-// The muscles that move under a horse's skin are animated normal maps:
-// blend weights on track 0x17 that the expressions compute each frame. The
-// replay records and writes only the bone rows (the pose finalizer's
-// output); track 0x17 of a puppet is whatever its own expressions produced,
-// and an expression runs only while the director's effective LOD is in its
-// range (anim_visible.h, anim_lod_hook.h). The recording forces LOD 0 and
-// visible on every recorded ped (RecordPedAnimLod0); the playback did not.
+// The muscles under a horse's skin are animated normal maps: blend weights on
+// animation track 0x17 that the expressions compute each frame. The replay
+// records and writes only the bone rows, so track 0x17 of a puppet is whatever
+// its own expressions produce, and an expression runs only while the
+// director's effective LOD is in its range (anim_visible.h, anim_lod_hook.h).
+// Research: docs/research/peds-puppets.md
 //
 // Two detectors, pure data:
 //  - Watch: the track 0x17 values of one entity, tick after tick. A value

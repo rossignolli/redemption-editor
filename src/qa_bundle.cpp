@@ -7,10 +7,10 @@
 #include "qa_marks.h"
 #include "qa_report.h" // the marks line of report.txt
 #include "qa_zip.h"
+#include "sha256.h"
 
 #include <Windows.h>
 #include <psapi.h>
-#include <wincrypt.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -86,34 +86,7 @@ namespace replay::qa::bundle
             HANDLE file = OpenShared(path);
             if (file == INVALID_HANDLE_VALUE)
                 return "missing";
-            std::string text = "unavailable";
-            HCRYPTPROV provider = 0;
-            HCRYPTHASH hash = 0;
-            if (CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) &&
-                CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash))
-            {
-                std::vector<BYTE> buffer(1 << 20);
-                DWORD read = 0;
-                bool ok = true;
-                while (ok && ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) && read > 0)
-                {
-                    ok = CryptHashData(hash, buffer.data(), read, 0) != FALSE;
-                    bytes += read;
-                }
-                BYTE digest[32]{};
-                DWORD digestSize = sizeof(digest);
-                if (ok && CryptGetHashParam(hash, HP_HASHVAL, digest, &digestSize, 0) && digestSize == sizeof(digest))
-                {
-                    char hex[65]{};
-                    for (DWORD n = 0; n < digestSize; ++n)
-                        std::snprintf(hex + n * 2, 3, "%02x", digest[n]);
-                    text = hex;
-                }
-            }
-            if (hash)
-                CryptDestroyHash(hash);
-            if (provider)
-                CryptReleaseContext(provider, 0);
+            const std::string text = sha256::HashOpenFile(file, bytes, 1 << 20);
             CloseHandle(file);
             return text;
         }

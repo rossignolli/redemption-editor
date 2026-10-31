@@ -10,13 +10,17 @@
 // puppet. Pure rules shared by capture and playback
 // (tests/vehicle_pieces_tests.cpp).
 
+#include "engine_sigs.h"
 #include "entity_lifecycle.h"
+#include "game_sig_core.h"
 
 #include <cstdint>
 #include <vector>
 
 namespace replay::vehicle_pieces
 {
+    using enginesig::kVehicleBreakOff;
+
     // A prop of a vehicle's model is a piece of a vehicle: it is only ever a
     // VehiclePiece. Any other origin (a projectile's "successor", a world piece)
     // would make CREATE_OBJECT build the whole vehicle as an object in playback (a
@@ -99,30 +103,17 @@ namespace replay::vehicle_pieces
         return false;
     }
 
-    // A wagon's wheel does not come off as a fragment piece: the break deletes the
-    // wheel's groups from the vehicle (FRAG_BREAK where=vehicle, piece=0) and the
-    // engine hands out a wheel object of its own (e.g. model wagon02x_wheel_lr
-    // 0x06A01A3E), kept per wheel slot in the vehicle's draft data. Build 1491.50:
-    // the wheel break 0x1579488 reads the draft data at vehicle +0xEE8 and returns
-    // [draft + slot*8 + 0xA38] (0x1579835); the maker 0x1482150 (this = the draft
-    // data, [draft] = the vehicle, [draft+8] = its model info) stores the object it
-    // creates there (0x14823CB), of the model hash at model info +0x5B0 for slots 0
-    // and 1 and +0x5B4 for the others (0x14821B6, 0x14821ED, slot/2 at 0x1482215),
-    // and links it to the vehicle (0xF140A4 registers the vehicle in the object's
-    // extension). That object draws with the vehicle's colours: its own tint bits
-    // (+0xB8) read 0 while it shows the wagon's tint (OBJECT_LOOK tinted=0); the
-    // vehicle tint selects colour entries of the vehicle's shader (setter
-    // 0x10F567C writes [vehicle+0x28]+0x574/0x575 and 0x51E3F0 maps it through the
-    // model's colour table), not an object palette row, so SET_OBJECT_TINT_INDEX
-    // on a plain object of the wheel model cannot give it (a plain object of the
-    // model draws bright yellow, without its vehicle).
-    //
-    // So, as a fragment child is created with its frag parent, a wheel piece is
-    // recorded as a VehiclePiece whose group is kWheelPieceFlag | wheel index (no
-    // frag group is that high: 0x80 bytes of group bits), with its own world track
-    // from the moment it leaves, and played as the object _BREAK_OFF_VEHICLE_WHEEL
-    // returns from the vehicle puppet (the engine makes it with its parent link,
-    // the puppet's tint).
+    // A wagon's wheel does not come off as a fragment piece: the break deletes
+    // the wheel's groups from the vehicle and the engine hands out a wheel
+    // object of its own, linked to the vehicle and drawn with the vehicle's
+    // tint. A plain object of the wheel model cannot get that tint (it draws
+    // bright yellow), so a wheel piece is recorded as a VehiclePiece whose group
+    // is kWheelPieceFlag | wheel index (no frag group is that high: 0x80 bytes of
+    // group bits), with its own world track from the moment it leaves, and
+    // played as the object _BREAK_OFF_VEHICLE_WHEEL returns from the vehicle
+    // puppet (the engine makes it with its parent link, the puppet's tint).
+    // Evidence: offline dump.
+    // Research: docs/research/vehicles-pieces.md
     constexpr std::uint16_t kWheelPieceFlag = 0x8000;
     constexpr int kWheels = 6; // _BREAK_OFF_VEHICLE_WHEEL index 0 LF .. 5 RR
 
@@ -177,34 +168,31 @@ namespace replay::vehicle_pieces
     constexpr std::uintptr_t kModelInfoRearWheelOffset = 0x5B4;
     constexpr int kMaxWheelSlots = 10; // the slot count the part track accepts ([vehicle+0xBC0])
 
-    constexpr std::uintptr_t kWheelBreakReadRva = 0x1579835;
-    // mov rcx,[rax+0xEE8]; mov r14,[rcx+r15*8+0xA38]
-    constexpr std::uint8_t kWheelBreakReadSignature[] = {
-        0x48, 0x8B, 0x88, 0xE8, 0x0E, 0x00, 0x00, 0x4E, 0x8B, 0xB4, 0xF9, 0x38, 0x0A, 0x00, 0x00};
-    constexpr std::uintptr_t kWheelMakerStoreRva = 0x14823B8;
-    // mov rcx,[rdi]; mov dl,[rcx+0x8C]; mov [rax+0x8C],dl; lea rdx,[rbp-0x71]; mov [rdi+r12*8+0xA38],rax
-    constexpr std::uint8_t kWheelMakerStoreSignature[] = {0x48, 0x8B, 0x0F, 0x8A, 0x91, 0x8C, 0x00, 0x00, 0x00, 0x88,
-        0x90, 0x8C, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x55, 0x8F, 0x4A, 0x89, 0x84, 0xE7, 0x38, 0x0A, 0x00, 0x00};
-    constexpr std::uintptr_t kWheelMakerFrontRva = 0x14821B6;
-    // mov rax,[rcx+8]; mov [rbp-0x79],r15d; mov ecx,[rax+0x5B0]
-    constexpr std::uint8_t kWheelMakerFrontSignature[] = {
-        0x48, 0x8B, 0x41, 0x08, 0x44, 0x89, 0x7D, 0x87, 0x8B, 0x88, 0xB0, 0x05, 0x00, 0x00};
-    constexpr std::uintptr_t kWheelMakerRearRva = 0x14821ED;
-    // mov rax,[rdi+8]; mov ecx,[rax+0x5B4]
-    constexpr std::uint8_t kWheelMakerRearSignature[] = {0x48, 0x8B, 0x47, 0x08, 0x8B, 0x88, 0xB4, 0x05, 0x00, 0x00};
-    constexpr std::uintptr_t kWheelMakerPairRva = 0x1482215;
-    // mov eax,r12d; cdq; sub eax,edx; sar eax,1; jne (slot/2 == 0: the front model)
-    constexpr std::uint8_t kWheelMakerPairSignature[] = {0x41, 0x8B, 0xC4, 0x99, 0x2B, 0xC2, 0xD1, 0xF8, 0x75, 0x36};
+    // The wheel break: mov rcx,[rax+0xEE8]; mov r14,[rcx+r15*8+0xA38].
+    inline const sig::Signature kWheelBreakRead{"vehicle_wheel_break_read", kVehicleBreakOff, sig::Offset{0x3AD},
+        "48 8B 88 E8 0E 00 00 4E 8B B4 F9 38 0A 00 00", 0x1579835};
+    // The wheel maker: the front model (mov rax,[rcx+8]; mov [rbp-0x79],r15d;
+    // mov ecx,[rax+0x5B0]), the rear one (mov rax,[rdi+8]; mov ecx,[rax+0x5B4]),
+    // which of them (mov eax,r12d; cdq; sub eax,edx; sar eax,1; jne: slot/2 == 0
+    // is the front model) and the store (mov rcx,[rdi]; mov dl,[rcx+0x8C];
+    // mov [rax+0x8C],dl; lea rdx,[rbp-0x71]; mov [rdi+r12*8+0xA38],rax).
+    inline const sig::Signature kWheelMaker{"vehicle_wheel_maker",
+        "85 D2 0F 88 ?? ?? ?? ?? 48 89 5C 24 08 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 D9", 0x1482150};
+    inline const sig::Signature kWheelMakerFront{"vehicle_wheel_maker_front", kWheelMaker, sig::Offset{0x66},
+        "48 8B 41 08 44 89 7D 87 8B 88 B0 05 00 00", 0x14821B6};
+    inline const sig::Signature kWheelMakerRear{"vehicle_wheel_maker_rear", kWheelMaker, sig::Offset{0x9D},
+        "48 8B 47 08 8B 88 B4 05 00 00", 0x14821ED};
+    inline const sig::Signature kWheelMakerPair{"vehicle_wheel_maker_pair", kWheelMaker, sig::Offset{0xC5},
+        "41 8B C4 99 2B C2 D1 F8 75 36", 0x1482215};
+    inline const sig::Signature kWheelMakerStore{"vehicle_wheel_maker_store", kWheelMaker, sig::Offset{0x268},
+        "48 8B 0F 8A 91 8C 00 00 00 88 90 8C 00 00 00 48 8D 55 8F 4A 89 84 E7 38 0A 00 00", 0x14823B8};
 
-    // `matches(rva, bytes, size)` -> bool: the code at the module's rva.
-    template <typename Matches>
-    inline bool WheelLayoutProven(Matches&& matches)
+    // `found(signature)` -> bool: the signature is in the game.
+    template <typename Found>
+    inline bool WheelLayoutProven(Found&& found)
     {
-        return matches(kWheelBreakReadRva, kWheelBreakReadSignature, sizeof(kWheelBreakReadSignature)) &&
-            matches(kWheelMakerStoreRva, kWheelMakerStoreSignature, sizeof(kWheelMakerStoreSignature)) &&
-            matches(kWheelMakerFrontRva, kWheelMakerFrontSignature, sizeof(kWheelMakerFrontSignature)) &&
-            matches(kWheelMakerRearRva, kWheelMakerRearSignature, sizeof(kWheelMakerRearSignature)) &&
-            matches(kWheelMakerPairRva, kWheelMakerPairSignature, sizeof(kWheelMakerPairSignature));
+        return found(kWheelBreakRead) && found(kWheelMakerStore) && found(kWheelMakerFront) && found(kWheelMakerRear) &&
+            found(kWheelMakerPair);
     }
 
     struct WheelRead
@@ -279,34 +267,30 @@ namespace replay::vehicle_pieces
     }
 
     // ---- playback: a recorded child that is one of its vehicle's own wheels ----
-    // A wagon's wheel objects hang on the vehicle at its wheel bones; a ped near
-    // the wagon gets them recorded as attached objects (POSE_V2_VEHICLE_CHILD,
-    // 1171-Blackwater 62:192, 65:193, 99:194, 108:196 of 1:2). They are the
-    // vehicle's own parts, made by its wheel maker from its model's wheel models
-    // (model info +0x5B0 front, +0x5B4 rear) and drawn with its colours; the
-    // vehicle puppet makes its own when the engine wants them (only near the
-    // camera: a far puppet has none yet). As the recording keeps a vehicle's
-    // wheels with the vehicle, such a child is decided from the vehicle's
-    // model, never from the live puppet: it has no object of its own while it is
-    // attached to the recorded vehicle at the playhead, and the puppet keeps that
-    // wheel (the part track's wheel bit is not applied: in 1171 the wheels went
-    // "destroyed" at 66.7 s while their objects stayed on the wagon, drawn, to
-    // the end of the recording). Once the record has left the vehicle (its
-    // attachment ended), the part track and the loose wheel path apply as before.
-    // The model info is [entity+0x20] (offline, build 1491.50: the vehicle tint
-    // setter reads it at 0x10F56B5 and its colour count at +0x260 at 0x52CBF4).
+    // A wagon's wheel objects hang on the vehicle and get recorded as attached
+    // objects of a nearby ped, but they are the vehicle's own parts, made by the
+    // engine only near the camera. So such a child is decided from the vehicle's
+    // model, never from the live puppet: while it is attached to the recorded
+    // vehicle at the playhead it has no object of its own and the puppet keeps
+    // that wheel (the part track's wheel bit is not applied). Once the record
+    // has left the vehicle, the part track and the loose wheel path apply.
+    // The model info is [entity+0x20] (offline: the vehicle tint setter reads
+    // it, then its colour count at +0x260).
+    // Research: docs/research/vehicles-pieces.md
     constexpr std::uintptr_t kEntityModelInfoOffset = 0x20;
-    constexpr std::uintptr_t kTintSetterModelInfoRva = 0x10F56B5;
-    // mov rsi,[rdi+0x20]; test rsi,rsi; je; mov rcx,rsi
-    constexpr std::uint8_t kTintSetterModelInfoSignature[] = {0x48, 0x8B, 0x77, 0x20, 0x48, 0x85, 0xF6, 0x74, 0x36, 0x48, 0x8B, 0xCE};
+    // The tint setter's read: mov rsi,[rdi+0x20]; test rsi,rsi; je; mov rcx,rsi.
+    inline const sig::Signature kTintSetter{"vehicle_tint_setter",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 8B EA 8B D9 E8 ?? ?? ?? ?? 41 B8 0F 00 00 00",
+        0x10F567C};
+    inline const sig::Signature kTintSetterModelInfo{"vehicle_tint_setter_model_info", kTintSetter, sig::Offset{0x39},
+        "48 8B 77 20 48 85 F6 74 36 48 8B CE", 0x10F56B5};
 
-    // `matches(rva, bytes, size)` -> bool: the code at the module's rva. The
-    // wheel models' offsets are the maker's (WheelLayoutProven).
-    template <typename Matches>
-    inline bool ModelInfoLayoutProven(Matches&& matches)
+    // `found(signature)` -> bool: the signature is in the game. The wheel
+    // models' offsets are the maker's (WheelLayoutProven).
+    template <typename Found>
+    inline bool ModelInfoLayoutProven(Found&& found)
     {
-        return matches(kTintSetterModelInfoRva, kTintSetterModelInfoSignature, sizeof(kTintSetterModelInfoSignature)) &&
-            WheelLayoutProven(matches);
+        return found(kTintSetterModelInfo) && WheelLayoutProven(found);
     }
 
     struct WheelModels

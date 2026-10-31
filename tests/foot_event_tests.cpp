@@ -41,37 +41,47 @@ namespace
 
     void TestSites()
     {
-        Check(sizeof(kEnqueueSignature) == 37 && kEnqueueSignature[0] == 0x48 && kEnqueueSignature[17] == 0xA7 &&
-                  kEnqueueSignature[18] == 0x05,
+        replay::sig::Pattern entry, store;
+        Check(replay::sig::Parse(kEnqueue.pattern, entry) && entry.size >= 37 && entry.bytes[0] == 0x48 &&
+                  entry.bytes[17] == 0xA7 && entry.bytes[18] == 0x05,
             "the entry's prologue (37 bytes) tests +0x5A7");
-        Check(CallTarget(kGeneratorCallRva, kGeneratorCallSignature) == kEnqueueRva,
-            "0x8ED457 calls 0x317A1D0 (the generator)");
-        Check(CallTarget(kDrainCallRva, kDrainCallSignature) == kEnqueueRva, "0x3193D96 calls 0x317A1D0 (the drain)");
-        Check(kGeneratorReturnRva == kGeneratorCallRva + 5 && kDrainReturnRva == kDrainCallRva + 5, "the returns");
-        Check(kEnqueueStoreRva > kEnqueueRva && kEnqueueStoreRva < kEnqueueRva + 0x16E, "the store inside the entry");
+        Check(kGeneratorCall.parent == &kGenerator && kDrainCall.parent == &kMovementUpdate &&
+                  std::string(kGeneratorCall.pattern).rfind("E8 ?? ?? ?? ?? ", 0) == 0 &&
+                  std::string(kDrainCall.pattern).rfind("E8 ?? ?? ?? ?? ", 0) == 0,
+            "the generator's and the drain's calls");
+        Check(kGeneratorCall.rva == 0x8ED457 && kDrainCall.rva == 0x3193D96 && kEnqueue.rva == 0x317A1D0,
+            "the sites of 1491.50");
+        Check(kEnqueueStore.parent == &kEnqueue && kEnqueueStore.at < 0x16E, "the store inside the entry");
         // The store writes +0xD4 (count) and +0xB4 (entries, 8 bytes each).
-        Check(kEnqueueStoreSignature[3] == (kQueueCountOffset & 0xFF) && kEnqueueStoreSignature[16] == (kQueueOffset & 0xFF),
+        Check(replay::sig::Parse(kEnqueueStore.pattern, store) && store.bytes[3] == (kQueueCountOffset & 0xFF) &&
+                  store.bytes[16] == (kQueueOffset & 0xFF),
             "the store's offsets are the queue's");
         Check(kQueueOffset + kQueueStride * kQueueMax == kQueueCountOffset, "four entries end at the count");
-        Check(OriginOf(kGeneratorReturnRva) == Origin::Generator && OriginOf(kDrainReturnRva) == Origin::Drain &&
-                  OriginOf(0x1234) == Origin::Other,
+        const CallReturns calls{kGeneratorCall.rva + 5, kDrainCall.rva + 5};
+        Check(OriginOf(0x8ED45C, calls) == Origin::Generator && OriginOf(0x3193D9B, calls) == Origin::Drain &&
+                  OriginOf(0x1234, calls) == Origin::Other && OriginOf(0, CallReturns{}) == Origin::Other,
             "origin by return address");
         Check(std::string(OriginName(Origin::Generator)) == "gen" && std::string(OriginName(Origin::Drain)) == "drain",
             "origin names");
 
-        // MotionSpeedReplay: the writer and the sound call the source.
+        // MotionSpeedReplay: the writer and the sound call the source (a call
+        // reached by Rel32 that lands on the source's own bytes).
         using namespace replay::pedaudiostate;
-        Check(sizeof(kMotionSpeedSourceSignature) == 29 && sizeof(kMotionSpeedWriterSignature) == 31,
+        replay::sig::Pattern source, writer, gait;
+        Check(replay::sig::Parse(kMotionSpeedSource.pattern, source) && source.size == 29 &&
+                  replay::sig::Parse(kMotionSpeedWriter.pattern, writer) && writer.size == 31,
             "the speed source's and the writer's signatures");
-        Check(CallTarget(kMotionSpeedWriterRva, kMotionSpeedWriterSignature) == kMotionSpeedSourceRva,
-            "0x8EC5BA calls 0x8AABCC");
-        Check(CallTarget(kMotionSpeedSoundRva, kMotionSpeedSoundSignature) == kMotionSpeedSourceRva,
-            "0x31A16D3 calls 0x8AABCC");
-        Check(CallTarget(kMotionSpeedWriterRva + 18, kMotionSpeedWriterSignature + 18) == 0x2521410,
+        const auto callsSource = [](const replay::sig::Signature& call, const replay::sig::Signature& site) {
+            return call.parent == &site && call.via == replay::sig::Via::Rel32 && call.at == 1 && call.end == 5 &&
+                call.rva == kMotionSpeedSource.rva && std::string(call.pattern) == kMotionSpeedSource.pattern;
+        };
+        Check(callsSource(kMotionWriterSource, kMotionSpeedWriter), "0x8EC5BA calls 0x8AABCC");
+        Check(callsSource(kMotionSoundSource, kMotionSpeedSound), "0x31A16D3 calls 0x8AABCC");
+        Check(kMotionSmoother.parent == &kMotionSpeedWriter && kMotionSmoother.at == 18 + 1 && kMotionSmoother.rva == 0x2521410,
             "the writer smooths through 0x2521410");
-        Check(kMotionSpeedWriterSignature[27] == (kMotionSpeedOffset & 0xFF) &&
-                  kMotionSpeedWriterSignature[28] == (kMotionSpeedOffset >> 8) &&
-                  kMotionGaitReadSignature[4] == (kMotionSpeedOffset & 0xFF) && kMotionGaitReadSignature[5] == (kMotionSpeedOffset >> 8),
+        Check(writer.bytes[27] == (kMotionSpeedOffset & 0xFF) && writer.bytes[28] == (kMotionSpeedOffset >> 8) &&
+                  replay::sig::Parse(kMotionGaitRead.pattern, gait) && gait.bytes[4] == (kMotionSpeedOffset & 0xFF) &&
+                  gait.bytes[5] == (kMotionSpeedOffset >> 8),
             "the writer and the gait read use +0x5DC");
         Check(kSpeedOffset == kMotionSpeedOffset, "the MOTION_STATE speed is the one the detour feeds");
         Check(kMaxMotionTargets >= 128, "room for every puppet");
@@ -213,14 +223,17 @@ namespace
         Check(IndirectField(0x800004002f49acull, field, container) && field == 0x04, "the puppet's: field 04");
         Check(!IndirectField(0x00000000deadbeefull, field, container), "a plain ref has no field");
 
+        // callers[2] of the three paths as the 1491.50 exe returns from them.
+        const StepCallers paths{kMainStepCall.rva + 5, kSecondaryStepCall.rva + 5, kWetLayerCall.rva + 5};
+        Check(paths.main == 0x318D25B && paths.secondary == 0x318D509 && paths.wet == 0x318D3A9, "the step paths");
         PathCounts c;
         Check(!c.Any(), "no requests");
-        c.Add(kMainStepCaller, 0x800006002f49acull);
-        c.Add(kSecondaryStepCaller, 0x800002002f49acull);
-        c.Add(kSecondaryStepCaller, 0x800002002f49acull);
-        c.Add(kSecondaryStepCaller, 0x800004002f49acull);
-        c.Add(kWetLayerCaller, 0x80000100299349aull);
-        c.Add(0x31942A2u, 0x1234u);
+        c.Add(paths, paths.main, 0x800006002f49acull);
+        c.Add(paths, paths.secondary, 0x800002002f49acull);
+        c.Add(paths, paths.secondary, 0x800002002f49acull);
+        c.Add(paths, paths.secondary, 0x800004002f49acull);
+        c.Add(paths, paths.wet, 0x80000100299349aull);
+        c.Add(paths, 0x31942A2u, 0x1234u);
         Check(c.requests == 6 && c.main == 1 && c.secondary == 3 && c.wet == 1 && c.other == 1, "paths");
         const std::string line = PathLine("rec", 30000, "0:1", c);
         Check(Has(line, "HORSE_STEP_PATHS,phase=rec,clip_ms=30000,owner=0:1,requests=6,main=1,secondary=3,wet=1,other=1,"

@@ -2,6 +2,8 @@
 
 #include "sun_control.h"
 
+#include "engine_sigs.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 
 #include <windows.h>
@@ -10,114 +12,132 @@
 
 namespace replay::sunctl
 {
+    using enginesig::kSkyUpdate;
+
     namespace
     {
-        // Build 1491.50 dump, disassembled. Every site below is checked
-        // before the object is read or written (a mismatch: no moon track).
-        // The update of the sky object:
-        //   0145781C  48 8B C4              mov rax, rsp
-        //   0145781F  48 89 58 08           mov [rax+8], rbx
-        //   01457823  48 89 70 10           mov [rax+10h], rsi
-        //   01457827  48 89 78 18           mov [rax+18h], rdi
-        //   0145782B  55                    push rbp
-        //   0145782C  41 56                 push r14
-        //   0145782E  41 57                 push r15
-        //   01457830  48 8D A8 18 FF FF FF  lea rbp, [rax-0E8h]
-        //   01457837  48 81 EC D0 01 00 00  sub rsp, 1D0h
-        constexpr std::uintptr_t kUpdateRva = 0x145781C;
-        constexpr std::uint8_t kUpdateSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x10, 0x48,
-            0x89, 0x78, 0x18, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0xA8, 0x18, 0xFF, 0xFF, 0xFF, 0x48, 0x81, 0xEC, 0xD0,
-            0x01, 0x00, 0x00};
-        // Its only caller, the thunk the update group runs (registered by
-        // the protected code at 0x64D84D0): the object is 0x4F3E4A0.
-        //   01472430  48 8D 0D 69 C0 AC 03  lea rcx, [0x4F3E4A0]
-        //   01472437  E9 E0 53 FE FF        jmp 0x145781C
-        constexpr std::uintptr_t kThunkRva = 0x1472430;
-        constexpr std::uint8_t kThunkSignature[] = {0x48, 0x8D, 0x0D, 0x69, 0xC0, 0xAC, 0x03, 0xE9, 0xE0, 0x53, 0xFE, 0xFF};
-        constexpr std::uintptr_t kObjectRva = 0x4F3E4A0;
+        namespace sig = replay::sig;
+
+        // Every site below is checked before the object is read or written
+        // (a mismatch: no moon track). The object: the sky group's setup
+        // passes it to the sky init (lea rcx, [object]; call). The update's
+        // only caller is a 12-byte thunk (lea rcx, [object]; jmp) too short
+        // to be found alone, so the update has its own anchor.
+        const sig::Signature kGroup{"sun_sky_group",
+            "48 83 EC 28 80 3D ?? ?? ?? ?? 00 74 3F E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 "
+            "8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ??",
+            0x1471E00};
+        const sig::Signature kObject{"sun_sky_object", kGroup, sig::Rel32{0x26, 0x2A}, "", 0x4F3E4A0};
+        const sig::Signature kSkyInit{"sun_sky_init", kGroup, sig::Rel32{0x2B, 0x2F},
+            "48 8B C4 48 89 58 08 57 48 83 EC 70 F3 0F 10 15 ?? ?? ?? ?? 48 8D 3D ?? ?? ?? ??", 0x1471E54};
+        const sig::Signature kUpdate{"sun_update",
+            "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 56 41 57 48 8D A8 18 FF FF FF 48 81 EC D0 01 00 00 0F "
+            "29 70 D8",
+            0x145781C};
         // The fields, each proven by an instruction of the update (rdi is
         // the object) or of the readers:
-        //   01457A6C  F3 0F 6F 57 50              movdqu xmm2, [rdi+50h]   (sun, horizon test)
-        //   01457A7D  0F 59 A7 60 02 00 00        mulps xmm4, [rdi+260h]   (moon, horizon test)
-        //   01457AE3  F2 0F 10 87 80 0A 00 00     movsd xmm0, [rdi+0A80h]  (moon turn angle)
-        //   01457AFD  F2 0F 11 87 80 0A 00 00     movsd [rdi+0A80h], xmm0
-        //   01457F26  0F 11 97 90 0A 00 00        movups [rdi+0A90h], xmm2 (sun, last write)
-        //   01458047  0F 11 97 A0 0A 00 00        movups [rdi+0AA0h], xmm2 (moon, last write)
-        //   005F817D  66 0F 6F 05 6B 63 94 04     movdqa xmm0, [0x4F3E4F0] (shadows: object+50h)
-        //   005F8187  66 0F 6F 05 71 65 94 04     movdqa xmm0, [0x4F3E700] (shadows: object+260h)
-        struct Site
-        {
-            std::uintptr_t rva;
-            std::uint8_t bytes[8];
-            std::size_t size;
-            const char* name;
-        };
-        const Site kSites[] = {
-            {0x1457A6C, {0xF3, 0x0F, 0x6F, 0x57, 0x50}, 5, "sun_read"},
-            {0x1457A7D, {0x0F, 0x59, 0xA7, 0x60, 0x02, 0x00, 0x00}, 7, "moon_read"},
-            {0x1457AE3, {0xF2, 0x0F, 0x10, 0x87, 0x80, 0x0A, 0x00, 0x00}, 8, "angle_read"},
-            {0x1457AFD, {0xF2, 0x0F, 0x11, 0x87, 0x80, 0x0A, 0x00, 0x00}, 8, "angle_write"},
-            // The moon's orbit angle, added to every frame and written back:
-            //   01457D96  F2 0F 58 87 E8 08 00 00     addsd xmm0, [rdi+8E8h]
-            //   01457DA3  F2 0F 11 87 E8 08 00 00     movsd [rdi+8E8h], xmm0
-            {0x1457D96, {0xF2, 0x0F, 0x58, 0x87, 0xE8, 0x08, 0x00, 0x00}, 8, "orbit_read"},
-            {0x1457DA3, {0xF2, 0x0F, 0x11, 0x87, 0xE8, 0x08, 0x00, 0x00}, 8, "orbit_write"},
-            {0x1457F26, {0x0F, 0x11, 0x97, 0x90, 0x0A, 0x00, 0x00}, 7, "sun_write"},
-            {0x1458047, {0x0F, 0x11, 0x97, 0xA0, 0x0A, 0x00, 0x00}, 7, "moon_write"},
-            {0x5F817D, {0x66, 0x0F, 0x6F, 0x05, 0x6B, 0x63, 0x94, 0x04}, 8, "shadow_sun"},
-            {0x5F8187, {0x66, 0x0F, 0x6F, 0x05, 0x71, 0x65, 0x94, 0x04}, 8, "shadow_moon"},
-            // Kept as a fingerprint of the build (they were the probe's): the
-            // constructor's stores of latitude and the day, and the sky
-            // update's reads of the timecycle's sun and moon.
-            //   014086F8  C7 81 DC 08 00 00 ...       mov [rcx+8DCh], 34.09
-            //   01408713  C7 81 F0 08 00 00 50 ...    mov [rcx+8F0h], 80
-            //   005F90A5  0F 28 05 64 FA 49 04        movaps xmm0, [0x4A98B10]
-            //   005F911B  0F 28 05 FE F9 49 04        movaps xmm0, [0x4A98B20]
-            {0x14086F8, {0xC7, 0x81, 0xDC, 0x08, 0x00, 0x00}, 6, "latitude_init"},
-            {0x1408713, {0xC7, 0x81, 0xF0, 0x08, 0x00, 0x00, 0x50}, 7, "day_init"},
-            {0x5F90A5, {0x0F, 0x28, 0x05, 0x64, 0xFA, 0x49, 0x04}, 7, "timecycle_sun"},
-            {0x5F911B, {0x0F, 0x28, 0x05, 0xFE, 0xF9, 0x49, 0x04}, 7, "timecycle_moon"},
-        };
+        //   movdqu xmm2, [rdi+50h]   (sun, horizon test)
+        //   mulps xmm4, [rdi+260h]   (moon, horizon test)
+        //   movsd xmm0, [rdi+0A80h]  (moon turn angle), and its store
+        //   addsd xmm0, [rdi+8E8h]   (the moon's orbit angle, added to every
+        //                             frame and written back)
+        //   movups [rdi+0A90h], xmm2 (sun, last write)
+        //   movups [rdi+0AA0h], xmm2 (moon, last write)
+        const sig::Signature kSunRead{"sun_read", kUpdate, sig::Offset{0x250}, "F3 0F 6F 57 50", 0x1457A6C};
+        const sig::Signature kMoonRead{"sun_moon_read", kUpdate, sig::Offset{0x261}, "0F 59 A7 60 02 00 00", 0x1457A7D};
+        const sig::Signature kAngleRead{"sun_angle_read", kUpdate, sig::Offset{0x2C7},
+            "F2 0F 10 87 80 0A 00 00", 0x1457AE3};
+        const sig::Signature kAngleWrite{"sun_angle_write", kUpdate, sig::Offset{0x2E1},
+            "F2 0F 11 87 80 0A 00 00", 0x1457AFD};
+        const sig::Signature kOrbitRead{"sun_orbit_read", kUpdate, sig::Offset{0x57A},
+            "F2 0F 58 87 E8 08 00 00", 0x1457D96};
+        const sig::Signature kOrbitWrite{"sun_orbit_write", kUpdate, sig::Offset{0x587},
+            "F2 0F 11 87 E8 08 00 00", 0x1457DA3};
+        const sig::Signature kSunWrite{"sun_write", kUpdate, sig::Offset{0x70A}, "0F 11 97 90 0A 00 00", 0x1457F26};
+        const sig::Signature kMoonWrite{"sun_moon_write", kUpdate, sig::Offset{0x82B},
+            "0F 11 97 A0 0A 00 00", 0x1458047};
+        // The shadows read the object's sun (+50h) and moon (+260h) by
+        // address: movdqa xmm0, [rip] twice.
+        const sig::Signature kShadows{"sun_shadows", "66 0F 6F 05 ?? ?? ?? ?? EB 08 66 0F 6F 05 ?? ?? ?? ??", 0x5F817D};
+        const sig::Signature kShadowSun{"sun_shadow_sun", kShadows, sig::Rel32{0x04, 0x08}, "", 0x4F3E4F0};
+        const sig::Signature kShadowMoon{"sun_shadow_moon", kShadows, sig::Rel32{0x0E, 0x12}, "", 0x4F3E700};
+        // Kept as a fingerprint of the build (they were the probe's): the
+        // constructor's stores of latitude (+8DCh) and the day (+8F0h, 80),
+        // and the sky update's reads of the timecycle's sun and moon (two
+        // movaps xmm0, [rip], 0x10 apart).
+        const sig::Signature kInit{"sun_latitude_day_init",
+            "C7 81 DC 08 00 00 29 5C 08 42 C7 81 E0 08 00 00 7B 14 BD C2 4C 89 99 E8 08 00 00 C7 81 F0 08 00 00 50 00 "
+            "00 00",
+            0x14086F8};
+        const sig::Signature kTimecycleSunRead{"sun_timecycle_sun_read", kSkyUpdate, sig::Offset{0xA65},
+            "0F 28 05 ?? ?? ?? ??", 0x5F90A5};
+        const sig::Signature kTimecycleSun{"sun_timecycle_sun", kTimecycleSunRead, sig::Rel32{0x03, 0x07}, "",
+            0x4A98B10};
+        const sig::Signature kTimecycleMoonRead{"sun_timecycle_moon_read", kSkyUpdate, sig::Offset{0xADB},
+            "0F 28 05 ?? ?? ?? ??", 0x5F911B};
+        const sig::Signature kTimecycleMoon{"sun_timecycle_moon", kTimecycleMoonRead, sig::Rel32{0x03, 0x07}, "",
+            0x4A98B20};
+
         constexpr std::uintptr_t kSun = 0xA90;
         constexpr std::uintptr_t kMoon = 0xAA0;
         constexpr std::uintptr_t kMoonAngle = 0xA80;
         constexpr std::uintptr_t kMoonOrbit = 0x8E8;
+        constexpr std::uintptr_t kShadowSunField = 0x50;
+        constexpr std::uintptr_t kShadowMoonField = 0x260;
 
-        std::uintptr_t g_base = 0;
         std::uintptr_t g_object = 0;
         int g_resolved = 0; // 0 not tried, 1 ok, -1 mismatch
         const char* g_resolveError = "";
-
-        bool Matches(std::uintptr_t rva, const std::uint8_t* bytes, std::size_t size)
-        {
-            return replay::mem::Matches(reinterpret_cast<const void*>(g_base + rva), bytes, size);
-        }
 
         bool Resolve()
         {
             if (g_resolved)
                 return g_resolved > 0;
-            g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
             g_resolved = -1;
-            if (!Matches(kUpdateRva, kUpdateSignature, sizeof(kUpdateSignature)))
+            if (!sig::Find(kSkyInit))
+            {
+                g_resolveError = "sky_group_signature_mismatch";
+                return false;
+            }
+            if (!sig::Find(kUpdate))
             {
                 g_resolveError = "update_signature_mismatch";
                 return false;
             }
-            if (!Matches(kThunkRva, kThunkSignature, sizeof(kThunkSignature)))
+            const std::uintptr_t object = sig::Find(kObject);
+            const std::uintptr_t timecycleSun = sig::Find(kTimecycleSun);
+            // A site found, and for a read by address the object (or the
+            // timecycle's sun) it must reach.
+            struct Site
             {
-                g_resolveError = "thunk_signature_mismatch";
-                return false;
-            }
-            for (const Site& site : kSites)
+                bool ok;
+                const char* name; // the log's
+            };
+            const Site sites[] = {
+                {sig::Find(kSunRead) != 0, "sun_read"},
+                {sig::Find(kMoonRead) != 0, "moon_read"},
+                {sig::Find(kAngleRead) != 0, "angle_read"},
+                {sig::Find(kAngleWrite) != 0, "angle_write"},
+                {sig::Find(kOrbitRead) != 0, "orbit_read"},
+                {sig::Find(kOrbitWrite) != 0, "orbit_write"},
+                {sig::Find(kSunWrite) != 0, "sun_write"},
+                {sig::Find(kMoonWrite) != 0, "moon_write"},
+                {object && sig::Find(kShadowSun) == object + kShadowSunField, "shadow_sun"},
+                {object && sig::Find(kShadowMoon) == object + kShadowMoonField, "shadow_moon"},
+                {sig::Find(kInit) != 0, "latitude_init"},
+                {sig::Find(kInit) != 0, "day_init"},
+                {timecycleSun != 0, "timecycle_sun"},
+                {timecycleSun && sig::Find(kTimecycleMoon) == timecycleSun + 0x10, "timecycle_moon"},
+            };
+            for (const Site& site : sites)
             {
-                if (!Matches(site.rva, site.bytes, site.size))
+                if (!site.ok)
                 {
                     g_resolveError = site.name;
                     return false;
                 }
             }
-            g_object = g_base + kObjectRva;
+            g_object = object;
             g_resolved = 1;
             return true;
         }

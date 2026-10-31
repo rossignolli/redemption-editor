@@ -35,8 +35,9 @@ around you in Story Mode (people, horses, wagons, trains, guns, props, explosion
 plays it all back the way it happened. Then you get to be the director: drop cameras anywhere, cut between shots, add
 smooth camera moves, slow motion and depth of field, and export the whole thing as a video with the game's own sound.
 
-Under the hood it is three small binaries: a Script Hook RDR2 script that records and plays back, a ReShade add-on, and
-an editor core that draws the interface and runs the video export. A replay is not a video: it's a stream of engine
+Under the hood it is a few small binaries: a Script Hook RDR2 script that records and plays back, an editor core that
+draws the interface and runs the video export, and two ways to put that editor on screen: the mod's own overlay (no
+ReShade needed) or a ReShade add-on, for those who already use ReShade. A replay is not a video: it's a stream of engine
 state (skeleton poses straight from the engine's pose finalizer, transforms, appearance, events) that gets put back on
 inert puppets while the replay owns the world. This page is the player's quick start and the contributor's map of the
 code. If you just want to play, the [Nexus page](https://www.nexusmods.com/reddeadredemption2/mods/11299) is the
@@ -109,8 +110,8 @@ It's free software under GPL-3.0. Read it, learn from it, break it, improve it.
   1440p and 4K.
 - **Replay Settings** grouped as Recording, Playback, Storage and Interface, with an **Interface scale** from 80 to
   125%.
-- 13 languages that follow the game's language. **F1** lists every key of the screen you're on; every key can be
-  changed in `RedemptionEditor.ini`.
+- 14 languages that follow the game's language (Turkish, which the game lacks: `Language=tr`). **F1** lists every
+  key of the screen you're on; every key can be changed in `RedemptionEditor.ini`.
 - **Easy bug reports:** **Shift+F2** marks a moment, **Shift+F1** packs the log, your marks and those clips into one
   ZIP.
 
@@ -142,22 +143,64 @@ The editor in game, at 4K (click for full size).
 
 ## Install
 
-1. Install [Script Hook RDR2](http://www.dev-c.com/rdr2/scripthookrdr2/) and [ReShade](https://reshade.me) **with
-   full add-on support** for `RDR2.exe`.
+1. Install [Script Hook RDR2](http://www.dev-c.com/rdr2/scripthookrdr2/).
 2. Download the ZIP from [GitHub Releases](https://github.com/rossignolli/redemption-editor/releases/latest) or
    [Nexus Mods](https://www.nexusmods.com/reddeadredemption2/mods/11299) and copy everything inside it into the game
    folder (the one with `RDR2.exe`).
-3. Start Story Mode, press **Shift+F4** to save the last 60 seconds, then **F2** to open the editor.
+3. Set the game to **Vulkan** (Settings > Graphics > Graphics API).
+4. Start Story Mode, press **Shift+F4** to save the last 60 seconds, then **F2** to open the editor.
+
+That's all: **ReShade is optional.** The editor draws itself on Vulkan through its own overlay
+(`RedemptionEditor\host\`, a Vulkan layer the mod turns on for the game only: nothing goes in the registry or
+outside the game folder). Your ReShade effects, if you use them, still show and still end up in the exported video.
+
+**Who draws the editor** is the `Host` line of `RedemptionEditor.ini`:
+
+| `Host=` | What happens |
+|---|---|
+| `auto` (default) | The mod's own overlay draws the editor. When ReShade with full add-on support and `RedemptionEditor.addon64` is installed, ReShade draws it instead, as in earlier versions. |
+| `native` | Always the mod's own overlay, even with ReShade and the add-on installed. |
+| `reshade` | Only through ReShade and the add-on; the own overlay stays off. |
+
+It is read when the game starts. **Vulkan is recommended.** On DirectX 12 the editor works through ReShade and the
+add-on as before; the own overlay has a DirectX 12 path too, but it has not been tested in game yet, so if you play on
+DirectX 12 without ReShade, please tell us in an issue how it went.
+
+**Using ReShade for the editor (optional).** The add-on needs the ReShade download with full add-on support; the
+standard ReShade download loads no add-ons (the own overlay then draws the editor, so F2 still works).
+
+1. On [reshade.me](https://reshade.me), click **"Download ReShade 6.8.x with full add-on support"** (the second
+   button, not the first). Already have ReShade? Reinstall it with this one; your presets and shaders stay.
+2. In the installer pick `RDR2.exe`, then the **same API the game uses** (Settings > Graphics > Graphics API). For
+   the video export, use Vulkan.
+3. That's it: the add-on loads by itself when the game starts, nothing to enable in the ReShade menu. On Vulkan,
+   ReShade installs to `C:\ProgramData\ReShade` instead of the game folder, so no `dxgi.dll` next to `RDR2.exe` is
+   normal.
+
+**F2 does nothing?** Check that the `RedemptionEditor\host\` folder (with `RedemptionEditorHost.dll` and
+`RedemptionEditorHost.json`) is in the game folder, that `Host` is not set to `reshade`, and that the game runs on
+Vulkan; the own overlay writes `RedemptionEditor\host.log`. When neither the overlay nor the add-on loaded, the mod
+tells you why on screen once the game is playable, and again when you press F2 (the log's `RESHADE_CHECK` line says
+the same). If you use ReShade for the editor, `ReShade.log` in the game folder says it too; search it for
+`RedemptionEditor`:
+
+| `ReShade.log` says | What to do |
+|---|---|
+| `Loading add-on from ...RedemptionEditor.addon64` | The add-on loaded. Check that `RedemptionEditorCore.dll` is next to `RDR2.exe`. |
+| `Skipped loading add-on ... only limited add-on functionality` | You have the standard ReShade. Reinstall it with the **full add-on support** download. |
+| nothing about it | ReShade is not running for `RDR2.exe`, or is set to the wrong API. Reinstall it for `RDR2.exe` with the API the game uses. |
+
+Turned it off in the ReShade menu (Home > Add-ons)? Tick Redemption Editor again and restart the game.
 
 **Requirements**
 
 
 | | |
 |---|---|
-| Game | Red Dead Redemption 2 on PC, build **1.0.1491.50**. Tested on Steam; the Epic Games Store and Rockstar Games Launcher versions should work too, so tell us in an issue how it went. |
+| Game | Red Dead Redemption 2 on PC, build **1.0.1491.50**. Tested on Steam; the Epic Games Store and Rockstar Games Launcher versions should work too, so tell us in an issue how it went. On another build the mod looks for the game code it needs at start, and a feature whose code it can't find turns itself off (the log's `SIG_SUMMARY` line says which; [docs/signatures.md](docs/signatures.md)). |
 | Script Hook RDR2 | by Alexander Blade (`ScriptHookRDR2.dll` and its `dinput8.dll` ASI loader). |
-| ReShade | **6.6.2 to 6.8.x with full add-on support.** Without it the mod still records (F4, Shift+F4) and plays the last clip (F7), but the editor and the export don't open. |
-| Graphics API | **Vulkan or DirectX 12.** Recording, playback and the editor work on both; the **video export needs Vulkan**. |
+| ReShade | **Optional.** On Vulkan the mod's own overlay draws the editor. To have ReShade draw it instead: 6.6.2 to 6.8.x, the "full add-on support" download. |
+| Graphics API | **Vulkan recommended.** Recording, playback, the editor and the video export work on Vulkan, with or without ReShade. On DirectX 12, recording and playback work, and the editor works through ReShade with the add-on; the own overlay's DirectX 12 path is not tested in game yet. The **video export needs Vulkan**. |
 
 **Game in Program Files?** Nothing to change. Windows doesn't let the game write to `C:\Program Files` (the
 Rockstar Games Launcher's default, and Steam's `C:\Program Files (x86)`), so the mod checks at start and, when the game
@@ -171,7 +214,8 @@ let the new `RedemptionEditor.ini` replace yours. Your clips and projects stay.
 **Open source:** the full source is right here, so anyone can read it and build the mod themselves.
 
 **Uninstall:** delete `RedemptionEditor.asi`, `RedemptionEditor.addon64`, `RedemptionEditorCore.dll`,
-`RedemptionEditor.ini`, the `RedemptionEditor.*log` files and the `RedemptionEditor\` folder from the game folder.
+`RedemptionEditor.ini`, the `RedemptionEditor.*log` files and the `RedemptionEditor\` folder (it holds the own overlay
+in `host\`) from the game folder.
 Your recordings live in `ReplayClips\` and `ReplayProjects\` (in the game folder, or in
 `Documents\Rockstar Games\Red Dead Redemption 2\Redemption Editor` when the game folder is read only); delete them,
 `ReplayReports\`, `ReplayDebug\` and `%LOCALAPPDATA%\RedemptionEditor` too if you don't want them anymore.
@@ -194,9 +238,10 @@ flowchart TB
       detours["Detours (MinHook)<br/>signature checked,<br/>forward every call"]
       workers["Workers<br/>pose encoder, clip save,<br/>clip read, compression"]
     end
-    subgraph reshade["ReShade 6.6.2 to 6.8.x"]
+    subgraph present["One of: the own overlay (default) or ReShade 6.6.2 to 6.8.x"]
       direction TB
-      loader["RedemptionEditor.addon64<br/>loader, hot swaps the core"]
+      host["RedemptionEditorHost.dll<br/>Vulkan layer (D3D12 path untested),<br/>input, ImGui, loads the core"]
+      loader["RedemptionEditor.addon64<br/>ReShade add-on, loads the core"]
       core["RedemptionEditorCore.dll<br/>ImGui editor, export capture,<br/>libav encoder"]
     end
   end
@@ -208,19 +253,21 @@ flowchart TB
   detours -- "ring buffers" --> script
   script --> workers
   workers <--> disk
+  host --> core
   loader --> core
   script <== "EditorBridge: Snapshot + Command ring" ==> core
   script <== "ExportChannel: tick stamps" ==> core
   core --> video
 ```
 
-### Three binaries, one game
+### Four binaries, one game
 
 | Binary | Project | Runs in | Job |
 |---|---|---|---|
 | `RedemptionEditor.asi` | `ReplayProbe.vcxproj` (`main.cpp`, `script.cpp`, `src/`) | Script Hook RDR2's script thread | recording, playback, the free camera, the world takeover, clip files |
-| `RedemptionEditor.addon64` | `ReplayEditorLoader.vcxproj` (`editor/editor_loader.cpp`) | ReShade | loads a copy of the core, forwards ReShade's events, swaps the copy between two frames when the file changes |
-| `RedemptionEditorCore.dll` | `ReplayEditor.vcxproj` (`editor/`) | ReShade's overlay and present callbacks | the ImGui editor and the video export (`editor/render_export/`, FFmpeg's libav in process) |
+| `RedemptionEditor\host\RedemptionEditorHost.dll` | `RedemptionEditorHost.vcxproj` (`host/`) | the game's Vulkan device, as a layer the ASI enables for this process (`src/host_layer_env.h`) | the editor's own overlay: implements the part of ReShade's `reshade::api` the core uses with ReShade's own Vulkan and D3D12 code, its own input and ImGui, loads and hot swaps the core; one owner per process (`Host=auto` leaves the editor to the add-on when ReShade loaded it) |
+| `RedemptionEditor.addon64` | `ReplayEditorLoader.vcxproj` (`editor/editor_loader.cpp`) | ReShade (optional) | loads a copy of the core, forwards ReShade's events, swaps the copy between two frames when the file changes |
+| `RedemptionEditorCore.dll` | `ReplayEditor.vcxproj` (`editor/`) | the overlay and present callbacks of the host or of ReShade | the ImGui editor and the video export (`editor/render_export/`, FFmpeg's libav in process) |
 
 The ASI and the core never call each other. They talk through two named shared memory blocks per game process:
 
@@ -230,8 +277,8 @@ The ASI and the core never call each other. They talk through two named shared m
   open a clip, export). Both sides check a magic, a transport version, an API version, the struct size and the process
   id, and refuse a mismatch, so an ASI and a core from different builds never misread each other.
 - **The export channel** (`src/export_channel.h`). During an export the ASI runs a fixed step export clock and writes
-  one `TickStamp` per tick; the core captures each presented frame at the overlay point (the game and ReShade
-  effects, before the editor UI), matches it to its stamp, accumulates motion blur samples in a compute shader and
+  one `TickStamp` per tick; the core captures each presented frame at the overlay point (the game and any ReShade
+  effects, before the editor UI; the own overlay sits below ReShade's layer, so it sees the effects too), matches it to its stamp, accumulates motion blur samples in a compute shader and
   queues finished frames to the encoder. When the queue is full it blocks the present: with a fixed timestep, a wait
   changes nothing in the picture. The audio is a second, real time pass muxed in at the end.
 
@@ -240,13 +287,16 @@ The ASI and the core never call each other. They talk through two named shared m
 Every feature uses the lowest rung that works (details in [docs/architecture.md](docs/architecture.md)):
 
 1. **Natives** through Script Hook RDR2, on the script thread.
-2. **Guarded reads** of engine fields whose layout was proven for build 1.0.1491.50, inside SEH (`src/guarded_memory.h`).
+2. **Guarded reads** of engine fields whose layout is in the bytes of a checked signature, inside SEH
+   (`src/guarded_memory.h`).
 3. **Guarded writes** of plain fields, only on objects the replay owns (its puppets, their weapons, its ropes).
-4. **Calls to engine functions**, only after the function's first bytes match the expected signature at its RVA.
-5. **Detours** (MinHook), with the same signature check. A detour forwards every call to the original and changes
+4. **Calls to engine functions** found by signature (`src/game_sig.h`): the function's own bytes, with only the
+   address bytes left out, checked at its known address on 1.0.1491.50 and searched once on any other build.
+5. **Detours** (MinHook), on functions found the same way. A detour forwards every call to the original and changes
    behaviour only for replay entities, or for the world while the replay owns it.
 
-A signature mismatch turns that feature off and logs it; nothing ever falls back to a guessed address. Detours never
+A signature not found exactly once turns its feature off and logs it; nothing ever falls back to a guessed address
+([docs/signatures.md](docs/signatures.md)). Detours never
 call natives: they copy what they need into a ring buffer the script thread reads on its next tick. Enabling hooks
 freezes every game thread for 60 to 160 ms, so they are queued and applied in one batch (`src/hook_batch.h`). The main
 detours:
@@ -336,7 +386,7 @@ Each internal function is checked at its RVA before use, and a mismatch turns th
 | Script thread (Script Hook's fiber on the game's main thread) | every native call, recording, playback, the transport, the free camera |
 | Engine threads, inside detours | copies into ring buffers, never a native |
 | ASI workers | pose encoder and discovery, clip save and read, background compression, deferred log writer, crash dump writer |
-| ReShade's render thread | the editor UI and the export capture; reads the snapshot, writes commands, never touches engine state |
+| The render thread (the own overlay's or ReShade's present) | the editor UI and the export capture; reads the snapshot, writes commands, never touches engine state |
 | Core workers | encoder, audio capture, file finisher, thumbnail decoding |
 
 Every thread the mod creates is named (`src/thread_names.h`), so a crash log or minidump says whose thread faulted.
@@ -352,6 +402,7 @@ More in [docs/architecture.md](docs/architecture.md).
 | `src/` | the mod: recorder (`replay_capture.*`, `replay_recording.h`), pose capture and codec (`pose_capture.*`, `pose_stream.*`, `pose_playback.*`), clip files (`clip_file.*`, `clip_pack.*`, `clip_compress*`), playback (`replay_playback.*`, `replay_events.*`, `replay_objects.*`), world takeover (`world_*`), detours (`*_hook.cpp`, `*_observer.cpp`), the editor bridge and export channel, the ini (`ini_public.h`, `mod_identity.h`) and translations (`i18n.h`) |
 | `src/*_core.h`, `*_rules.h` | pure logic without natives, unit tested |
 | `editor/` | the ReShade add-on loader (`editor_loader.cpp`) and the editor core (`replay_editor_addon.cpp`, `ui_art.h`, `display_font.h`...) |
+| `host/` | the editor's own overlay (`RedemptionEditorHost.dll`): Vulkan layer (`vk/`), D3D12 hooks (`d3d12/`), input, ImGui renderer, core loader, and the third party headers it needs (`third_party/`: glad, VMA, DirectX-Headers) |
 | `editor/render_export/` | the export: GPU capture and accumulation (`gpu_export.*`, `shaders/`), the libav encoder (`libav_encoder.*`), audio loopback |
 | `editor/lang/` | the interface languages (`en.lang` is generated, the others are translations) |
 | `editor/ui/`, `editor/fonts/` | the painted interface art and the title font |
@@ -401,7 +452,8 @@ msbuild RedemptionEditor.sln /p:Configuration=Release /p:Platform=x64 /m
 
 Outputs go to `bin\Release\`: `RedemptionEditor.asi`, `RedemptionEditor.addon64`, `RedemptionEditorCore.dll` with its
 `RedemptionEditor\` folder (FFmpeg DLLs, fonts, art, languages), `ReplayCoreTests.exe`, `ReplayClipTool.exe` and
-`ReplayEditorUiTests.exe`. Don't use `/t:Rebuild` with a custom `OutDir` (its clean step can delete an earlier build's
+`ReplayEditorUiTests.exe`; the own overlay goes to `bin\Release\host\` (`RedemptionEditorHost.dll` and
+`RedemptionEditorHost.json`, which go in the game's `RedemptionEditor\host\`). Don't use `/t:Rebuild` with a custom `OutDir` (its clean step can delete an earlier build's
 files there); use `/t:Build`.
 
 **Public and developer builds.** Same sources, two flavors:
@@ -428,6 +480,8 @@ The log's `CONFIG_BUILD` line says which flavor runs. Details: [docs/release/ini
 - **The core:** the add-on loads a copy of `RedemptionEditorCore.dll` and swaps it between two frames when the file
   changes, so you can rebuild the core with the game running.
 - **The add-on** (`RedemptionEditor.addon64`) is read by ReShade only at game start: changing it needs a restart.
+- **The own overlay** (`RedemptionEditorHost.dll`) is loaded by the Vulkan loader when the game starts: changing it
+  needs a restart. It hot swaps the core like the add-on does.
 - If you change the editor protocol (`kApiVersion`, `kSharedTransportVersion`), reload the ASI and the core together:
   each refuses the other's old layout.
 
@@ -484,7 +538,8 @@ Contributions are welcome, from a translation fix to a new detour. The full guid
 ## Translations
 
 The interface speaks English, Brazilian Portuguese, Spanish (Spain and Latin America), French, German, Italian,
-Polish, Russian, Japanese, Korean and Chinese (Simplified and Traditional), and follows the game's language.
+Polish, Russian, Japanese, Korean, Chinese (Simplified and Traditional) and Turkish, and follows the game's
+language (the game has no Turkish: `Language=tr` in `RedemptionEditor.ini` picks it).
 
 Every player facing text goes through `TR("key", "English")` in the code. `editor/lang/en.lang` is generated from it by
 `py tools\i18n\lang_table.py --write`, and each translation is `editor/lang/<code>.lang`, a plain `key = text` file.
@@ -507,14 +562,16 @@ welcome.
   themselves off.
 - **A replay takes over the world**, and your latest save loads when you leave. Save first.
 - **Missions are left alone:** the world is only hidden, so some mission characters or props can show up.
-- **The video export needs Vulkan** and ReShade 6.8 or older.
+- **The video export needs Vulkan** (and ReShade 6.8 or older when ReShade draws the editor).
+- **DirectX 12 without ReShade** is not tested in game yet: the own overlay has a DirectX 12 path, but Vulkan is the
+  one we recommend.
 - **Water** is not recorded: the game's own water runs in the replay.
 - **Props from other mods** placed before a replay are cleared when it starts; props placed during it stay.
 - **A rare `ERROR: FFFFFFFF`** while the game reloads your save after a replay, mostly when the PC is low on memory.
   Your clips are safe.
 - **Clips can get big:** a minute in a busy town can take a few hundred MB before the background compression.
-- **Clips are tied to the game build** they were recorded on, and clips from a newer version of the mod may not open
-  in an older one.
+- **Clips from another game build open**, but what the mod can't find on your build (a sound, an effect) is left
+  out. Clips from a newer version of the mod may not open in an older one.
 - **Other script mods** that change characters or the world can clash with a replay.
 - **A read only game folder:** clips an earlier version saved there open, but the editor can't rename or delete them;
   a change to one is saved as a copy in the Documents folder.
@@ -533,7 +590,7 @@ Shift+F1, and it only leaves your PC if you attach it somewhere yourself.
 ## Credits and acknowledgements
 
 - **Alexander Blade**, for Script Hook RDR2.
-- **crosire**, for ReShade and its add-on API.
+- **crosire**, for ReShade, its add-on API, and the Vulkan and D3D12 code the mod's own overlay is built on.
 - **crxhvrd**, for Simple Camera and REPlus, which inspired the free camera and the spline blends.
 - The RDR2 research community, especially **alloc8or**'s native database and **femga**'s rdr3_discoveries.
 - **EVER Enhanced**, whose in process FFmpeg approach the export follows.

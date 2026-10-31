@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <thread>
 
 namespace
 {
@@ -433,6 +434,51 @@ namespace
         Check(!TryPopSharedCommand(*transport, popped, pid), "queue empty again");
         Check(!ConsumeSharedCommandOverflow(*transport), "no overflow from the holes");
     }
+
+    // The snapshot seqlock with the probe publishing on one thread and the
+    // editor reading on another: every snapshot the reader accepts is one
+    // the probe wrote whole (three fields tied to its sequence, far apart).
+    void TestSnapshotUnderPublish()
+    {
+        constexpr std::uint32_t pid = 4343;
+        auto transport = std::make_unique<SharedTransport>();
+        InitializeSharedTransport(*transport, pid, 21);
+        auto source = std::make_unique<Snapshot>();
+        auto read = std::make_unique<Snapshot>();
+        std::atomic<bool> done{false};
+        std::thread publisher([&]() {
+            for (std::uint64_t n = 1; n <= 20000; ++n)
+            {
+                source->sequence = n;
+                source->playheadMs = n * 3 + 1;
+                source->durationMs = ~n;
+                PublishSharedSnapshot(*transport, *source, pid);
+                if ((n & 7) == 0)
+                    std::this_thread::yield(); // some reads finish between publishes, most overlap one
+            }
+            done.store(true);
+        });
+        std::uint64_t accepted = 0, mixed = 0, last = 0, backwards = 0;
+        while (!done.load())
+        {
+            if (!ReadSharedSnapshot(*transport, *read, pid))
+                continue;
+            ++accepted;
+            const std::uint64_t n = read->sequence;
+            if (n != 0 && (read->playheadMs != n * 3 + 1 || read->durationMs != ~n))
+                ++mixed;
+            if (n < last)
+                ++backwards;
+            last = n;
+        }
+        publisher.join();
+        Check(mixed == 0, "snapshot: no copy mixing two publishes is accepted");
+        Check(backwards == 0, "snapshot: accepted snapshots never go back in time");
+        Check(ReadSharedSnapshot(*transport, *read, pid) && read->sequence == 20000 && read->durationMs == ~20000ull,
+            "snapshot: the last publish reads whole");
+        Check(read->structSize == sizeof(Snapshot) && read->version == kApiVersion, "snapshot: the header is stamped");
+        std::printf("    snapshot seqlock: %llu reads accepted during 20000 publishes\n", static_cast<unsigned long long>(accepted));
+    }
 }
 
 int RunLifecycleTests()
@@ -442,6 +488,7 @@ int RunLifecycleTests()
     TestDetourDrain();
     TestStripedCounter();
     TestTransportResetDuringSubmit();
+    TestSnapshotUnderPublish();
     if (g_lifecycleFailures == 0)
         std::printf("lifecycle tests passed\n");
     return g_lifecycleFailures;

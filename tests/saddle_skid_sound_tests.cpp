@@ -104,15 +104,23 @@ namespace
     void TestPortRule()
     {
         using replay::puppetaudio::BlockPuppetCreate;
+        // The speech controller's two calls as the 1491.50 exe returns from them.
+        const replay::puppetaudio::SpeechControllerCallers controller{0x2FA10CFu, 0x2FA0DCCu};
         // 038: the line's own sound at 0x2FA0DCC, while the line played.
-        Check(!BlockPuppetCreate(true, true, false, false, 0x2FA0DCCu) && !BlockPuppetCreate(true, true, false, false, 0x2FA10CFu),
+        Check(!BlockPuppetCreate(true, true, false, false, 0x2FA0DCCu, controller) &&
+                !BlockPuppetCreate(true, true, false, false, 0x2FA10CFu, controller),
             "port: the speech's sound controller is never refused");
         // 038's extra: John's own loop through the persistent wrapper.
-        Check(BlockPuppetCreate(true, true, false, false, 0x2588C2Fu), "port: a puppet's own create is refused");
-        Check(!BlockPuppetCreate(true, true, true, false, 0x2588C2Fu), "port: the replay's own (ReplayEmitScope) passes");
-        Check(!BlockPuppetCreate(true, true, false, true, 0x318E828u), "port: a replayed footstep or melee call passes");
-        Check(!BlockPuppetCreate(true, false, false, false, 0x2588C2Fu), "port: an audio entity of no puppet passes");
-        Check(!BlockPuppetCreate(false, true, false, false, 0x2588C2Fu), "port: legacy refuses nothing new");
+        Check(BlockPuppetCreate(true, true, false, false, 0x2588C2Fu, controller),
+            "port: a puppet's own create is refused");
+        Check(!BlockPuppetCreate(true, true, true, false, 0x2588C2Fu, controller),
+            "port: the replay's own (ReplayEmitScope) passes");
+        Check(!BlockPuppetCreate(true, true, false, true, 0x318E828u, controller),
+            "port: a replayed footstep or melee call passes");
+        Check(!BlockPuppetCreate(true, false, false, false, 0x2588C2Fu, controller),
+            "port: an audio entity of no puppet passes");
+        Check(!BlockPuppetCreate(false, true, false, false, 0x2588C2Fu, controller),
+            "port: legacy refuses nothing new");
         using replay::census::OwnerClass;
         Check(owner::PortsBlockClass(OwnerClass::Player) && owner::PortsBlockClass(OwnerClass::Ped) &&
                 owner::PortsBlockClass(OwnerClass::Animal) && owner::PortsBlockClass(OwnerClass::Horse),

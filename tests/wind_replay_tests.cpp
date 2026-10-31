@@ -25,33 +25,48 @@ namespace
 
     bool Has(const std::string& line, const char* part) { return line.find(part) != std::string::npos; }
 
+    // The size of a signature's pattern (0 for a global).
+    std::size_t PatternSize(const replay::sig::Signature& s)
+    {
+        replay::sig::Pattern pattern;
+        return replay::sig::Parse(s.pattern, pattern) ? pattern.size : 0;
+    }
+
+    bool PatternStarts(const replay::sig::Signature& s, const char* text)
+    {
+        return std::string(s.pattern).rfind(text, 0) == 0;
+    }
+
     void TestSites()
     {
         std::set<std::string> names;
+        const std::size_t gate = PatternSize(kGate);
         for (const Site& site : kSites)
         {
-            Check(site.size > 0 && site.size <= sizeof(site.bytes), "site size");
+            Check(site.name && site.signature, "site");
             Check(names.insert(site.name).second, "site names are unique");
             // Nothing of the gate's prologue (hooked by this module) is a
             // site: once the detour is in, those bytes are its jump.
-            Check(site.rva + site.size <= kGateRva || site.rva >= kGateRva + sizeof(kGateSignature), "no site on the hooked prologue");
+            const std::uint32_t rva = site.signature->rva;
+            Check(rva + PatternSize(*site.signature) <= kGate.rva || rva >= kGate.rva + gate,
+                "no site on the hooked prologue");
         }
-        Check(SiteIndex("gate_call") < kSiteCount && SiteIndex("simple_stamp") < kSiteCount, "site lookup");
-        Check(sizeof(kGateSignature) >= 5, "the signature covers the detour's jump");
-        Check(kWeatherGateReturnRva == kWeatherGateCallRva + 5, "return address after the call");
-        Check(kWeatherRva + kWindLinePrev == 0x5C95104u && kWeatherRva + kWindLineNext == 0x5C95108u,
-            "wind rows' weather index (0x31CF393)");
-        Check(kWeatherRva + kWindStrength == 0x5C94FB4u, "wind strength W+0x4F44");
-        Check(kWeatherRva + kSimpleStamp == 0x5C95114u, "simple path stamp W+0x50A4");
+        Check(kSiteCount == 20, "the twenty sites");
+        Check(gate >= 5, "the signature covers the detour's jump");
+        Check(PatternStarts(kGateCall, "E8 ?? ?? ?? ?? 84 C0 0F 84") && kGateCallLength == 5,
+            "call; test al,al; je: the return address after the call");
+        Check(PatternStarts(kGateArgs, "41 B8 78 00 00 00") && kGateMask == 0x78, "mov r8d,0x78");
+        Check(PatternStarts(kSimple, "8B D5 89 AE A4 50 00 00") && kSimpleStamp == 0x50A4, "mov [rsi+0x50A4],ebp");
+        // The globals the runtime check makes agree, on the addresses declared.
+        Check(kLinePrev.rva == kWeather.rva + kWindLinePrev && kLineNext.rva == kWeather.rva + kWindLineNext,
+            "wind rows' weather index (W+0x5094, W+0x5098)");
+        Check(kLinePrevIndex.rva == kWeatherPrev.rva && kLineNextIndex.rva == kWeatherNext.rva,
+            "the rows compare with the weather indices the pre-update reads");
+        Check(0x1980 + 0x35C4 == kWindStrength, "block + strength");
         // The gate is not one of the sound ports any detour of the project
         // hooks (two detours on one prologue would chain on MinHook's terms).
         for (const auto& port : replay::soundfx::kPorts)
-            Check(port.rva != kGateRva, "the gate is not a sound port");
-        // Bytes the site table holds match the game binary (spot check).
-        const Site& call = kSites[SiteIndex("gate_call")];
-        Check(call.bytes[7] == 0xE8 && call.bytes[12] == 0x84 && call.bytes[13] == 0xC0 && call.bytes[14] == 0x0F &&
-                call.bytes[15] == 0x84,
-            "call; test al,al; je");
+            Check(port.rva != kGate.rva, "the gate is not a sound port");
     }
 
     void TestGate()
@@ -60,10 +75,13 @@ namespace
         Check(SceneFresh(1000, 1000) && SceneFresh(1000, 1000 + kSceneStaleMs), "fresh scene");
         Check(!SceneFresh(1000, 1001 + kSceneStaleMs), "stale scene");
         Check(!SceneFresh(2000, 1000), "a clock that went back is not fresh");
-        Check(AskScene(kWeatherGateReturnRva, 5000, 5100), "the weather pre-update's call asks about the scene");
-        Check(!AskScene(kOtherGateReturnRva, 5000, 5100), "the other audio update keeps the live player");
-        Check(!AskScene(0x1363C9Cu, 5000, 5100), "any other caller keeps its own position");
-        Check(!AskScene(kWeatherGateReturnRva, 0, 5100), "outside the replay: the live player");
+        const std::uintptr_t weatherReturn = 0x7FF600000000ull + kGateCall.rva + kGateCallLength;
+        Check(AskScene(weatherReturn, weatherReturn, 5000, 5100), "the weather pre-update's call asks about the scene");
+        Check(!AskScene(weatherReturn + 0x2E464, weatherReturn, 5000, 5100),
+            "the other audio update keeps the live player");
+        Check(!AskScene(0x7FF601363C9Cull, weatherReturn, 5000, 5100), "any other caller keeps its own position");
+        Check(!AskScene(weatherReturn, weatherReturn, 0, 5100), "outside the replay: the live player");
+        Check(!AskScene(weatherReturn, 0, 5000, 5100), "no pre-update found: the live player");
         Check(std::string(SceneSourceName(SceneSource::Puppet)) == "puppet" &&
                 std::string(SceneSourceName(SceneSource::Camera)) == "camera" &&
                 std::string(SceneSourceName(SceneSource::Focus)) == "focus" &&

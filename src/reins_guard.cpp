@@ -1,6 +1,6 @@
 #include "reins_guard.h"
 
-#include "guarded_memory.h"
+#include "game_sig.h"
 #include "hook_batch.h"
 #include "module_lifetime.h"
 #include "profiler.h"
@@ -15,36 +15,20 @@ namespace replay::reins
 {
     namespace
     {
-        // Build 1491.50: 0x702F78(ctrl). Prologue: mov [rsp+8],rbx; push rdi;
-        // sub rsp,30h; mov edx,[rcx+70h]; mov rdi,rcx; mov eax,edx;
-        // shr eax,0Eh; test al,1; jne (offline dump).
-        constexpr std::uintptr_t kRestoreRva = 0x702F78;
-        constexpr std::uint8_t kRestoreSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08,       // mov [rsp+8], rbx
-            0x57,                               // push rdi
-            0x48, 0x83, 0xEC, 0x30,             // sub rsp, 30h
-            0x8B, 0x51, 0x70,                   // mov edx, [rcx+70h]
-            0x48, 0x8B, 0xF9,                   // mov rdi, rcx
-            0x8B, 0xC2,                         // mov eax, edx
-            0xC1, 0xE8, 0x0E,                   // shr eax, 0Eh
-            0xA8, 0x01,                         // test al, 1
-            0x0F,                               // jne (rel32)
-        };
-        // 0x6B2C00(ctrl, holder, mode). Prologue:
-        // mov [rsp+8],rbx; mov [rsp+10h],rbp; mov [rsp+18h],rsi; push rdi;
-        // push r14; push r15; sub rsp,30h; mov r9,[rcx+28h]; xor r15d,r15d;
-        // mov ebx,r8d (offline dump).
-        constexpr std::uintptr_t kHoldRva = 0x6B2C00;
-        constexpr std::uint8_t kHoldSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08,       // mov [rsp+8], rbx
-            0x48, 0x89, 0x6C, 0x24, 0x10,       // mov [rsp+10h], rbp
-            0x48, 0x89, 0x74, 0x24, 0x18,       // mov [rsp+18h], rsi
-            0x57, 0x41, 0x56, 0x41, 0x57,       // push rdi; push r14; push r15
-            0x48, 0x83, 0xEC, 0x30,             // sub rsp, 30h
-            0x4C, 0x8B, 0x49, 0x28,             // mov r9, [rcx+28h]
-            0x45, 0x33, 0xFF,                   // xor r15d, r15d
-            0x41, 0x8B, 0xD8,                   // mov ebx, r8d
-        };
+        namespace sig = replay::sig;
+
+        // The put-back (ctrl). Prologue: mov [rsp+8],rbx; push rdi; sub rsp,30h;
+        // mov edx,[rcx+70h]; mov rdi,rcx; mov eax,edx; shr eax,0Eh; test al,1;
+        // jne.
+        const sig::Signature kReinsRestore{"reins_restore",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 8B F9 8B C2 C1 E8 0E A8 01 0F 85 ?? ?? ?? ??",
+            0x702F78};
+        // The hold mode setter (ctrl, holder, mode). Prologue: mov [rsp+8],rbx;
+        // mov [rsp+10h],rbp; mov [rsp+18h],rsi; push rdi; push r14; push r15;
+        // sub rsp,30h; mov r9,[rcx+28h]; xor r15d,r15d; mov ebx,r8d.
+        const sig::Signature kReinsHold{"reins_hold",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 18 57 41 56 41 57 48 83 EC 30 4C 8B 49 28 45 33 FF 41 8B D8",
+            0x6B2C00};
         constexpr std::uint64_t kCtrlOwner = 0x10;  // the horse side object
         constexpr std::uint64_t kOwnerRope = 0x7A0; // its reins rope instance
         constexpr std::size_t kMaxOwned = 128;      // ropes::kEngineRopePoolCapacity (followed ropes are engine ropes)
@@ -155,10 +139,10 @@ namespace replay::reins
                 original(ctrl, holder, mode, r9);
         }
 
-        bool InstallHold(std::uint8_t* base, std::string& error)
+        bool InstallHold(std::string& error)
         {
-            void* target = base + kHoldRva;
-            if (!replay::mem::Matches(target, kHoldSignature, sizeof(kHoldSignature)))
+            void* target = reinterpret_cast<void*>(sig::Find(kReinsHold));
+            if (!target)
             {
                 error = "reins_hold_signature_mismatch";
                 return false;
@@ -192,9 +176,8 @@ namespace replay::reins
     {
         if (g_installed)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* target = base + kRestoreRva;
-        if (!replay::mem::Matches(target, kRestoreSignature, sizeof(kRestoreSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kReinsRestore));
+        if (!target)
         {
             error = "reins_restore_signature_mismatch";
             return false;
@@ -228,7 +211,7 @@ namespace replay::reins
         if (g_holdWanted && !g_holdInstalled)
         {
             std::string holdError;
-            if (!InstallHold(base, holdError))
+            if (!InstallHold(holdError))
                 error = holdError;
         }
         return true;

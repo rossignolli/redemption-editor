@@ -1,59 +1,24 @@
 #pragma once
 
-// A rider puppet follows where its mount puppet really is in the drawn frame
-// (MountPreRender in the ini, default 0), and every puppet is written back to
+// A rider puppet's follow of where its mount puppet really is in the drawn
+// frame is measured only (no write), and every puppet is written back to
 // its placement at the end of the frame (FrameEnd).
 //
-// The galloping horse puppet is a physics body (for the plants); the engine
-// moves it 4 to 11 cm off our placement while the frozen rider stays where
-// the recording put him. As a replay editor usually does, the child follows
-// its parent in the same frame and the entities are written at the very end
-// of the frame so nothing overrides them.
+// Why: the galloping horse puppet is a physics body (for the plants) and the
+// engine moves it 4 to 11 cm off our placement while the frozen rider stays
+// put. A detour on the ped pre-render (vtable slot +0x258, the last per-entity
+// step before the draw) sets the rider to the mount's transform at that moment
+// composed with the recorded rider-in-mount offset of this tick. Only replay
+// pairs published this tick are touched; every other ped goes straight to the
+// original. Both copies of a ped's transform (entity matrix and the fragment
+// skeleton's parent matrix) are written.
 //
-// Mechanism: a detour on the ped pre-render, the last per-entity step
-// before the frame is drawn. At a rider puppet's pre-render, before the
-// original runs, the rider's transform is set to the mount puppet's
-// transform at that moment composed with the recorded rider-in-mount
-// offset of this tick (child follows parent). A horse that was not moved
-// gives the recorded rider placement back (no write); a pushed horse
-// carries its rider along. Only replay pairs the playback published this
-// tick are touched; every other ped goes straight to the original.
-//
-// Engine layout (build 1491.50):
-// - Ped vtable 0x342EB80: the only .rdata vtable whose +0xB8 slot is the
-//   ped fragment getter (skeleton_walk.h kPedGetter); it shares the entity
-//   and physical slots with the vehicle vtables. Horses use it too (their
-//   skeleton walk classifies as ped).
-// - Slot +0x258 = 0xCC9698 (.pdata start, no direct caller, only that
-//   vtable slot points at it): the same slot as the vehicle pre-render
-//   (0x14B5E00 / 0x14B5B84 -> 0x15AD298).
-//   It is called by the pre-render list loops 0x5C2D60, 0x5C2E70 and
-//   0x5C2F48 (one call per listed entity, the argument says whether the
-//   entity was visible in the main viewport this frame), which run inside
-//   the job 0x5C2C3C over six entity lists. The body reads the entity's
-//   final position (+0x70, cells) for its lighting probe. No position
-//   encoder (0x68C654, 0x179DF4) is reached from it in five levels of
-//   direct calls (virtual calls not followed): it does not move the ped.
-// - Entity matrix +0x40 right, +0x50 forward, +0x60 up, +0x70 position
-//   remainder with the 32 m cell indices (int16 x, y) in the w lane:
-//   GET_ENTITY_MATRIX 0xF9744C and the position encoder 0x68C654 (cell =
-//   truncation of position / 32 toward zero, z kept whole).
-// - A ped's skeleton is the fragment one (fragment_path=1); its parent
-//   matrix is [cacheEntry+0xE8]+0x40 (0x29727E8), the physics instance
-//   matrix, written by 0x179DF4 with the same layout. So a ped has two
-//   copies of its transform; both are written here.
-// - The order "physics, then script, then pre-render, then draw" (pre-render
-//   the last step of the update) is a hypothesis for RDR2. The evidence
-//   fields below show whether the horse is already off its placement at the
-//   pre-render (the jolt is drawn and this follow removes it) or only later
-//   (the jolt is never drawn and the next-tick detector counts something the
-//   screen did not show).
-//
-// Rungs: 5 (detour with a 32-byte prologue signature, the vtable slot and
-// the ped getter checked at load, forwards every call, acts only on replay
-// riders) and 3 (guarded writes of the rider puppet's two matrices, offline
-// layout). The detour never calls a native; the script thread publishes the
-// pairs and reads the evidence back.
+// Rungs: 5 (detour by signature, vtable slot and ped getter checked at load,
+// forwards every call) and 3 (guarded writes of the two rider matrices). The
+// detour never calls a native; the script thread publishes the pairs and reads
+// the evidence back. The update order around the pre-render is a hypothesis
+// that the evidence fields measure.
+// Research: docs/research/horse-tack-mount.md
 //
 // The pure part (matrix decode and encode with cells, the rigid offset, the
 // follow plan, the evidence totals and log lines) is mount_placement_core.cpp,
@@ -76,18 +41,7 @@ namespace replay::playback
 namespace replay::mount
 {
     // ------------------------------------------------------------------
-    // Offline layout (build 1491.50).
-    constexpr std::uintptr_t kPedPreRenderRva = 0xCC9698;
-    constexpr std::uint8_t kPedPreRenderSignature[] = {
-        0x48, 0x8B, 0xC4,                         // mov rax, rsp
-        0x48, 0x89, 0x58, 0x10,                   // mov [rax+10h], rbx
-        0x55, 0x56, 0x57,                         // push rbp, rsi, rdi
-        0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, // push r12..r15
-        0x48, 0x8D, 0x68, 0xA1,                   // lea rbp, [rax-5Fh]
-        0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00, // sub rsp, 0B0h
-        0x4C, 0x8B, 0x05,                         // mov r8, [rip+...] (the displacement is not compared)
-    };
-    constexpr std::uintptr_t kPedVtableRva = 0x342EB80;
+    // Layout.
     constexpr std::size_t kPreRenderSlot = 0x258;
     constexpr std::size_t kFragmentGetterSlot = 0xB8;
     constexpr std::size_t kEntityMatrixOffset = 0x40; // 64 bytes: four float4 rows
@@ -372,13 +326,8 @@ namespace replay::mount
     // ------------------------------------------------------------------
     // Mod part (mount_placement.cpp, ReplayProbe only).
 
-    // MountPreRender in the ini (default 0): 1 writes the follow; 0 only
-    // measures (the same reads, no write).
-    void SetEnabled(bool on);
-    bool Enabled();
-    // FrameEnd in the ini (default: JitterFix, 1). 1 publishes every placed
-    // puppet for the end-of-frame write above; 0: riders only,
-    // MountPreRender decides.
+    // FrameEnd in the ini (default 1). 1 publishes every placed
+    // puppet for the end-of-frame write above; 0: riders only, measured.
     void SetFrameEnd(bool on);
     bool FrameEnd();
     // For the summary line (the physics filter is replay_playback's).

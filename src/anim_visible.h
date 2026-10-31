@@ -1,47 +1,42 @@
 #pragma once
 
-// The engine's own "animate as if visible" byte of a ped.
+// The engine's own "animate as if visible" byte of a ped (the ped graphics
+// component's +0x4A8, kAnimVisibleTest).
 //
-// Every frame the pre-render builder 0x56F4B8 calls 0x8F0740 for each ped it
-// pre-renders. 0x8F0740 decides whether the ped is visible for the animation:
-// one of its visibility stamps (+0x102, +0x103, +0x104) equals the frame tag
-// [0x4A468F5], or the ped graphics component's byte +0x4A8 is set (0x8F0991),
-// or the mount or attach parent is visible, or a global animscene state is on.
-// It then calls 0x2BD410C(anim director, lod = component+0x4A0, visible),
-// whose tail 0x2BD413C stores the creature component's effective LOD
-// (+0xAF) = visible ? lod : 3. A change of it reaches the expressions
-// component (message 0xE, 0x2BD036C -> 0x295560C): an expression stays on
-// only while its LOD range [+0x81, +0x82] holds the LOD (0x290F864). Off
-// screen the LOD is 3 and every expression that stops below 3 (face rig, hat
-// fit, brim springs, manes) is off: its rows stay unwritten (0xFFFFFFFF
-// lanes) and the finalizer 0x266C294 takes the bind pose (measured: +530 to
-// +810 rows per human, +661 per horse, +280 per dog).
+// Off screen the anim director gets LOD 3 and every expression that stops
+// below 3 (face rig, hat fit, brim springs, manes) is off, so its rows stay
+// unwritten and the finalizer takes the bind pose. With this byte set the
+// visibility test says visible and the ped is fully animated off screen. The
+// engine sets it only from the pedshot slot setter, together with
+// always-prerender and a LOD multiplier of 100; neither of those two alone
+// fixes visibility.
 //
-// The byte is written only by the component's constructor (0, 0x886669) and
-// by the pedshot slot setter 0x5E6A78 (1 on assign, 0 on release, together
-// with always-prerender and a LOD multiplier of 100): the engine's recipe for
-// a ped fully animated off screen. SET_PED_LOD_MULTIPLIER only feeds the
-// requested LOD (component+0x49C -> 0x8F0AD4 -> +0x4A0): it fixes distance,
-// not visibility; SET_ENTITY_ALWAYS_PRERENDER only puts the ped in the
-// pre-render set (0x8F0740 runs, visible stays false).
-//
-// Layout (build 1491.50):
-//   entity type byte +0x30 == 4 (ped);
-//   slot = (u32 [ped+0x9C] & 0x1FFFF) - u32 [base+0x39ECE40];
-//   row = u64 [base+0x39ECE48] + slot * 0x148;
-//   component = u64 [row+0x98] & ~1 (0: none);
-//   check: (u64 [component+8] & ~0xF) == ped.
-// The two table globals are runtime .data of this build.
+// Component lookup (bytes of kComponentRead and kVisibilityTest): entity type
+// byte +0x30 == 4, slot from [ped+0x9C], row stride 0x148, component
+// [row+0x98] & ~1, checked by ([component+8] & ~0xF) == ped.
+// Evidence: offline dump.
+// Research: docs/research/peds-puppets.md
 //
 // Pure: the reads go through a callable, unit tested in tests/scenery_speech_tests.cpp.
+
+#include "engine_sigs.h"
 
 #include <cstddef>
 #include <cstdint>
 
 namespace replay::animvisible
 {
-    constexpr std::uintptr_t kComponentBaseIndexRva = 0x39ECE40;
-    constexpr std::uintptr_t kComponentTableRva = 0x39ECE48;
+    // The visibility test (this = the graphics component, its ped at +8 &
+    // ~0xF), reached from the builder's call, and its read of the byte: the
+    // offset the recording writes.
+    inline const sig::Signature kVisibilityTest{"visibility_test", enginesig::kComponentRead, sig::Rel32{0x3E, 0x42},
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 55 41 56 41 57 48 83 EC 40 48 8B 71 08 4C 8B F1 "
+        "48 8B 15 ?? ?? ?? ?? 48 83 E6 F0 45 32 C9 45 32 D2 41 BD 01 00 00 00 8B 86 9C 00 00 00 25 FF FF 01 00 2B 05 "
+        "?? ?? ?? ?? 4C 69 C0 48 01 00 00 49 8B 84 10 B8 00 00 00",
+        0x8F0740};
+    inline const sig::Signature kAnimVisibleTest{"anim_visible_test", kVisibilityTest, sig::Offset{0x251},
+        "41 80 BE A8 04 00 00 00", 0x8F0991};
+
     constexpr std::size_t kEntityTypeOffset = 0x30;
     constexpr std::uint8_t kEntityTypePed = 4;
     constexpr std::size_t kComponentHandleOffset = 0x9C;
@@ -57,9 +52,9 @@ namespace replay::animvisible
     // The graphics component of `ped` (0 when the chain does not hold).
     // read(address, out, size) -> bool: a guarded read.
     template <typename Read>
-    std::uintptr_t GraphicsComponent(std::uintptr_t base, std::uintptr_t ped, Read read)
+    std::uintptr_t GraphicsComponent(const enginesig::Pool& pool, std::uintptr_t ped, Read read)
     {
-        if (!base || !ped)
+        if (!pool.Found() || !ped)
             return 0;
         std::uint8_t type = 0;
         if (!read(ped + kEntityTypeOffset, &type, sizeof(type)) || type != kEntityTypePed)
@@ -68,8 +63,8 @@ namespace replay::animvisible
         std::uint32_t baseIndex = 0;
         std::uintptr_t table = 0;
         if (!read(ped + kComponentHandleOffset, &handle, sizeof(handle)) ||
-            !read(base + kComponentBaseIndexRva, &baseIndex, sizeof(baseIndex)) ||
-            !read(base + kComponentTableRva, &table, sizeof(table)) || !table)
+            !read(pool.baseIndex, &baseIndex, sizeof(baseIndex)) ||
+            !read(pool.table, &table, sizeof(table)) || !table)
         {
             return 0;
         }

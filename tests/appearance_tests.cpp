@@ -423,10 +423,6 @@ namespace
     void TestCameraBits()
     {
         using namespace replay::camcut;
-        Check(ModeFromIni(nullptr) == Mode::Bits && ModeFromIni("") == Mode::Bits && ModeFromIni("BITS") == Mode::Bits &&
-                ModeFromIni("clearbits") == Mode::Bits && ModeFromIni("Params") == Mode::Params &&
-                ModeFromIni("legacy") == Mode::Legacy,
-            "camera: plan B is the default, params and legacy by name");
         Check(std::string(ModeName(Mode::Bits)) == "bits", "camera: the mode's name");
         Check(ClearedCutBits(0x00C3) == 0x0003 && ClearedCutBits(0x0040) == 0 && ClearedCutBits(0x0100) == 0x0100,
             "camera: only the cut bits go");
@@ -435,7 +431,11 @@ namespace
         const float other[3] = {-2369.63f, -2388.54f, 63.53f};
         Check(CamObjectIsOurs(same, want, 0x00C0) && !CamObjectIsOurs(other, want, 0x00C0) && !CamObjectIsOurs(same, want, 0x0080),
             "camera: the object written is the camera just placed (position and the position bit)");
-        Check(sizeof(kCamLookup) == 103 && kCamLookup[0] == 0x48 && kCamLookup[102] == 0xC3, "camera: the lookup's body");
+        Check(kCameraLookup.parent == &kCameraSetCoord && kCameraLookup.via == replay::sig::Via::Rel32 &&
+                  std::string(kCameraLookup.pattern).rfind("48 83 EC 28", 0) == 0,
+            "camera: the lookup, reached from SET_CAM_COORD's call, its body checked");
+        Check(std::string(kCameraCoordCutBit.pattern).find("66 83 8B EC 00 00 00 40") != std::string::npos,
+            "camera: the cut bit the replay clears is SET_CAM_COORD's or of 0x40 at +0xEC");
     }
 
     void TestQaKind()

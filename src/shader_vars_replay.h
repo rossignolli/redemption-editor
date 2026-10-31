@@ -37,9 +37,6 @@ namespace replay::muscles
     void TickPlay(std::uint32_t timeMs);
     void EndPlay();
 
-    // Outside the replay, every script tick: MuscleDebugForce on the player's
-    // horse (developer test of cause; nothing when the key is 0).
-    void TickLive(bool playing);
 
     // Unload: the detour goes.
     void Shutdown();

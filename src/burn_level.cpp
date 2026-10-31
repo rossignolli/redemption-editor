@@ -1,4 +1,6 @@
 #include "burn_level.h"
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 
 #include <windows.h>
@@ -11,12 +13,14 @@ namespace replay::burn
 {
     namespace
     {
+        namespace sig = replay::sig;
+
         // Entity +0x28: draw handler; +0x30: entity type byte (4 = ped).
         constexpr std::uintptr_t kEntityDrawHandler = 0x28;
         constexpr std::uintptr_t kEntityType = 0x30;
         constexpr std::uint8_t kTypePed = 4;
         // Draw handler +0x18: shader effect (fire path); ped draw handler
-        // +0x748 -> +0xC0: the ped's effect (resolver 0x558244).
+        // +0x748 -> +0xC0: the ped's effect (the mask resolver below).
         constexpr std::uintptr_t kHandlerEffect = 0x18;
         constexpr std::uintptr_t kHandlerPedData = 0x748;
         constexpr std::uintptr_t kPedDataEffect = 0xC0;
@@ -28,36 +32,48 @@ namespace replay::burn
         constexpr std::uintptr_t kBlockIntensity = 0x24;
         constexpr std::uintptr_t kBlockOpacity = 0x28;
 
-        // The block getter every effect class with a block has at +0x88:
-        // `jmp 0x6FCB3C1` (the protected text), where `mov rax, [rcx+0x18]`.
-        constexpr std::uintptr_t kBlockGetterRva = 0x3090A4;
-        constexpr std::uint8_t kBlockGetterSignature[] = {0xE9, 0x18, 0x23, 0xCC, 0x06};
-        constexpr std::uintptr_t kBlockGetterBodyRva = 0x6FCB3C1;
-        constexpr std::uint8_t kBlockGetterBodySignature[] = {0x48, 0x8B, 0x41, 0x18};
-        // Level setter and getter (movss [rcx+0x1C], xmm1 / movss xmm0, [rcx+0x1C]).
-        constexpr std::uintptr_t kLevelSetterRva = 0x6FD2E4;
-        constexpr std::uint8_t kLevelSetterSignature[] = {0xF3, 0x0F, 0x11, 0x49, 0x1C, 0xC3};
-        constexpr std::uintptr_t kLevelGetterRva = 0xB00950;
-        constexpr std::uint8_t kLevelGetterSignature[] = {0xF3, 0x0F, 0x10, 0x41, 0x1C, 0xC3};
-        // The fire's burnable entity update 0x12BD608 at 0x12BD7A9: entity
-        // +0x28, +0x18, call [rax+0x88].
-        constexpr std::uintptr_t kFirePathRva = 0x12BD7A9;
-        constexpr std::uint8_t kFirePathSignature[] = {
-            0x48, 0x8B, 0x47, 0x28, 0x0F, 0x5C, 0xFB, 0x48, 0x8B, 0x78, 0x18, 0x0F, 0x59, 0x7B, 0x40, 0x0F,
-            0x58, 0xFB, 0x48, 0x85, 0xFF, 0x0F, 0x84, 0x8F, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x07, 0x48, 0x8B,
-            0xCF, 0xFF, 0x90, 0x88, 0x00, 0x00, 0x00};
-        // The resolver 0x558244 at 0x558284: type byte 4, [dh+0x748], +0xC0,
+        // The block getter every effect class with a block has at +0x88: a
+        // jump into the protected text, where `mov rax, [rcx+0x18]`. The
+        // effect vtables hold the jump; the code calls the same (folded)
+        // getter directly too: a caller of it is the anchor.
+        const sig::Signature kBurnBlockCaller{"burn_block_caller",
+            "48 89 5C 24 08 57 48 83 EC 20 E8 ?? ?? ?? ?? 48 8B C8 48 8B F8 33 DB E8 ?? ?? ?? ??", 0x1520F88};
+        const sig::Signature kBurnBlockGetter{"burn_block_getter", kBurnBlockCaller, sig::Rel32{0x18, 0x1C},
+            "E9 ?? ?? ?? ??", 0x3090A4};
+        const sig::Signature kBurnBlockGetterBody{"burn_block_getter_body", kBurnBlockGetter, sig::Rel32{1, 5},
+            "48 8B 41 18", 0x6FCB3C1};
+        // The fire's burnable entity update: entity +0x28, +0x18, call
+        // [rax+0x88]; then it calls the level setter (movss [rcx+0x1C], xmm1).
+        const sig::Signature kBurnFireUpdate{"burn_fire_update",
+            "48 8B C4 48 89 58 08 48 89 70 18 57 48 83 EC 60 48 8B 79 68 48 8B D9 0F 29 70 E8 0F 29 78 D8 44 0F 29 40 C8 "
+            "44 0F 28 C1",
+            0x12BD608};
+        const sig::Signature kBurnFirePath{"burn_fire_path", kBurnFireUpdate, sig::Offset{0x1A1},
+            "48 8B 47 28 0F 5C FB 48 8B 78 18 0F 59 7B 40 0F 58 FB 48 85 FF 0F 84 ?? ?? ?? ?? 48 8B 07 48 8B CF FF 90 88 "
+            "00 00 00",
+            0x12BD7A9};
+        const sig::Signature kBurnLevelSetter{"burn_level_setter", kBurnFireUpdate, sig::Rel32{0x21B, 0x21F},
+            "F3 0F 11 49 1C C3", 0x6FD2E4};
+        // The vehicle's burn update reads the level through the getter (movss
+        // xmm0, [rcx+0x1C]).
+        const sig::Signature kBurnVehicleUpdate{"burn_vehicle_update",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 48 83 EC 40 48 8B 59 20 41 8A E8 0F 29 70 E8 48 8B F9 0F 29 "
+            "78 D8 0F 28 F9",
+            0x15D5978};
+        const sig::Signature kBurnLevelGetter{"burn_level_getter", kBurnVehicleUpdate, sig::Rel32{0xE2, 0xE6},
+            "F3 0F 10 41 1C C3", 0xB00950};
+        // The entity mask natives' resolver: type byte 4, [dh+0x748], +0xC0,
         // object +0x3C8, else +0x28 -> +0x18, then call [rax+0x88].
-        constexpr std::uintptr_t kResolverRva = 0x558284;
-        constexpr std::uint8_t kResolverSignature[] = {
-            0x80, 0x7A, 0x30, 0x04, 0x75, 0x2E, 0x48, 0x39, 0x5A, 0x28, 0x74, 0x14, 0x48, 0x8B, 0xCA, 0xE8,
-            0x08, 0x0B, 0xE0, 0xFF, 0x48, 0x8B, 0x0F, 0x48, 0x8B, 0x90, 0x48, 0x07, 0x00, 0x00, 0xEB, 0x06,
-            0x48, 0x8B, 0xD3, 0x48, 0x8B, 0xCB, 0x48, 0x85, 0xD2, 0x74, 0x39, 0x48, 0x8B, 0x8A, 0xC0, 0x00,
-            0x00, 0x00, 0xEB, 0x2D, 0x84, 0xC0, 0x74, 0x17, 0x48, 0x8B, 0x82, 0xC8, 0x03, 0x00, 0x00, 0x48,
-            0x8B, 0xCB, 0x48, 0x85, 0xC0, 0x74, 0x1D, 0x48, 0x89, 0x07, 0x48, 0x8B, 0xC8, 0xEB, 0x15, 0x48,
-            0x8B, 0x4A, 0x28, 0x48, 0x85, 0xC9, 0x74, 0x1D, 0x48, 0x8B, 0x49, 0x18, 0x48, 0x85, 0xC9, 0x74,
-            0x14, 0x48, 0x89, 0x0F, 0x48, 0x85, 0xC9, 0x74, 0x0C, 0x48, 0x8B, 0x01, 0xFF, 0x90, 0x88, 0x00,
-            0x00, 0x00};
+        const sig::Signature kBurnMaskResolver{"burn_mask_resolver",
+            "48 89 5C 24 08 57 48 83 EC 20 33 DB 48 8B F9 48 89 19 48 89 59 08 48 85 D2 0F 84 ?? ?? ?? ?? 8B 42 34 C1 E8 "
+            "08 A8 01 0F 84 ?? ?? ?? ??",
+            0x558244};
+        const sig::Signature kBurnResolver{"burn_resolver", kBurnMaskResolver, sig::Offset{0x40},
+            "80 7A 30 04 75 2E 48 39 5A 28 74 14 48 8B CA E8 ?? ?? ?? ?? 48 8B 0F 48 8B 90 48 07 00 00 EB 06 48 8B D3 48 "
+            "8B CB 48 85 D2 74 39 48 8B 8A C0 00 00 00 EB 2D 84 C0 74 17 48 8B 82 C8 03 00 00 48 8B CB 48 85 C0 74 1D 48 "
+            "89 07 48 8B C8 EB 15 48 8B 4A 28 48 85 C9 74 1D 48 8B 49 18 48 85 C9 74 14 48 89 0F 48 85 C9 74 0C 48 8B 01 "
+            "FF 90 88 00 00 00",
+            0x558284};
 
         bool g_checked = false;
         bool g_enabled = false;
@@ -65,11 +81,6 @@ namespace replay::burn
         std::uintptr_t g_base = 0;
         std::uintptr_t g_imageEnd = 0;
         std::uintptr_t g_blockGetter = 0;
-
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size); // guarded_memory.h
-        }
 
         bool GuardedImageSize(std::uintptr_t base, std::uintptr_t& size)
         {
@@ -170,24 +181,20 @@ namespace replay::burn
             return g_enabled;
         }
         g_checked = true;
-        g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        g_base = sig::ImageBase();
         std::uintptr_t size = 0;
-        const auto* base = reinterpret_cast<const std::uint8_t*>(g_base);
         struct Site
         {
-            std::uintptr_t rva;
-            const std::uint8_t* bytes;
-            std::size_t size;
+            const sig::Signature* signature;
             const char* name;
         };
         const Site sites[] = {
-            {kBlockGetterRva, kBlockGetterSignature, sizeof(kBlockGetterSignature), "burn_block_getter_signature_mismatch"},
-            {kBlockGetterBodyRva, kBlockGetterBodySignature, sizeof(kBlockGetterBodySignature),
-                "burn_block_getter_body_signature_mismatch"},
-            {kLevelSetterRva, kLevelSetterSignature, sizeof(kLevelSetterSignature), "burn_level_setter_signature_mismatch"},
-            {kLevelGetterRva, kLevelGetterSignature, sizeof(kLevelGetterSignature), "burn_level_getter_signature_mismatch"},
-            {kFirePathRva, kFirePathSignature, sizeof(kFirePathSignature), "burn_fire_path_signature_mismatch"},
-            {kResolverRva, kResolverSignature, sizeof(kResolverSignature), "burn_resolver_signature_mismatch"},
+            {&kBurnBlockGetter, "burn_block_getter_signature_mismatch"},
+            {&kBurnBlockGetterBody, "burn_block_getter_body_signature_mismatch"},
+            {&kBurnLevelSetter, "burn_level_setter_signature_mismatch"},
+            {&kBurnLevelGetter, "burn_level_getter_signature_mismatch"},
+            {&kBurnFirePath, "burn_fire_path_signature_mismatch"},
+            {&kBurnResolver, "burn_resolver_signature_mismatch"},
         };
         if (!g_base || !GuardedImageSize(g_base, size))
         {
@@ -198,7 +205,7 @@ namespace replay::burn
             g_imageEnd = g_base + size;
             for (const Site& site : sites)
             {
-                if (site.rva + site.size > size || !GuardedCompare(base + site.rva, site.bytes, site.size))
+                if (!sig::Find(*site.signature))
                 {
                     g_error = site.name;
                     break;
@@ -206,7 +213,7 @@ namespace replay::burn
             }
         }
         g_enabled = g_error.empty();
-        g_blockGetter = g_enabled ? g_base + kBlockGetterRva : 0;
+        g_blockGetter = g_enabled ? sig::Find(kBurnBlockGetter) : 0;
         error = g_error;
         return g_enabled;
     }
@@ -269,28 +276,47 @@ namespace replay::burn
     // The fire record (burn_level.h, CheckChar and below).
     namespace
     {
-        // 0xF9A91D: lea rdx,[rsp+30]; lea rcx,[rip+rel] -> the tree at
-        // 0x4E2F610 (_IS_ENTITY_CONSUMED_BY_FIRE's lookup, 0xF9A8DC).
-        constexpr std::uintptr_t kTreeSiteRva = 0xF9A91D;
-        constexpr std::uint8_t kTreeSiteSignature[] = {0x48, 0x8D, 0x54, 0x24, 0x30, 0x48, 0x8D, 0x0D, 0xE7, 0x4C, 0xE9, 0x03};
-        constexpr std::uintptr_t kTreeRva = 0x4E2F610;
-        // RESURRECT_PED's removal call 0x8D9B0A: lea rcx,[rip+rel] -> the
-        // manager 0x4E2F5B0 (tree at +0x60).
-        constexpr std::uintptr_t kManagerSiteRva = 0x8D9B0A;
-        constexpr std::uint8_t kManagerSiteSignature[] = {0x48, 0x8D, 0x0D, 0x9F, 0x5A, 0x55, 0x04};
-        constexpr std::uintptr_t kManagerRva = 0x4E2F5B0;
-        constexpr std::uintptr_t kRemoveRva = 0x12A3D58;
-        constexpr std::uint8_t kRemoveSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70, 0x18, 0x57, 0x48,
-            0x83, 0xEC, 0x70, 0x48, 0x89, 0x50, 0xB8, 0x41, 0x8A, 0xE9, 0x48, 0x8B, 0xF1};
-        // The area clear's skip test (0x12A302C: +0x110, +0x142 & 2, +0xF0).
-        constexpr std::uintptr_t kClearSkipRva = 0x12A302C;
-        constexpr std::uint8_t kClearSkipSignature[] = {0x48, 0x83, 0xBB, 0x10, 0x01, 0x00, 0x00, 0x00, 0x74, 0x3B, 0x8A, 0x83,
-            0x42, 0x01, 0x00, 0x00, 0x24, 0x02, 0x74, 0x09, 0x83, 0xBB, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x74, 0x28, 0x84, 0xC0,
-            0x0F, 0x85, 0xE4, 0x00, 0x00, 0x00};
+        // _IS_ENTITY_CONSUMED_BY_FIRE's lookup: lea rdx,[rsp+30]; lea rcx,
+        // [rip+rel] (the tree); the tree's find; the record's flags (+0x141).
+        const sig::Signature kBurnConsumedLookup{"burn_consumed_lookup",
+            "48 89 5C 24 08 57 48 83 EC 50 8B D9 E8 ?? ?? ?? ?? 41 B8 0D 00 00 00 8B D3 48 8B C8 48 8B F8 E8 ?? ?? ?? ?? "
+            "33 DB",
+            0xF9A8DC};
+        const sig::Signature kBurnTreeSite{"burn_tree_site", kBurnConsumedLookup, sig::Offset{0x41},
+            "48 8D 54 24 30 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B 44 24 40 48 85 C0 74 0A F6 80 41 01 00 00 41 0F 95 "
+            "C3",
+            0xF9A91D};
+        const sig::Signature kBurnTree{"burn_tree", kBurnTreeSite, sig::Rel32{8, 12}, "", 0x4E2F610};
+        // RESURRECT_PED's removal call: lea rcx,[rip+rel] (the manager, tree
+        // at +0x60), entity, -1, then the removal.
+        const sig::Signature kBurnResurrect{"burn_resurrect",
+            "48 8B C4 48 89 58 18 44 88 48 20 48 89 50 10 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 A8 48 81 EC 20 01 00 "
+            "00 48 8B 79 08",
+            0x8D972C};
+        const sig::Signature kBurnManagerSite{"burn_manager_site", kBurnResurrect, sig::Offset{0x3DE},
+            "48 8D 0D ?? ?? ?? ?? 41 83 C8 FF 48 8B D7 E8 ?? ?? ?? ??", 0x8D9B0A};
+        const sig::Signature kBurnManager{"burn_manager", kBurnManagerSite, sig::Rel32{3, 7}, "", 0x4E2F5B0};
+        const sig::Signature kBurnRemove{"burn_remove",
+            "48 8B C4 48 89 68 10 48 89 70 18 57 48 83 EC 70 48 89 50 B8 41 8A E9 48 8B F1 48 85 D2 74 0C 80 7A 30 0D "
+            "75 06 44 89 40 C0",
+            0x12A3D58};
+        // The area clear's skip test (+0x110, +0x142 & 2, +0xF0).
+        const sig::Signature kBurnClearCore{"burn_clear_core",
+            "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D A8 48 F8 FF FF 48 81 EC 90 08 "
+            "00 00 33 F6",
+            0x12A2FA4};
+        const sig::Signature kBurnClearSkip{"burn_clear_skip", kBurnClearCore, sig::Offset{0x88},
+            "48 83 BB 10 01 00 00 00 74 3B 8A 83 42 01 00 00 24 02 74 09 83 BB F0 00 00 00 00 74 28 84 C0 0F 85 ?? ?? ?? "
+            "??",
+            0x12A302C};
         constexpr std::uintptr_t kRecordShieldFlags = 0x142;
         constexpr std::uint8_t kShieldBit = 0x02;
         constexpr std::uintptr_t kRecordShieldCount = 0xF0;
         bool g_shieldEnabled = false;
+        bool g_volumeWrites = false; // the volume fields shown by the engine's code
+        std::uintptr_t g_tree = 0;    // the tree's root pointer
+        std::uintptr_t g_manager = 0; // the fire record manager
+        std::uintptr_t g_remove = 0;
         constexpr std::uintptr_t kRecordVolumes = 0xD0;
         constexpr std::uintptr_t kRecordCount = 0xD8;
         constexpr std::uintptr_t kRecordFlags = 0x141;
@@ -327,7 +353,7 @@ namespace replay::burn
         std::uintptr_t WalkRecords(std::uintptr_t entity, std::vector<std::pair<std::uintptr_t, std::uintptr_t>>* all)
         {
             std::uintptr_t root = 0;
-            if (!GuardedCopy(&root, g_base + kTreeRva, sizeof(root)) || !root)
+            if (!g_tree || !GuardedCopy(&root, g_tree, sizeof(root)) || !root)
                 return 0;
             std::uintptr_t stack[64];
             int depth = 0;
@@ -356,13 +382,13 @@ namespace replay::burn
             return 0;
         }
 
-        // The record of `entity` by the tree's own search (0xEB2170: a node
+        // The record of `entity` by the tree's own search (its find: a node
         // whose key is not below the target goes left (+0x10) and is kept,
         // else right (+0x08, tagged)); keys compare entity then the int.
         std::uintptr_t FindRecord(std::uintptr_t entity)
         {
             std::uintptr_t node = 0;
-            if (!GuardedCopy(&node, g_base + kTreeRva, sizeof(node)))
+            if (!g_tree || !GuardedCopy(&node, g_tree, sizeof(node)))
                 return 0;
             std::uintptr_t best = 0;
             for (int depth = 0; node && depth < 128; ++depth)
@@ -386,15 +412,15 @@ namespace replay::burn
             return best;
         }
 
-        // A volume's part (0x1253160 initialises them: +0xB0 -1,
-        // +0xE4 u16 -1, +0xB8 0, +0x60 direction; 0x12565A8 copies them).
+        // A volume's part (the volume initializer sets +0xB0 -1, +0xE4 u16 -1,
+        // +0xB8 0, +0x60 direction; the volume copy copies them).
         constexpr std::uintptr_t kVolumeDir = 0x60;
         constexpr std::uintptr_t kVolumeOwnerFire = 0x70;
         constexpr std::uintptr_t kVolumeComponent = 0xB0;
         constexpr std::uintptr_t kVolumeMask = 0xB8;
         constexpr std::uintptr_t kVolumeSub = 0xE4;
         constexpr std::uintptr_t kVolumeFlags = 0xE6;
-        constexpr std::uint8_t kVolumeNoFire = 0x04; // 0x126DEF3: a copy without its fire
+        constexpr std::uint8_t kVolumeNoFire = 0x04; // the clone: a copy without its fire
 
         bool ReadVolume(std::uintptr_t volume, CharVolume& out)
         {
@@ -424,38 +450,63 @@ namespace replay::burn
             return true;
         }
 
-        // The engine's volume copy and link (0x126E04F's loop).
-        constexpr std::uintptr_t kCloneRva = 0x126DE7C;
-        constexpr std::uint8_t kCloneSignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89,
-            0x70, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xFA, 0x48};
-        constexpr std::uintptr_t kLinkRva = 0x125B82C;
-        constexpr std::uint8_t kLinkSignature[] = {0x48, 0x85, 0xD2, 0x0F, 0x84, 0x43, 0x01, 0x00, 0x00, 0x48, 0x89, 0x5C, 0x24,
-            0x08, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20};
+        // The engine's volume copy and link (the record copy's loop). The
+        // clone allocates a volume, runs the volume initializer (it writes
+        // every field written below: +0x10..+0x4F, +0x60, +0x70, +0xB0, +0xB8,
+        // +0xBC..+0xE3, +0xE4, +0xE6), copies the source's part and, for
+        // another record, drops the fire (+0x70) and sets flag 4 (+0xE6).
+        const sig::Signature kBurnClone{"burn_clone",
+            "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 57 48 83 EC 20 48 8B FA 48 8B E9 48 8D 50 20 49 8B F0 48 8D 0D "
+            "?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 74 79 48 8B CB E8 ?? ?? ?? ?? 48 8B D5 48 8B CB E8 ?? ?? ?? ??",
+            0x126DE7C};
+        const sig::Signature kBurnCloneNoFire{"burn_clone_no_fire", kBurnClone, sig::Offset{0x4D},
+            "48 39 7B 78 74 2C 48 83 63 70 00 8A 85 E6 00 00 00 32 83 E6 00 00 00 24 20 32 83 E6 00 00 00 88 83 E6 00 00 "
+            "00 48 85 F6 75 0D 0C 04 88 83 E6 00 00 00",
+            0x126DEC9};
+        const sig::Signature kBurnVolumeInit{"burn_volume_init", kBurnClone, sig::Rel32{0x39, 0x3D},
+            "48 89 5C 24 10 57 48 83 EC 30 33 FF 0F 29 74 24 20 0F 57 F6 48 8B D9 0F 11 71 10 45 33 C0 0F 11 71 20 0F 11 "
+            "71 30 8D 57 01 0F 11 71 40 0F 28 05 ?? ?? ?? ?? 0F 11 41 50 0F 28 0D ?? ?? ?? ?? 0F 11 49 60 48 89 79 70 48 "
+            "89 79 78 48 89 B9 80 00 00 00 48 89 B9 88 00 00 00 48 89 B9 90 00 00 00 48 81 C1 98 00 00 00 E8 ?? ?? ?? ?? "
+            "83 C8 FF 89 83 B0 00 00 00 89 BB B4 00 00 00 80 A3 E7 00 00 00 FE 66 89 83 E4 00 00 00 48 C7 83 BC 00 00 00 "
+            "FF FF 7F 7F 48 89 BB C4 00 00 00 48 89 BB CC 00 00 00 48 89 BB D4 00 00 00 48 89 BB DC 00 00 00 40 88 BB E6 "
+            "00 00 00 89 43 5C 0F 10 4B 10 0F 28 C1 0F C6 C6 FE 0F C6 C8 84 0F 11 4B 10 0F 10 53 20 0F 28 C2 0F C6 C6 FE "
+            "0F 28 74 24 20 0F C6 D0 84 0F 11 53 20 48 89 7C 24 40 48 8B 44 24 40 48 89 03 48 8B C3 89 BB B8 00 00 00",
+            0x1253160};
+        // The link: the mask from the part, then the record's volume list
+        // (+0xD0, linked by +0x00), its flags (+0x141) and count (+0xD8).
+        const sig::Signature kBurnLink{"burn_link",
+            "48 85 D2 0F 84 ?? ?? ?? ?? 48 89 5C 24 08 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 89 4A 78 41 8A "
+            "E8",
+            0x125B82C};
+        const sig::Signature kBurnLinkList{"burn_link_list", kBurnLink, sig::Offset{0xE0},
+            "48 8B 8B D0 00 00 00 80 8B 41 01 00 00 20 48 8B C1 48 85 C9 74 1F 48 8B C8 48 8B 00 48 85 C0 75 F5 48 85 C9 "
+            "74 0F 48 89 7C 24 38 48 8B 44 24 38 48 89 01 EB 11 48 89 7C 24 38 48 8B 44 24 38 48 89 83 D0 00 00 00 48 FF "
+            "83 D8 00 00 00",
+            0x125B90C};
         // The engine's record copy onto another entity (used by
-        // the fire spreading to a new entity, 0x1299869: (manager, source
+        // the fire spreading to a new entity: (manager, source
         // record, entity, copy volumes)); the copy takes the source's
         // record fields, not its volumes (last argument 0).
-        constexpr std::uintptr_t kRecordCopyRva = 0x126E5DC;
-        constexpr std::uint8_t kRecordCopySignature[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x18, 0x48,
-            0x89, 0x70, 0x20, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x70, 0x33, 0xDB, 0x45, 0x8A};
-        using RecordCopyFn = void*(__fastcall*)(void* manager, void* source, void* entity, std::uint8_t copyVolumes);
-        using CloneFn = void*(__fastcall*)(void* source, void* record, void* fire);
-        using LinkFn = void(__fastcall*)(void* record, void* volume, std::uint8_t);
+        const sig::Signature kBurnRecordCopy{"burn_record_copy",
+            "48 8B C4 48 89 58 08 48 89 68 18 48 89 70 20 57 41 56 41 57 48 83 EC 70 33 DB 45 8A F9 49 8B F0 48 8B EA "
+            "4C 8B F1",
+            0x126E5DC};
         bool g_createOk = false;
         bool g_createWanted = true;
+        std::uintptr_t g_clone = 0;
+        std::uintptr_t g_link = 0;
+        std::uintptr_t g_recordCopy = 0;
 
         std::uintptr_t GuardedRecordCopy(std::uintptr_t source, void* entity, std::uint32_t& code)
         {
-            __try
+            void* record = nullptr;
+            if (!engine::Call(engine::kBurnRecordCopy, g_recordCopy, record, reinterpret_cast<void*>(g_manager),
+                    reinterpret_cast<void*>(source), entity, 0))
             {
-                const auto copy = reinterpret_cast<RecordCopyFn>(g_base + kRecordCopyRva);
-                return reinterpret_cast<std::uintptr_t>(
-                    copy(reinterpret_cast<void*>(g_base + kManagerRva), reinterpret_cast<void*>(source), entity, 0));
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
+                engine::Failed(code);
                 return 0;
             }
+            return reinterpret_cast<std::uintptr_t>(record);
         }
 
         // Clones `source` (a volume of `record`) and sets the copy's part
@@ -466,14 +517,18 @@ namespace replay::burn
         {
             __try
             {
-                const auto clone = reinterpret_cast<CloneFn>(g_base + kCloneRva);
-                const auto link = reinterpret_cast<LinkFn>(g_base + kLinkRva);
-                const std::uintptr_t volume = reinterpret_cast<std::uintptr_t>(
-                    clone(reinterpret_cast<void*>(source), reinterpret_cast<void*>(record), nullptr));
+                void* cloned = nullptr;
+                if (!engine::Call(engine::kBurnClone, g_clone, cloned, reinterpret_cast<void*>(source),
+                        reinterpret_cast<void*>(record), nullptr))
+                {
+                    engine::Failed(code);
+                    return 0;
+                }
+                const std::uintptr_t volume = reinterpret_cast<std::uintptr_t>(cloned);
                 if (!volume)
                     return 0;
                 // A copy of a volume of the same record keeps the source's
-                // fire (0x126DEC9); the engine's cross-record copy has none
+                // fire (the clone); the engine's cross-record copy has none
                 // and flag 4: the same here.
                 *reinterpret_cast<std::uint64_t*>(volume + kVolumeOwnerFire) = 0;
                 *reinterpret_cast<std::uint8_t*>(volume + kVolumeFlags) |= kVolumeNoFire;
@@ -484,7 +539,12 @@ namespace replay::burn
                 direction[0] = dir[0];
                 direction[1] = dir[1];
                 direction[2] = dir[2];
-                link(reinterpret_cast<void*>(record), reinterpret_cast<void*>(volume), 0);
+                if (!engine::Call(engine::kBurnLink, g_link, reinterpret_cast<void*>(record), reinterpret_cast<void*>(volume),
+                        0))
+                {
+                    engine::Failed(code);
+                    return 0;
+                }
                 return volume;
             }
             __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
@@ -502,6 +562,8 @@ namespace replay::burn
         }
     }
 
+    std::uintptr_t RecordTree() { return sig::Find(kBurnTree); }
+
     bool CheckChar(std::string& error)
     {
         if (g_charChecked)
@@ -511,24 +573,29 @@ namespace replay::burn
         }
         g_charChecked = true;
         std::string ignored;
-        Check(ignored); // module range (g_base, g_imageEnd)
-        if (!g_base)
-            g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        const auto* base = reinterpret_cast<const std::uint8_t*>(g_base);
-        if (!GuardedCompare(base + kTreeSiteRva, kTreeSiteSignature, sizeof(kTreeSiteSignature)))
+        Check(ignored); // the level checks run once, first
+        g_tree = sig::Find(kBurnTree);
+        g_manager = sig::Find(kBurnManager);
+        g_remove = sig::Find(kBurnRemove);
+        if (!g_tree)
             g_charError = "char_tree_site_signature_mismatch";
-        else if (!GuardedCompare(base + kManagerSiteRva, kManagerSiteSignature, sizeof(kManagerSiteSignature)))
+        else if (!g_manager)
             g_charError = "char_manager_site_signature_mismatch";
-        else if (!GuardedCompare(base + kRemoveRva, kRemoveSignature, sizeof(kRemoveSignature)))
+        else if (!g_remove)
             g_charError = "char_remove_signature_mismatch";
         g_charEnabled = g_charError.empty();
         // The shield only when the clear's skip test is as read.
-        g_shieldEnabled = g_charEnabled && GuardedCompare(base + kClearSkipRva, kClearSkipSignature, sizeof(kClearSkipSignature));
-        g_createOk = g_charEnabled && GuardedCompare(base + kCloneRva, kCloneSignature, sizeof(kCloneSignature)) &&
-            GuardedCompare(base + kRecordCopyRva, kRecordCopySignature, sizeof(kRecordCopySignature)) &&
-            GuardedCompare(base + kLinkRva, kLinkSignature, sizeof(kLinkSignature));
+        g_shieldEnabled = g_charEnabled && sig::Find(kBurnClearSkip);
+        // The volume writes only when the engine's code shows the fields.
+        g_volumeWrites = g_charEnabled && sig::Find(kBurnVolumeInit) && sig::Find(kBurnLinkList);
+        g_clone = sig::Find(kBurnClone);
+        g_link = sig::Find(kBurnLink);
+        g_recordCopy = sig::Find(kBurnRecordCopy);
+        g_createOk = g_volumeWrites && g_clone && g_link && g_recordCopy && sig::Find(kBurnCloneNoFire);
         if (g_charEnabled && !g_shieldEnabled)
             g_charError = "char_shield_signature_mismatch"; // reported, reads and writes stay on
+        else if (g_charEnabled && !g_volumeWrites)
+            g_charError = "char_volume_signature_mismatch"; // reported, reads stay on
         error = g_charError;
         return g_charEnabled;
     }
@@ -582,7 +649,7 @@ namespace replay::burn
     CharWriteReport WriteChar(const void* entity, const CharState& state, const std::vector<int>& match, bool anchored)
     {
         CharWriteReport report;
-        if (!g_charEnabled || !entity || !state.present || state.volumes.empty())
+        if (!g_charEnabled || !g_volumeWrites || !entity || !state.present || state.volumes.empty())
             return report;
         const std::uintptr_t record = FindRecord(reinterpret_cast<std::uintptr_t>(entity));
         if (!record)
@@ -698,18 +765,10 @@ namespace replay::burn
 
     namespace
     {
-        using RemoveFn = void(__fastcall*)(void*, void*, std::int32_t, std::uint8_t);
-        bool GuardedRemove(std::uintptr_t base, void* entity, std::uint32_t& code)
+        bool GuardedRemove(void* entity, std::uint32_t& code)
         {
-            __try
-            {
-                reinterpret_cast<RemoveFn>(base + kRemoveRva)(reinterpret_cast<void*>(base + kManagerRva), entity, -1, 1);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kBurnRemove, g_remove, reinterpret_cast<void*>(g_manager), entity, -1, 1) ||
+                engine::Failed(code);
         }
     }
 
@@ -718,7 +777,7 @@ namespace replay::burn
         code = 0;
         if (!g_charEnabled || !entity || !FindRecord(reinterpret_cast<std::uintptr_t>(entity)))
             return false;
-        return GuardedRemove(g_base, entity, code) && !FindRecord(reinterpret_cast<std::uintptr_t>(entity));
+        return GuardedRemove(entity, code) && !FindRecord(reinterpret_cast<std::uintptr_t>(entity));
     }
 
     int ShieldChars(const std::vector<const void*>& entities, std::vector<CharShield>& saved)

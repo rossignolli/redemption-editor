@@ -116,6 +116,13 @@ namespace
 
         Check(SceneryReady(0, 0, 3000) && !SceneryReady(3, 1000, 3000) && SceneryReady(3, 3000, 3000),
             "scenery: the start waits for the pending stand-ins up to the cap");
+        Check(!SceneryReady(3, 4000, 3000, true) && SceneryReady(0, 4000, 3000, true) && SceneryReady(3, 4000, 3000, false),
+            "scenery: past the cap while the rest holds the start, the stand-ins are still awaited");
+
+        Check(StandModelStep(false, false, 0, 5000) == StandModel::Fail, "scenery: a model the game does not know fails at once");
+        Check(StandModelStep(true, true, 0, 5000) == StandModel::Loaded, "scenery: a loaded model builds");
+        Check(StandModelStep(true, false, 5000, 5000) == StandModel::Wait && StandModelStep(true, false, 5001, 5000) == StandModel::Fail,
+            "scenery: a requested model fails after the model timeout");
         const float a[3]{1.0f, 2.0f, 3.0f};
         const float b[3]{1.3f, 2.3f, 3.0f};
         Check(Near(a, b, kOriginalRadiusM) && !Near(a, b, 0.3f), "scenery: the original's radius");

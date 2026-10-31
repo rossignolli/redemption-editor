@@ -1,6 +1,7 @@
 #include "render_target.h"
 
 #include "capture_probe.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "hook_batch.h"
 #include "module_lifetime.h"
@@ -35,29 +36,49 @@ namespace replay::rendertarget
             kPortCount
         };
 
+        namespace sig = replay::sig;
+
+        // The natives' registration pairs "lea rdx, handler / mov rcx, native hash":
+        //  register: 0x98AF2BB6F62BD588 -> its handler calls the register (its only caller)
+        //  link:     0x2F506B8556242DDB -> its handler jumps to the link (its only caller)
+        //  release:  0x0E692EE61761361F -> its handler calls the release (its only caller);
+        //            it reads the calling script's id and uses the same manager as
+        //            the register
+        //  launch:   0xC1BCF31E975B3195 -> its handler calls the UI app launch(&app, &entry);
+        //            5 callers, all launch natives or their helpers
+        // Register and link: the same bytes as the capture probe's C29 and C30.
+        // Register, link and launch are unique in .text. The release's bytes are
+        // also those of other natives' thunks (another manager, another jump), so
+        // it is reached from its native's registration through its handler.
+        const sig::Signature kRegisterFunction{"render_register",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 20 40 8A F2 48 8B D9 E8 ?? ?? ?? ?? 48 8B D3",
+            0x1056800};
+        const sig::Signature kLinkFunction{"render_link",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 50 18 C7 40 10 FF FF FF 0F C7 40 18 FF FF 00 00 E8 ?? ?? ?? ?? "
+            "0F B7 4C 24 40 48 8B D8",
+            0x1055280};
+        const sig::Signature kReleaseNative{"render_release_native",
+            "48 8D 15 ?? ?? ?? ?? 48 B9 1F 36 61 17 E6 2E 69 0E", 0x105D702};
+        const sig::Signature kReleaseHandler{"render_release_handler", kReleaseNative, sig::Rel32{0x03, 0x07},
+            "40 53 48 83 EC 20 48 8B 41 10 48 8B D9 48 8B 08 E8 ?? ?? ?? ?? 0F B6 D0 48 8B 03 89 10 48 83 C4 20 5B C3",
+            0x1046C58};
+        const sig::Signature kReleaseFunction{"render_release", kReleaseHandler, sig::Rel32{0x11, 0x15},
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 48 8B D3 48 8D 0D ?? ?? ?? ?? 44 8B 40 08",
+            0x1056880};
+        const sig::Signature kLaunchFunction{"render_uiapp_launch",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 0D ?? ?? ?? ?? 48 85 C9 74 2B 8B 02 4C 8D 4C 24 60",
+            0x109B178};
+
         struct PortInfo
         {
             const char* name;
-            std::uint32_t rva; // build 1491.50
-            const char* signature;
+            const sig::Signature* function;
         };
-
-        // Build 1491.50 (native handler pair "lea rdx, handler / mov rcx, native hash"
-        // in the registration table at 0x105D6B4..0x105D788 and 0x10A6396):
-        //  register: 0x98AF2BB6F62BD588 -> handler 0x1046C2C -> call 0x1056800 (only caller)
-        //  link:     0x2F506B8556242DDB -> handler 0x1045EB4 -> jmp 0x1055280 (only caller)
-        //  release:  0x0E692EE61761361F -> handler 0x1046C58 -> call 0x1056880 (only caller);
-        //            it reads the script id at 0xEE5A10()+8 and uses the same
-        //            manager 0x4077A70 as the register
-        //  launch:   0xC1BCF31E975B3195 -> handler 0x106D8D8 -> call 0x109B178(&app, &entry);
-        //            5 callers, all launch natives or their helpers
-        // Register and link: the same bytes as the capture probe's C29 and C30.
-        // Each signature is unique in .text.
-        constexpr PortInfo kPorts[kPortCount] = {
-            {"register", 0x1056800, "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 40 8A F2 48 8B D9 E8 F6"},
-            {"link", 0x1055280, "48 8B C4 48 89 58 08 57 48 83 EC 20 48 8D 50 18 C7 40 10 FF"},
-            {"release", 0x1056880, "40 53 48 83 EC 20 48 8B D9 E8 82 F1 E8 FF 48 8B D3 48 8D 0D D8 11 02 03 44 8B 40 08"},
-            {"uiapp_launch", 0x109B178, "48 83 EC 48 4C 8B C1 B8 02 00 00 00 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 2B 8B 02 4C 8D 4C 24 60"},
+        const PortInfo kPorts[kPortCount] = {
+            {"register", &kRegisterFunction},
+            {"link", &kLinkFunction},
+            {"release", &kReleaseFunction},
+            {"uiapp_launch", &kLaunchFunction},
         };
 
         using RegisterFn = std::uint64_t(__fastcall*)(const char*, std::uint64_t, std::uint64_t, std::uint64_t);
@@ -70,11 +91,10 @@ namespace replay::rendertarget
         const char* g_status[kPortCount] = {"not_installed", "not_installed", "not_installed", "not_installed"};
         std::uintptr_t g_base = 0;
         bool g_installTried = false;
-        Settings g_settings = [] {
-            Settings s;
-            s.uiApps = {Joaat("SHOP_BROWSING")};
-            return s;
-        }();
+        Settings g_settings;
+        // The UI apps the recording polls (open and close events): the camp
+        // ledger's catalog.
+        const std::vector<std::uint32_t> kPolledApps = {Joaat("SHOP_BROWSING")};
 
         // The replay's own natives (playback) are not world events.
         std::atomic<int> g_selfCall{0};
@@ -243,38 +263,10 @@ namespace replay::rendertarget
 
         // ------------------------------------------------------------ install
 
-        bool BytesMatch(std::uintptr_t address, const char* text)
-        {
-            std::uint8_t code[64] = {};
-            std::size_t count = 0;
-            const char* p = text;
-            std::uint8_t want[64] = {};
-            bool wild[64] = {};
-            while (*p && count < sizeof(want))
-            {
-                while (*p == ' ')
-                    ++p;
-                if (!*p)
-                    break;
-                if (p[0] == '?' && p[1] == '?')
-                    wild[count] = true;
-                else
-                    want[count] = static_cast<std::uint8_t>(std::strtoul(std::string(p, 2).c_str(), nullptr, 16));
-                ++count;
-                p += 2;
-            }
-            if (!count || !replay::mem::Copy(code, address, count))
-                return false;
-            for (std::size_t n = 0; n < count; ++n)
-                if (!wild[n] && code[n] != want[n])
-                    return false;
-            return true;
-        }
-
         const char* HookPort(int port)
         {
-            const std::uintptr_t address = g_base + kPorts[port].rva;
-            if (!BytesMatch(address, kPorts[port].signature))
+            const std::uintptr_t address = sig::Find(*kPorts[port].function);
+            if (!address)
                 return "signature_mismatch";
             void* target = reinterpret_cast<void*>(address);
             void* trampoline = nullptr;
@@ -305,11 +297,10 @@ namespace replay::rendertarget
         std::set<std::string> g_foreignTargets;
         std::set<std::uint32_t> g_foreignApps;
         bool g_playing = false;
-        bool g_inputBlockLogged = false;
         struct PlayCounters
         {
             std::uint32_t registers = 0, registerRefused = 0, foreign = 0, links = 0, linkMissed = 0, releases = 0;
-            std::uint32_t appOpens = 0, appRefused = 0, appForeign = 0, appCloses = 0, inputTicks = 0;
+            std::uint32_t appOpens = 0, appRefused = 0, appForeign = 0, appCloses = 0;
         } g_counters;
 
         std::string Hex(std::uint32_t value)
@@ -325,34 +316,6 @@ namespace replay::rendertarget
                 << ",name=" << (e.name[0] ? e.name : "-") << ",hash=" << Hex(e.hash) << ",entry=" << Hex(e.entry)
                 << ",flag=" << static_cast<int>(e.flag) << ",accepted=" << static_cast<int>(e.accepted)
                 << ",initial=" << static_cast<int>(e.initial) << ",caller=" << Hex(caller) << '\n';
-        }
-
-        // The frontend actions a UI app reads (catalog paging, accept, back). The free
-        // camera reads its pad axes as disabled controls, so they keep working.
-        // Whether the UI app's own input path honours these is not proven
-        // (RT_INPUT_BLOCK).
-        void BlockAppInput()
-        {
-            static const char* const kActions[] = {
-                "INPUT_FRONTEND_ACCEPT", "INPUT_FRONTEND_CANCEL", "INPUT_FRONTEND_LEFT", "INPUT_FRONTEND_RIGHT",
-                "INPUT_FRONTEND_UP", "INPUT_FRONTEND_DOWN", "INPUT_FRONTEND_LB", "INPUT_FRONTEND_RB",
-                "INPUT_FRONTEND_X", "INPUT_FRONTEND_Y", "INPUT_FRONTEND_LT", "INPUT_FRONTEND_RT",
-                "INPUT_GAME_MENU_ACCEPT", "INPUT_GAME_MENU_CANCEL", "INPUT_GAME_MENU_UP", "INPUT_GAME_MENU_DOWN",
-                "INPUT_GAME_MENU_LEFT", "INPUT_GAME_MENU_RIGHT", "INPUT_GAME_MENU_TAB_LEFT", "INPUT_GAME_MENU_TAB_RIGHT",
-            };
-            static Hash hashes[sizeof(kActions) / sizeof(kActions[0])] = {};
-            static bool ready = false;
-            if (!ready)
-            {
-                for (std::size_t n = 0; n < sizeof(kActions) / sizeof(kActions[0]); ++n)
-                    hashes[n] = Joaat(kActions[n]);
-                ready = true;
-            }
-            for (const Hash hash : hashes)
-            {
-                PAD::DISABLE_CONTROL_ACTION(0, hash, TRUE);
-                PAD::DISABLE_CONTROL_ACTION(2, hash, TRUE);
-            }
         }
 
         void Execute(const Plan& plan, std::uint32_t timeMs, std::ostream& log)
@@ -502,7 +465,7 @@ namespace replay::rendertarget
             summary = "off";
             return false;
         }
-        g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        g_base = replay::sig::ImageBase(); // the callers logged as RVAs
         const MH_STATUS init = MH_Initialize();
         if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED)
         {
@@ -617,7 +580,7 @@ namespace replay::rendertarget
         g_recordEvents = 0;
         g_recordApps = 0;
         g_recording = g_settings.record && Installed();
-        g_poll.Reset(g_settings.uiApps);
+        g_poll.Reset(kPolledApps);
         if (!g_recording)
         {
             log << "RT_RECORD_BEGIN,status=off,record=" << (g_settings.record ? 1 : 0) << ",installed=" << (Installed() ? 1 : 0) << '\n';
@@ -663,41 +626,20 @@ namespace replay::rendertarget
         g_foreignTargets.clear();
         g_foreignApps.clear();
         g_counters = {};
-        g_inputBlockLogged = false;
         g_playing = true;
-        log << "RT_PLAY_BEGIN,mode=" << ModeName(g_settings.mode) << ",events=" << track.events.size()
-            << ",block_input=" << (g_settings.blockInput ? 1 : 0) << '\n';
+        log << "RT_PLAY_BEGIN,mode=" << ModeName(g_settings.mode) << ",events=" << track.events.size() << '\n';
     }
 
     void Play(const Track& track, std::uint32_t timeMs, std::ostream& log)
     {
         if (!g_playing || g_settings.mode == Mode::Off || (track.events.empty() && g_have.Empty()))
             return;
+        // Re-register and relink only: the UI apps are not relaunched.
         State want = StateAt(track, timeMs);
-        const bool apps = g_settings.mode == Mode::UiApp;
-        if (apps)
-            want.apps.erase(std::remove_if(want.apps.begin(), want.apps.end(),
-                                [&](const App& a) { return !AppDrawsTarget(track, a.app, timeMs); }),
-                want.apps.end());
-        else
-            want.apps.clear();
-        const Plan plan = Reconcile(g_have, want, apps);
+        want.apps.clear();
+        const Plan plan = Reconcile(g_have, want, false);
         if (!plan.Empty())
             Execute(plan, timeMs, log);
-        // Input: only while an app the replay launched is open.
-        bool ours = false;
-        for (const App& a : g_have.apps)
-            ours = ours || !g_foreignApps.count(a.app);
-        if (ours && g_settings.blockInput)
-        {
-            BlockAppInput();
-            ++g_counters.inputTicks;
-            if (!g_inputBlockLogged)
-            {
-                g_inputBlockLogged = true;
-                log << "RT_INPUT_BLOCK,t=" << timeMs << ",groups=0;2,actions=frontend;game_menu" << '\n';
-            }
-        }
     }
 
     void EndPlayback(std::ostream& log)
@@ -711,7 +653,7 @@ namespace replay::rendertarget
             << ",linked=" << g_counters.links << ",link_missed=" << g_counters.linkMissed << ",released=" << g_counters.releases
             << ",app_opened=" << g_counters.appOpens << ",app_refused=" << g_counters.appRefused
             << ",app_foreign=" << g_counters.appForeign << ",app_closed=" << g_counters.appCloses
-            << ",input_ticks=" << g_counters.inputTicks << ",self_calls=" << g_selfCalls.load() << '\n';
+            << ",self_calls=" << g_selfCalls.load() << '\n';
     }
 
     void ForgetAfterRestart()

@@ -10,18 +10,10 @@
 // conversation scene active only in the recording, the speaker not one of
 // its participants) or the line's own fields (different line volume).
 //
-// What is read (dump 1491.50, guarded reads):
-//   - the ped's speech entity lines (+0x78 list, u16 count +0x80), state
-//     +0x234, data +0x1D8 (type +0xE0, voice +0x110, context +0x114), source
-//     +0x218, d8 +0x214, volume type +0x21C, audibility +0x220, bits +0x2BC
-//     (speech_request.h);
-//   - type 1 lines: the per-frame volume 0x2FC1E04 (the line data's vfunc,
-//     speech_request.h) smooths component [2] of the line's volume vector
-//     through 0x2521084 on data +0x148 (rate +0, value +4, time +8, flags
-//     +0xC bit 0 = running) and writes the result back: data +0x14C is the
-//     line's volume as the engine applies it (linear; 0x2EAE460 converts the
-//     dB of the vector). Type 2 lines feed five layers (0x2FC1D5C): no single
-//     value, logged as "na".
+// Guarded reads of the speech entity's lines and their data (dump 1491.50);
+// type 2 lines feed five layers, so they have no single volume and are
+// logged as "na".
+// Research: docs/research/speech-line-request.md
 
 #include <cmath>
 #include <cstdint>

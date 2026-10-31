@@ -2,26 +2,23 @@
 
 // The sounds that depend on their owner's state.
 //
-// A dynamic entity sound (metadata type 0x10) picks its child when it plays, by
-// asking the owner's audio entity a chain of names (0x2583044 calls the entity's
-// vtable slot +0x68 with the chain, its length and the top-level sound, at
-// 0x258311A). For every ped, horse and animal that slot is 0x31947D0 (vtables
-// 0x3839538, 0x3839630, 0x3839728). It switches on the head of the chain and
-// reads the owner's live relations: "mount" (0xA07A1994) asks the engine mount
-// link (0xCC857C: component row +0x128, flags +0x10 bit 4, mount +0x178) and
-// hands the rest of the chain to the mount's own audio entity (0x3194E3E); the
-// boat and vehicle heads, the weapon, the clothing caches, the map material and
-// two task heads read their own state. A replay puppet has none of that state,
-// so every such chain answers the null sound, the sound has no child, and the
-// engine ends it 2 to 3 frames later (saddle and stirrup foley cut short).
+// A dynamic entity sound picks its child when it plays by asking the owner's
+// audio entity a chain of names (the resolver); for "mount" the resolver
+// follows the engine mount link and hands the rest of the chain to the
+// mount's audio entity. A replay puppet has no mount link, so the chain
+// answers the null sound and the engine ends the sound 2 to 3 frames later
+// (saddle and stirrup foley cut short).
 //
 // The relation is given to the resolver only: when a puppet's chain starts with
 // "mount", its engine mount link is empty and the replay seats it on a horse
 // puppet (the rider and mount pairs of the pose playback), the rest of the chain
-// goes to that horse puppet's audio entity, exactly the engine's own call at
-// 0x3194E3E. No task, link, physics or pose changes.
+// goes to that horse puppet's audio entity, exactly the resolver's own call in
+// its mount branch. No task, link, physics or pose changes.
 //
 // The detour also logs the outermost queries (rider, chain, answer, thread).
+// Research: docs/research/entities-sound-query.md
+
+#include "engine_sigs.h" // enginesig::Pool
 
 #include <cstddef>
 #include <cstdint>
@@ -31,15 +28,50 @@
 
 namespace replay::entityquery
 {
-    // Game build 1491.50.
+    using enginesig::kAudioHolderVtable;
+    using enginesig::kAudioHolderVtableA;
+    using enginesig::kAudioHolderVtableB;
 
-    constexpr std::uintptr_t kResolverRva = 0x31947D0;
-    constexpr std::uintptr_t kHolderVtableRvas[] = {0x3839538, 0x3839630, 0x3839728};
+    // The resolver: the ped audio entity's sound query, its prologue up to the
+    // first head of its switch (cmp dword [r8], 0EB69052Eh).
+    inline const sig::Signature kResolver{"query_resolver",
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 57 48 8B EC 48 83 EC 40 41 81 38 2E 05 69 EB",
+        0x31947D0};
+
+    // The vtables of the three ped audio holders (slot +0x68 the resolver in
+    // each), as their constructors write them: the base constructor's, and the
+    // two the ped factories build at +0x250 of their peds (0x4A70 and 0x4CB0
+    // bytes), each constructor calling the base first.
+    inline const sig::Signature* const kHolderVtables[] = {&kAudioHolderVtable, &kAudioHolderVtableA,
+        &kAudioHolderVtableB};
+
+    // The engine mount link (IS_PED_ON_MOUNT's handler is exactly this != 0):
+    // slot u32 [ped+0x9C] & 0x1FFFF minus the base index, a row of 0x148 bytes
+    // in the table, the ride component +0x128 & ~1, its flags +0x10 bit 4, the
+    // mount +0x178. ComponentRow and EngineMountOf repeat these reads.
+    inline const sig::Signature kMountLink{"query_mount_link",
+        "8B 81 9C 00 00 00 25 FF FF 01 00 2B 05 ?? ?? ?? ?? 48 69 C8 48 01 00 00 48 8B 05 ?? ?? ?? ?? 48 8B 94 01 28 "
+        "01 00 00 48 8B C2 48 83 E0 FE 48 F7 DA 48 1B C9 48 23 C8 74 12 8B 41 10 C1 E8 04 A8 01 74 08 48 8B 81 78 01 "
+        "00 00 C3 33 C0 C3",
+        0xCC857C};
+    inline const sig::Signature kMountLinkBaseIndex{"query_component_base_index", kMountLink, sig::Rel32{0x0D, 0x11},
+        "", 0x39ECE40};
+    inline const sig::Signature kMountLinkTable{"query_component_table", kMountLink, sig::Rel32{0x1B, 0x1F}, "",
+        0x39ECE48};
+
+    // The dynamic sound's call of slot +0x68 (holder, out = rbp+0x30, the chain,
+    // its length, the top-level sound) and its reading of the answer from out:
+    // a low half of 0 or 0xFFFFFFFF is no answer, and so is the null answer of
+    // the resolvers, {u32 [null name], 0xFFFFF}.
+    inline const sig::Signature kAnswerUse{"query_answer_use",
+        "48 8B 01 48 8D 55 30 4C 89 4C 24 20 4C 8B C6 44 8B CB FF 50 68 8B 45 30 BE FF FF 0F 00 8B 0D ?? ?? ?? ?? FF "
+        "C8 89 4D 40 89 75 44 83 F8 FD 77 32",
+        0x2583108};
+    inline const sig::Signature kNullName{"query_null_name", kAnswerUse, sig::Rel32{0x1F, 0x23}, "", 0x3BE6C58};
+
     constexpr std::uint32_t kMountHead = 0xA07A1994; // joaat("mount")
     constexpr std::size_t kHolderPedOffset = 0x4600;
     constexpr std::size_t kTopEntityOffset = 0x50; // the top-level sound's entity
-    constexpr std::uintptr_t kComponentTableRva = 0x39ECE48;
-    constexpr std::uintptr_t kComponentIndexBaseRva = 0x39ECE40;
     constexpr std::size_t kComponentRowBytes = 0x148;
     constexpr std::size_t kComponentHandleOffset = 0x9C;
     constexpr std::uint32_t kComponentSlotMask = 0x1FFFF;
@@ -48,25 +80,23 @@ namespace replay::entityquery
     constexpr std::size_t kRideFlagsOffset = 0x10;
     constexpr std::uint32_t kRideMountedBit = 0x10;
     constexpr std::size_t kRideMountOffset = 0x178;
-    // The null answer of the resolvers: {u32 [0x3BE6C58], 0xFFFFF}; 0x2583044
-    // also takes a low half of 0 or 0xFFFFFFFF as no answer.
-    constexpr std::uintptr_t kNullNameRva = 0x3BE6C58;
     constexpr std::uint32_t kMaxChain = 8;
     constexpr std::uint32_t kMaxPairs = 64;
 
     // The ped's row in the component table (0 when the chain does not hold).
-    // read(address, out, size) -> bool: a guarded read.
+    // `pool`: the component table's globals (kMountLinkBaseIndex,
+    // kMountLinkTable). read(address, out, size) -> bool: a guarded read.
     template <typename Read>
-    std::uintptr_t ComponentRow(std::uintptr_t base, std::uintptr_t ped, Read read)
+    std::uintptr_t ComponentRow(const enginesig::Pool& pool, std::uintptr_t ped, Read read)
     {
-        if (!base || !ped)
+        if (!pool.Found() || !ped)
             return 0;
         std::uint32_t handle = 0;
         std::uint32_t indexBase = 0;
         std::uintptr_t table = 0;
         if (!read(ped + kComponentHandleOffset, &handle, sizeof(handle)) ||
-            !read(base + kComponentIndexBaseRva, &indexBase, sizeof(indexBase)) ||
-            !read(base + kComponentTableRva, &table, sizeof(table)) || !table)
+            !read(pool.baseIndex, &indexBase, sizeof(indexBase)) || !read(pool.table, &table, sizeof(table)) ||
+            !table)
         {
             return 0;
         }
@@ -76,12 +106,12 @@ namespace replay::entityquery
         return table + static_cast<std::uintptr_t>(slot) * kComponentRowBytes;
     }
 
-    // The engine mount of `ped`, as 0xCC857C reads it (IS_PED_ON_MOUNT's
-    // handler 0xFB89A8 is exactly this != 0). 0: not mounted.
+    // The engine mount of `ped`, as the mount link reads it (kMountLink). 0:
+    // not mounted.
     template <typename Read>
-    std::uintptr_t EngineMountOf(std::uintptr_t base, std::uintptr_t ped, Read read)
+    std::uintptr_t EngineMountOf(const enginesig::Pool& pool, std::uintptr_t ped, Read read)
     {
-        const std::uintptr_t row = ComponentRow(base, ped, read);
+        const std::uintptr_t row = ComponentRow(pool, ped, read);
         std::uintptr_t ride = 0;
         if (!row || !read(row + kRowRideSlot, &ride, sizeof(ride)) || !ride)
             return 0;
@@ -157,9 +187,6 @@ namespace replay::entityquery
     void SetLogging(bool on);
     void SetRelation(bool on);
     bool RelationOn();
-    // EntityQueryLog: the ENTITY_QUERY lines of the clip's owners (default on).
-    void SetLogWanted(bool on);
-    bool LogWanted();
 
     struct Pair
     {
@@ -195,7 +222,7 @@ namespace replay::entityquery
 
     struct Stats
     {
-        std::uint64_t calls = 0;     // every call of 0x31947D0
+        std::uint64_t calls = 0;     // every call of the resolver
         std::uint64_t outermost = 0; // calls for the top-level sound's own entity
         std::uint64_t mountHead = 0; // outermost calls whose chain starts with "mount"
         std::uint64_t forwarded = 0; // of those, answered through the replay's mount

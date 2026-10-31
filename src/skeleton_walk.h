@@ -3,14 +3,14 @@
 // Pure parts of the skeleton walk (unit tested in ReplayCoreTests), shared by
 // the guarded resolver (skeleton_resolve.cpp) and the evidence line.
 //
-// Every native that reads an entity's bones (GET_ENTITY_BONE_INDEX_BY_NAME
-// 0xF96A64, GET_WORLD_POSITION_OF_ENTITY_BONE 0xF99468, PLAY_ENTITY_ANIM
-// 0xF9D01C, build 1491.50) gets the skeleton the same way:
+// Every native that reads an entity's bones (GET_ENTITY_BONE_INDEX_BY_NAME,
+// GET_WORLD_POSITION_OF_ENTITY_BONE, PLAY_ENTITY_ANIM) gets the skeleton the
+// same way:
 //   fragment = entity->vtable[0xB8](entity);
-//   skeleton = fragment ? [[fragment+0x128]+0x160]   (0x296ECEC)
+//   skeleton = fragment ? [[fragment+0x128]+0x160]   (the fragment's skeleton)
 //                       : [[entity+0xA8]+0x40];
 // The slot has three bodies in the dump: the ped one, the vehicle one
-// (`mov rax,[rcx+938h]; ret`) and the generic one at 0x65B6FC, used by the
+// (`mov rax,[rcx+938h]; ret`) and the generic one, used by the
 // object vtables, which returns [entity+0x38] when bit 6 of the dword at
 // entity+0xB0 says the entity is a fragment, and null otherwise. Objects (the
 // carried pelt p_cs_pelt_large among them) need the generic one.
@@ -28,7 +28,7 @@ namespace replay::skeleton::walk
         Unknown = 0,
         Ped,     // mov eax,[rcx+9Ch]; and eax,1FFFFh; ...
         Vehicle, // mov rax,[rcx+938h]; ret
-        Generic, // 0x65B6FC: the base entity's default, objects
+        Generic, // the base entity's default, objects
     };
 
     // Ped override (prefix, the body continues with the pool lookup).
@@ -41,7 +41,7 @@ namespace replay::skeleton::walk
         0x48, 0x8B, 0x81, 0x38, 0x09, 0x00, 0x00, // mov rax,[rcx+938h]
         0xC3,                                     // ret
     };
-    // Generic body at 0x65B6FC, whole (a leaf without .pdata entry); the
+    // Generic body, whole (a leaf without .pdata entry); the
     // first 12 bytes are the `getter=` field of the live evidence line.
     constexpr std::uint8_t kGenericGetter[] = {
         0x8B, 0x81, 0xB0, 0x00, 0x00, 0x00, // mov eax,[rcx+0B0h]
@@ -55,11 +55,11 @@ namespace replay::skeleton::walk
     };
     constexpr std::size_t kGetterProbeBytes = 24;
 
-    // Layout read by the generic body and by CreateSkeleton (0xE34A18).
+    // Layout read by the generic body and by CreateSkeleton.
     constexpr std::size_t kEntityFlagsOffset = 0xB0;
     constexpr std::uint32_t kEntityFragmentBit = 6;
     constexpr std::size_t kEntityPhysicsInstOffset = 0x38;
-    // CreateSkeleton and the object skeleton native (0xE52368): entity type
+    // CreateSkeleton and the object skeleton native: entity type
     // byte (3 and 4 build their skeleton elsewhere), the draw handler and
     // its drawable, whose skeleton data a skeleton is built from.
     constexpr std::size_t kEntityTypeOffset = 0x30;

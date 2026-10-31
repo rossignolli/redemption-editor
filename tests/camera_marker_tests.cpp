@@ -273,9 +273,9 @@ namespace
         Track game = MakeClip();
         const std::uint32_t added = AddAt(game, 4000, scene);
         const Keyframe* g = game.Find(added);
-        Check(added != 0 && g->cameraMode == CameraMode::Game && g->blend == Blend::Spline && g->ease &&
+        Check(added != 0 && g->cameraMode == CameraMode::Game && g->blend == Blend::None && g->ease &&
                 SameCam(CamOf(g->pose), GameAt(4000)),
-            "add: after a Game marker the new one is Game, the default blend (Spline), pose = the frame shown");
+            "add: after a Game marker the new one is Game, the default blend (No Blend), pose = the frame shown");
         bool same = true;
         for (std::uint64_t t = 0; t <= 10000; t += 250)
             same = same && SameCam(Eval(game, t, scene), GameAt(t));
@@ -341,15 +341,15 @@ namespace
         preset.presetDistanceScale = 0.9f;
         Keyframe afterPreset;
         Check(!camera::InheritFrom(afterPreset, preset) && afterPreset.cameraMode == CameraMode::RightSide &&
-                Near(afterPreset.presetDistanceScale, 0.9f) && afterPreset.blend == Blend::Spline && afterPreset.ease,
-            "add: after a preset: the preset and its distance, the default blend (Spline), ease on");
+                Near(afterPreset.presetDistanceScale, 0.9f) && afterPreset.blend == Blend::None && afterPreset.ease,
+            "add: after a preset: the preset and its distance, the default blend (No Blend), ease on");
         Keyframe gameMarker = FreeAt(0, va, Blend::Linear, false);
         gameMarker.cameraMode = CameraMode::Game;
         gameMarker.lookAtTarget = kPed;
         Keyframe afterGame;
         camera::InheritFrom(afterGame, gameMarker);
-        Check(afterGame.lookAtTarget == 0 && afterGame.blend == Blend::Spline,
-            "add: a Game marker passes no targets nor its blend (the default Spline)");
+        Check(afterGame.lookAtTarget == 0 && afterGame.blend == Blend::None,
+            "add: a Game marker passes no targets nor its blend (the default No Blend)");
     }
 
     // =====================================================================
@@ -591,7 +591,7 @@ namespace
         const std::uint32_t r = reset.AddMarker(busy);
         reset.ResetMarker(r);
         const Keyframe* rk = reset.Find(r);
-        Check(rk->timeMs == 3000 && rk->cameraMode == CameraMode::Game && rk->blend == Blend::Spline && rk->ease &&
+        Check(rk->timeMs == 3000 && rk->cameraMode == CameraMode::Game && rk->blend == Blend::None && rk->ease &&
                 rk->legacyShake.type == camera::ShakeType::None && rk->dof == camera::DofMode::Default &&
                 rk->speedIndex == editor::kMarkerSpeedDefaultIndex && rk->lookAtTarget == 0 && Near(rk->pose.fov, 45),
             "reset: the defaults, keeping the time");
@@ -1440,10 +1440,45 @@ namespace
     }
 }
 
+    // A new marker blends with No Blend, unless it lands inside a blend
+    // (between a Free marker that blends and the next marker): then it keeps
+    // that blend, so the move plays as before.
+    void TestAddBlendDefault()
+    {
+        CameraState a{}, b{};
+        a.position = {0.0f, 0.0f, 2.0f};
+        b.position = {10.0f, 0.0f, 2.0f};
+        Track track;
+        track.AddMarker(FreeAt(1000, a, Blend::Spline));
+        track.AddMarker(FreeAt(3000, b, Blend::Spline));
+        track.AddMarker(FreeAt(5000, b, Blend::None));
+        const Keyframe& first = track.Keyframes()[0];
+        Keyframe inside;
+        inside.timeMs = 2000;
+        camera::InheritFrom(inside, first, camera::InsideBlend(track, inside.timeMs));
+        Check(camera::InsideBlend(track, 2000) && inside.blend == Blend::Spline,
+            "add blend: inside a blend the new marker keeps it");
+        const Keyframe& last = track.Keyframes()[2];
+        Keyframe after;
+        after.timeMs = 6000;
+        camera::InheritFrom(after, last, camera::InsideBlend(track, after.timeMs));
+        Check(!camera::InsideBlend(track, 6000) && after.blend == Blend::None && after.ease,
+            "add blend: after the last marker the new marker is No Blend");
+        Track cut;
+        cut.AddMarker(FreeAt(1000, a, Blend::None));
+        cut.AddMarker(FreeAt(3000, b, Blend::Spline));
+        cut.AddMarker(FreeAt(5000, b, Blend::None));
+        Keyframe inCut;
+        inCut.timeMs = 2000;
+        camera::InheritFrom(inCut, cut.Keyframes()[0], camera::InsideBlend(cut, inCut.timeMs));
+        Check(inCut.blend == Blend::None, "add blend: inside a cut the new marker is No Blend");
+    }
+
 int RunCameraMarkerTests()
 {
     TestClipBounds();
     TestAddInherits();
+    TestAddBlendDefault();
     TestDelete();
     TestLastMarkerView();
     TestMove();

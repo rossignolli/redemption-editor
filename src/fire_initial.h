@@ -5,38 +5,14 @@
 // tests/scenery_speech_tests.cpp); the reads are in fire_observer.cpp
 // (ReadActiveFires) and the use in replay_events.cpp.
 //
-// Evidence (build 1491.50):
-// - A fire is made by CFire::Init 0x1282CC0 (with 0x12870E4) from a
-//   descriptor; StartFireCore 0x12B5EA4 is one caller (every script, map,
-//   explosion, spread start), but the ptfx fire registration 0x12A1698
-//   (reached from the particle instance update 0x1405838 -> 0x145DCD0 ->
-//   0x12A1DE8, type 11) calls GetFreeFire 0x127D1E4 and CFire::Init
-//   directly: the start detour never sees those fires, whenever they start.
-//   The registration has other owners too (0x12C7380 type 11, an
-//   entry of a 16-entry system updated from 0x12BDAF8; 0x12A22F4 type 10,
-//   from vfx 0x14303A4; 0x12A248C type 9, from 0x15C9854), all with the
-//   owner in desc+0xB0: "ptfx-owned" below means registered by any owner.
-// - CFire::Init sets flags +0xE8 |= 0x180 when desc+0xB0 (the registering
-//   effect instance, kept at fire+0x1A8) is not null; the registration sets
-//   0x100 again each frame it finds its fire (0x12A170C); CFire::Update
-//   0x12BC2D4 shuts a fire with 0x80 and without 0x100 down (0x12BC36F to
-//   0x12BC388). Such a fire lives exactly as long as its effect plays: it is
-//   the effect's, not a fire the replay can own on its own.
-// - The field copies of Init (desc -> fire): +0x00 -> +0x10, +0x10 -> +0x20,
-//   +0x20 (vec4, w = incident group, refcounted) -> +0x50, +0x30 -> +0x120,
-//   +0x40 -> +0x70, +0x48 -> +0x78, +0x50 -> +0x98, +0x54 -> +0x9C,
-//   +0x58 -> +0xA0, +0x60 -> +0x88, +0x68 -> +0x184, +0x6C -> +0x18C,
-//   +0x70 -> +0x190, +0x7C -> +0x14C, +0x90 -> +0x40, +0xA0 -> +0xA4,
-//   +0xA4 -> +0x140, +0xA8 -> +0x144, +0xB0 -> +0x1A8, +0xB8 -> +0x1A0,
-//   +0xC0 -> +0x80, +0xE0 -> +0x1C4, +0xE4 -> +0x154 (and the fire's seed),
-//   +0xE8 -> +0x90, +0x110 -> +0xDC; desc+0x114 bit 0x40 -> +0x184 = FLT_MAX
-//   (burns until stopped), bits 0x01/0x02/0x04/0x20 -> +0xE8 bits 11/10/12/13,
-//   desc+0x115 bit 0x02 -> +0xE8 bit 2. The defaults of the descriptor
-//   constructor 0x1251EBC fill the rest.
-// - StopFireInRange 0x1272740 (the STOP_FIRE_IN_RANGE native) walks the
-//   active list (+0xB18B8 count, +0xB18BC int[128]), skips fires with +0xE8
-//   bit 11 (0x800) and shuts the others within the 3D radius of +0x30 down
-//   with Shutdown(fire, 0, 0).
+// Why: fires registered by a particle effect (and a few other owners) are made
+// by CFire::Init directly, so the start detour never sees them. Such a fire
+// (owner in desc+0xB0, flags 0x180) lives exactly as long as its effect plays:
+// it belongs to the effect, not a fire the replay can own on its own.
+// STOP_FIRE_IN_RANGE skips fires with +0xE8 bit 11 (0x800).
+// Offline dump, build 1491.50. The descriptor to fire field copies are in the
+// research note.
+// Research: docs/research/fx-fires-decals-effects.md
 
 #include <algorithm>
 #include <cmath>
@@ -108,7 +84,7 @@ namespace replay::fire
     }
 
     // The descriptor a fire was made from, rebuilt from the fire: the
-    // constructor defaults (0x1251EBC) and every field CFire::Init copies,
+    // constructor defaults and every field CFire::Init copies,
     // reversed. No incident group (+0x2C = -1: the group table is
     // refcounted by Init and the descriptor destructor), no effect owner
     // (ptfx-owned fires are never rebuilt), no culprit, no parent.

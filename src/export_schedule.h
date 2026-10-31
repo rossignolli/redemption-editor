@@ -95,7 +95,7 @@ namespace replay::exporting
     // Motion blur in slow motion.
     //
     // The engine clamps every game step (the frame step times the world time
-    // scale) to a minimum, [0x3CC8388] in build 1491.50: 1/3000 s. 32 samples
+    // scale) to a minimum, the time set clamp's [min step]: 1/3000 s. 32 samples
     // at 60 fps, 180 degrees, are 260 us apart, already under that minimum at
     // normal speed, and at a 20 % marker 52 us asked against 333 us run: the
     // world 6.4 times too fast between samples.
@@ -289,7 +289,8 @@ namespace replay::exporting
         Preroll = 1, // the world settles before the first frame; not captured
         Capture = 2, // a sub-sample of an output frame
         Flush = 3,   // after the last frame: the frames still in the render pipeline reach the present
-        Done = 4
+        Done = 4,
+        Hold = 5     // the game shows a menu or a frontend screen: the clock stands still (export_hold.h); not captured
     };
 
     struct Settings
@@ -358,6 +359,23 @@ namespace replay::exporting
         {
             const std::int64_t prerollNs = FrameStartNs(m_settings.rate, static_cast<std::int64_t>(m_settings.prerollFrames) + 1);
             return baseMs + static_cast<std::uint64_t>((m_lastTimeNs + prerollNs) / 1000000);
+        }
+
+        // A tick that does not advance the clock (export_hold.h): the next
+        // serial, the frame and time the clock stands at, step 0. The ticks
+        // around it are what they would be without it (frame counts, sample
+        // times and steps unchanged).
+        Tick HoldTick() noexcept
+        {
+            Tick tick;
+            tick.serial = m_serial++;
+            tick.phase = Phase::Hold;
+            tick.frame = m_frame;
+            tick.sample = m_sample;
+            tick.samples = m_frameSamples;
+            tick.timeNs = m_lastTimeNs;
+            tick.stepNs = 0;
+            return tick;
         }
 
         Tick Next() noexcept

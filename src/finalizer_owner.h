@@ -1,6 +1,6 @@
 #pragma once
 
-// Who holds the engine pose finalizer hook (RVA 0x266C294, build 1491.50).
+// Who holds the engine pose finalizer hook.
 //
 // The Pose Editor and the ReplayPoC both detour the same function. They are
 // installed together but used one at a time: a mod claims this slot before

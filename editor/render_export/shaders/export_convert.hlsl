@@ -11,17 +11,26 @@
 //                 a plain buffer copy and ffmpeg takes the frame as is
 //                 (no swscale on the CPU for the NVENC presets).
 //
-// Compiled offline to SPIR-V (Vulkan, the game's API) by
-// tools/render_bench/compile_shaders.sh into export_convert_spirv.h; the
-// offline bench (tools/render_bench) runs the same bytecode on the GPU and
-// compares it with a CPU reference (render_convert_ref.h).
+// Compiled offline by tools/render_bench/compile_shaders.sh (one command,
+// both outputs): to SPIR-V for Vulkan (glslang, export_convert_spirv.h) and
+// to DXIL for D3D12 (dxc, cs_6_0, export_convert_dxil.h). The offline bench
+// (tools/render_bench) runs the same bytecode on the GPU and compares it
+// with a CPU reference (convert_ref.h): --check (Vulkan), --check-dx12.
 //
-// Bindings (set 0): 0 the picture (sampled image, read with Load: no
-// sampler), 1 the sum (RGBA32F storage image, one texel per pixel), 2 the
-// output bytes as an R32_UINT storage image kOutputRowWords texels wide
-// (word i at (i % kOutputRowWords, i / kOutputRowWords)), so a plain
-// image-to-buffer copy gives the bytes in order. Push constants:
-// ExportConstants below (48 bytes).
+// Resources: the picture (sampled image, read with Load: no sampler), the
+// sum (RGBA32F storage image, one texel per pixel), the output bytes as an
+// R32_UINT storage image kOutputRowWords texels wide (word i at
+// (i % kOutputRowWords, i / kOutputRowWords)), so a plain image-to-buffer
+// copy gives the bytes in order (the row is 16384 bytes, a multiple of the
+// 256 byte row pitch D3D12 needs). Constants: ExportConstants below (48
+// bytes, 12 words).
+//   Vulkan: set 0, bindings 0 picture, 1 sum, 2 output (vk::binding), push
+//           constants (one push descriptor set, gpu_export.cpp).
+//   D3D12:  t0 picture, u0 sum, u1 output, b0 constants, all space0. The
+//           root signature comes from reshade::api (gpu_export.cpp): table
+//           {t0}, table {u0, u1}, 12 root constants at b0. ReShade's D3D12
+//           push_descriptors writes a fresh descriptor table per call, so
+//           the SRV and the UAVs sit in separate tables there.
 //
 // Storage images, not storage buffers (found in game): in
 // ReShade 6.6.2 on Vulkan a buffer with unordered_access usage also gets
@@ -29,7 +38,7 @@
 // addresses when ray tracing is on; in RDR2 the buffer creation failed
 // (RENDER_EXPORT,phase=fail,detail=gpu_buffers). Images have no such flag.
 
-#ifdef VULKAN // predefined by glslang for SPIR-V
+#ifdef VULKAN // predefined by glslang for SPIR-V (dxc builds the D3D12 side without it)
 #define BINDING(b) [[vk::binding(b, 0)]]
 #define IMAGE_FORMAT(f) f
 #else
@@ -56,15 +65,15 @@ struct ExportConstants
 #ifdef VULKAN
 [[vk::push_constant]] ConstantBuffer<ExportConstants> pc;
 #else
-cbuffer Constants : register(b0)
+cbuffer Constants : register(b0, space0)
 {
     ExportConstants pc;
 };
 #endif
 
-BINDING(0) Texture2D<float4> Picture : register(t0);
-BINDING(1) IMAGE_FORMAT([[spv::format_rgba32f]]) RWTexture2D<float4> Sum : register(u0);
-BINDING(2) IMAGE_FORMAT([[spv::format_r32ui]]) RWTexture2D<uint> Output : register(u1);
+BINDING(0) Texture2D<float4> Picture : register(t0, space0);
+BINDING(1) IMAGE_FORMAT([[spv::format_rgba32f]]) RWTexture2D<float4> Sum : register(u0, space0);
+BINDING(2) IMAGE_FORMAT([[spv::format_r32ui]]) RWTexture2D<uint> Output : register(u1, space0);
 
 // Output texels per row (convert_ref.h kOutputRowWords).
 static const uint kOutputRowShift = 12;

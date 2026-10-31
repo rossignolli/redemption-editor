@@ -53,7 +53,7 @@ namespace replay::horsesound
     }
 
     // The first path of a line: animals take the native path first when it
-    // is on (ini AnimalVocalNative, default 1), everyone else the direct one.
+    // is on (always in the replay; false for the tests), everyone else the direct one.
     inline AnimalAttempt FirstAttempt(bool animal, bool nativeOn)
     {
         return animal && nativeOn ? AnimalAttempt::Pinned : AnimalAttempt::Direct;
@@ -170,7 +170,7 @@ namespace replay::horsesound
         std::uint32_t wet = 0;       // ... above 0: the wet layer should play
         std::uint32_t wetPlayed = 0; // wet steps played with the wetness set
         // Wet steps played while the ped's +0xB0 bit 7 was set: the step
-        // skips the wet layer then (0x318D346), whatever the wetness.
+        // skips the wet layer then, whatever the wetness.
         std::uint32_t wetGateClosed = 0;
         std::map<std::string, std::uint32_t> reasons;
     };

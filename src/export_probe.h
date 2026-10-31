@@ -75,6 +75,14 @@ namespace replay::exportprobe
         bool settling = false;   // seek settle or clip load still running
         float frameTime = 0.0f;  // GET_FRAME_TIME this tick (the timer check)
         float worldScale = 1.0f; // the SET_TIME_SCALE the replay applies
+        // exporthold::Signal bits of the screen this tick (menu, alert,
+        // loading: src/export_hold.h has the natives); the probe adds paused
+        // and close itself.
+        std::uint32_t screenSignals = 0;
+        // Transport::LostMs: the playhead time normal play did not get from the
+        // wall clock (held and stalled frames). During the audio pass every ms
+        // of it moves the rest of the captured sound late against the video.
+        std::uint64_t transportLostMs = 0;
     };
 
     // What the tick must do before the transport update.
@@ -101,6 +109,9 @@ namespace replay::exportprobe
     replay::exporting::FrameRate ExportRate();
     // The Snapshot flag (SnapshotExporting): any state but idle.
     bool ShowsExporting();
+    // The video pass runs (preroll, capture, flush): the script reads the
+    // screen signals (src/export_hold.h: cancel or hold).
+    bool WantsScreenSignals();
     // The picture belongs to the video (seek to the end of the flush):
     // the HUD, the debug drawing and the text notices stay off.
     bool HidesHud();

@@ -1,17 +1,16 @@
 #pragma once
 
-// Engine fires. RDR2's fire manager (module+0x4C3F1E0: 128 fires of 0x1F0
+// Engine fires. RDR2's fire manager (a static object: 128 fires of 0x1F0
 // bytes at +0x10, remnants 2048 x 0xF0 at +0xF820) starts every fire, seeds
-// and spread children alike, through StartFireCore 0x12B5EA4(mgr, desc); the
-// fire shutdown 0x12B2368 (fire, instant, u8) ends it and, for map fires
-// (type 12), leaves a remnant (RemnantAdd 0x126E6D8) that keeps smouldering;
-// RemnantRemove 0x12B31C4 ends a remnant. Spreading happens in TrySpread
-// 0x12B3B54, called only by the fire update. Flames, the burnt ground, embers
-// and the lingering smoke are drawn by the area fire system from live fires
-// and remnants, so the replay recreates real fires.
+// and spread children alike, through StartFireCore(mgr, desc); the fire
+// shutdown (fire, instant, u8) ends it and, for map fires (type 12), leaves a
+// remnant (RemnantAdd) that keeps smouldering; RemnantRemove ends a remnant.
+// Spreading happens in TrySpread, called only by the fire update. Flames, the
+// burnt ground, embers and the lingering smoke are drawn by the area fire
+// system from live fires and remnants, so the replay recreates real fires.
 // Read-only detours record every call; during playback TrySpread returns
-// without spreading so only recorded fires exist. Build 1491.50,
-// signature-checked, SEH-guarded; detours never call natives.
+// without spreading so only recorded fires exist. Found by signature,
+// SEH-guarded; detours never call natives.
 
 #include <algorithm>
 #include <cstdint>
@@ -28,19 +27,18 @@ namespace replay::fire
     constexpr std::uint32_t kFireCount = 128;
 
     // Descriptor pointers a replayed start must not carry from the
-    // recording. +0xF0 is the parent fire (a slot of the static manager):
-    // 0x127B1BC (called by StartFireCore at 0x12B5EF2) passes the desc to
-    // 0x1269D8C, which for types 13..15 reads parent+0x70 (the parent's
-    // entity) and, when it differs from desc+0x40, reads [desc+0x40]+0x30
-    // (0x1269E2A) with no null check. At playback the recorded slot holds
-    // another fire (often one on a burning puppet) while this fire's entity
-    // is null: the fault at RDR2.exe+0x1269E2A, fault_address=0x30. With
-    // +0xF0 null the check returns at once (0x1269DAC) and the recorded world
-    // position (+0x20) is kept. +0xF8 is the second entity excluded from the
-    // parent line-of-sight
+    // recording. +0xF0 is the parent fire (a slot of the static manager): a
+    // helper StartFireCore calls passes the desc to the entity check, which
+    // for types 13..15 reads parent+0x70 (the parent's entity) and, when it
+    // differs from desc+0x40, reads [desc+0x40]+0x30 with no null check. At
+    // playback the recorded slot holds another fire (often one on a burning
+    // puppet) while this fire's entity is null: a fault in that check,
+    // fault_address=0x30. With +0xF0 null the check returns at once and the
+    // recorded world position (+0x20) is kept. +0xF8 is the second entity
+    // excluded from the parent line-of-sight
 
-    // probe (0x12B6266), only read when +0x115 bit 0 is set, which the
-    // replay clears; a stale heap pointer there is cleared too.
+    // probe, only read when +0x115 bit 0 is set, which the replay clears; a
+    // stale heap pointer there is cleared too.
     constexpr std::size_t kDescEntityA = 0x40;
     constexpr std::size_t kDescEntityB = 0x48;
     constexpr std::size_t kDescCulprit = 0xC0;
@@ -195,8 +193,8 @@ namespace replay::fire
     void SetBlockSpread(bool on);
     // While the playhead stands still (pause, scrub) the world keeps
     // running: the fires and area items of these owners (our fires and their
-    // remnants) are updated with a zero time step (fire update 0x12BC2D4,
-    // area item update 0x12C0B88).
+    // remnants) are updated with a zero time step (the fire update and the
+    // area item update).
     void SetFrozenOwners(const std::vector<std::uint64_t>& owners);
     void SetFreeze(bool on);
     // A fire from a recorded descriptor (already patched by the caller); null
@@ -208,11 +206,11 @@ namespace replay::fire
     int ClearRemnants(const float* center, float radius, std::string& error);
     // The burnt ground: dead area-fire items that never expire (they paint
     // the char and block spread) are cleared in a sphere through the
-    // engine's own region clear 0x12A35E4(area 0x4E2F5B0, &centre, &radius
-    // splat, full). Fires must be ended first (items of live fires are kept).
+    // engine's own region clear (area, &centre, &radius splat, full). Fires
+    // must be ended first (items of live fires are kept).
     bool ClearBurntGround(const float* center, float radius, std::string& error);
-    // The engine's own counts of active fires (manager +0xB18B8, int, read
-    // by 0x1272740 and 0x12C8204) and active remnants (+0x88820), guarded
+    // The engine's own counts of active fires (manager +0xB18B8, int, as the
+    // engine's fire queries read it) and active remnants (+0x88820), guarded
     // reads. Evidence for the recording start: a fire the start detour never
     // saw (lit before the observer was installed: game load, a session reset
     // after the save reload, a hot reload) is in these counts and not in
@@ -237,9 +235,10 @@ namespace replay::fire
     // Bench hook (fire_forget): the observer forgets the live fires it
     // tracks, as if they were lit before it was installed. Returns how many.
     int ForgetLiveFires();
-    // Area-fire items (the burning / burnt disc of a map fire; area
-    // 0x4E2F5B0, pool of 2048 x 0xE0 at [area+0x58]). Guarded reads, and
-    // writes of plain floats only on items owned by the replay's fires.
+    // Area-fire items (the burning / burnt disc of a map fire; the area fire
+    // system's pool of 2048 x 0xE0 at [area+0x58]). Guarded reads, and writes
+    // of plain floats only on items owned by the replay's fires, only when the
+    // engine's item code shows the fields written.
     struct AreaItem
     {
         std::uint64_t owner = 0;     // +0xB8: the fire, then its remnant
@@ -277,7 +276,8 @@ namespace replay::fire
     // StartFire/StopFire) bumps the slot's generation; the replay keeps the
     // generation of its start and a write is refused once the slot was
     // stopped or reused since, outside the pool, outside the two known
-    // fields, or before the start/stop signatures were verified (Install).
+    // fields (the age and the seed, as the fire update uses them), or before
+    // the start/stop signatures were verified (Install).
     constexpr std::size_t kFireAgeOffset = 0x188; // float, seconds
     constexpr std::size_t kFireRngOffset = 0x1C8; // 8 bytes, the effect seed
 

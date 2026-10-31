@@ -52,13 +52,13 @@ on exit the latest save is reloaded. Each of these changes lasts only while the 
 Every feature uses the lowest rung that works, and climbs only when the rung below has failed with evidence:
 
 1. **Natives** through Script Hook RDR2, on the script thread.
-2. **Guarded reads** of engine fields whose layout was proven offline for the supported game build, inside SEH
-   (`src/guarded_memory.h`), with a log line when a read faults.
+2. **Guarded reads** of engine fields whose layout was proven offline and is in the bytes of a checked signature,
+   inside SEH (`src/guarded_memory.h`), with a log line when a read faults.
 3. **Guarded writes** of plain fields with a proven layout, only on objects the replay owns (its puppets, their
    weapons, the ropes it created).
-4. **Calls to internal engine functions**, only after the function's first bytes match the expected signature at its
-   known address, with the full argument list and SEH. A mismatch turns the feature off and logs it.
-5. **Detours** (MinHook), with the same signature check. A detour forwards every call to the original and changes
+4. **Calls to internal engine functions** found by signature ([signatures.md](signatures.md)), with the full
+   argument list and SEH. A signature not found exactly once turns the feature off and logs it.
+5. **Detours** (MinHook), on functions found the same way. A detour forwards every call to the original and changes
    behaviour only for replay entities, or for the world while the replay owns it. Detours are installed once, removed
    on unload, and wait for calls in flight.
 

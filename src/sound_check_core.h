@@ -18,6 +18,9 @@
 // (GeneralSound, section GSND) and plays them on the owner's puppet unless
 // the puppet makes the same sound itself (OwnCreates, the ped audio rule).
 
+#include "engine_sigs.h"
+#include "game_sig_core.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -32,6 +35,9 @@
 
 namespace replay::census
 {
+    namespace sig = replay::sig;
+    using enginesig::kWeatherEntityVtable;
+
     constexpr std::uint32_t kWindowMs = 250;
     constexpr std::size_t kParamsBytes = 0x140; // audSoundInitParams bytes copied (census rows, captured sounds)
     constexpr std::uint32_t kNoOwner = 0xFFFF0000u; // the packed id of "no recorded entity"
@@ -129,35 +135,178 @@ namespace replay::census
     };
     constexpr std::uint8_t kAudioBaseCount = 6;
 
-    // The static audio entities of the image (game build 1491.50) a recording
-    // names by RVA, with the vtable each one has. Evidence: the (RVA, vtable)
-    // pairs the recorder stored with every Image based generic sound (SGEN)
-    // of the 116 QA clips, and for 0x5BFB5B0 (two SNDS impacts, no SGEN row)
-    // its static constructor 0x31015E4 in the live dump (base ctor 0x3102228,
-    // then the vtable 0x3831F88 at +0; the same read of 0x30FFD20 gives the
-    // recorded 0x3832238 of 0x5C10540). The clip sections without a vtable
-    // (SNDS globalAudio, ESND audioRva) are played only on one of these, and
-    // only while the live object there still has that vtable
-    // (audio::TrustedImageAudio): a clip cannot make any other image address
-    // an audio object.
+    // The static audio entities of the image a recording names by RVA, with
+    // the vtable each one has. Evidence: the (RVA, vtable) pairs the recorder
+    // stored with every Image based generic sound (SGEN) of the 116 QA clips,
+    // and for the second one (two SNDS impacts, no SGEN row) its static
+    // constructor in the live dump (the audio entity base constructor, then
+    // its vtable at +0; the same read of the fourth's constructor gives its
+    // recorded vtable). The clip sections without a vtable (SNDS globalAudio,
+    // ESND audioRva) are played only on one of these, and only while the live
+    // object there still has that vtable (audio::TrustedImageAudio): a clip
+    // cannot make any other image address an audio object.
     struct ImageAudio
     {
-        std::uint32_t rva;
-        std::uint32_t vtableRva;
+        std::uint32_t rva = 0;
+        std::uint32_t vtableRva = 0;
     };
-    inline constexpr ImageAudio kImageAudio[] = {
-        {0x5B9F960u, 0x3833708u}, {0x5BFB5B0u, 0x3831F88u}, {0x5C0F880u, 0x3834948u}, // 0x5C0F880: frontend
-        {0x5C10540u, 0x3832238u}, // the static collision audio
-        {0x5C500B0u, 0x3832328u}, {0x5C505C0u, 0x3832418u}, {0x5C77390u, 0x3833618u}, {0x5C79E80u, 0x38326C8u},
-        {0x5C7CE90u, 0x3832148u}, {0x5C81C20u, 0x383D4A8u}, // 0x5C81C20: script audio
-        {0x5C90070u, 0x383D3B0u}, {0x5C9A660u, 0x383ECF0u}, {0x5CA7BB0u, 0x383F010u}, // 0x5CA7BB0: ambient
-    };
-    // The vtable RVA the static audio entity at `rva` must have; false for an
-    // RVA that is not one of them.
-    inline bool KnownImageAudio(std::uint64_t rva, std::uint32_t& vtableRva)
+    inline constexpr std::size_t kImageAudioCount = 13;
+    // The objects found in the running game (audio::TrustedImageAudio) or on
+    // the 1491.50 exe (KnownImageAudioTable, for the offline tools); an entry
+    // not found stays 0.
+    struct ImageAudioTable
     {
-        for (const ImageAudio& known : kImageAudio)
-            if (known.rva == rva)
+        ImageAudio entry[kImageAudioCount];
+    };
+
+    // Each one by signature: the code that writes its vtable (its class's
+    // constructor; for the 11th and 12th the object's static initializer),
+    // the vtable from there and the object as the one static object of the
+    // image's writable data that starts with it. Each class's constructor
+    // runs for that one static object (its static initializer); the objects
+    // lie in the zero-initialized tail of .data, so the vtable is written at
+    // startup and no initialized data holds it.
+    //
+    // The 5th and the 9th have no code of their own that writes their vtable:
+    // their static initializers construct them inline and are byte for byte
+    // other objects' initializers (only the addresses differ), and so is the
+    // 9th's destructor; nothing calls either (the CRT's table does, the vtable
+    // does). So each object comes from a function that uses it, and its
+    // vtable is the one it has in the game (read once, at the first check),
+    // accepted when the vtable holds the class's method at a slot: for the
+    // 9th a method only its vtable holds, for the 5th one of the four classes
+    // that share its slot +0x10.
+    inline const sig::Signature kImageAudio01Ctor{"census_image_audio_01_ctor",
+        "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 33 C9 48 8D 05 ?? ?? ?? ?? 48 89 03 0F 57 C0 48 89 8B C8 01 00 00",
+        0x31020C0};
+    inline const sig::Signature kImageAudio01Vtable{"census_image_audio_01_vtable", kImageAudio01Ctor,
+        sig::Rel32{0x13, 0x17}, "", 0x3833708};
+    inline const sig::Signature kImageAudio01{"census_image_audio_01", kImageAudio01Vtable, sig::Instance{},
+        "", 0x5B9F960};
+    inline const sig::Signature kImageAudio02Ctor{"census_image_audio_02_ctor",
+        "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? BA E8 03 00 00 48 8D 8B C8 01 00 00 48 89 03",
+        0x31015E4};
+    inline const sig::Signature kImageAudio02Vtable{"census_image_audio_02_vtable", kImageAudio02Ctor,
+        sig::Rel32{0x11, 0x15}, "", 0x3831F88};
+    inline const sig::Signature kImageAudio02{"census_image_audio_02", kImageAudio02Vtable, sig::Instance{},
+        "", 0x5BFB5B0};
+    // 3: the frontend's.
+    inline const sig::Signature kImageAudio03Ctor{"census_image_audio_03_ctor",
+        "48 89 5C 24 08 48 89 6C 24 10 56 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 8D 8B C8 01 00 "
+        "00 48 89 03", 0x31009C8};
+    inline const sig::Signature kImageAudio03Vtable{"census_image_audio_03_vtable", kImageAudio03Ctor,
+        sig::Rel32{0x1A, 0x1E}, "", 0x3834948};
+    inline const sig::Signature kImageAudio03{"census_image_audio_03", kImageAudio03Vtable, sig::Instance{},
+        "", 0x5C0F880};
+    // 4: the static collision audio.
+    inline const sig::Signature kImageAudio04Ctor{"census_image_audio_04_ctor",
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 54 41 56 41 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? "
+        "?? 48 8D 05 ?? ?? ?? ?? BD 2C 01 00 00 48 89 03", 0x30FFD20};
+    inline const sig::Signature kImageAudio04Vtable{"census_image_audio_04_vtable", kImageAudio04Ctor,
+        sig::Rel32{0x28, 0x2C}, "", 0x3832238};
+    inline const sig::Signature kImageAudio04{"census_image_audio_04", kImageAudio04Vtable, sig::Instance{},
+        "", 0x5C10540};
+    inline const sig::Signature kImageAudio05User{"census_image_audio_05_user",
+        "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 30 0F B6 41 40", 0x23F0098};
+    inline const sig::Signature kImageAudio05Site{"census_image_audio_05_site", kImageAudio05User, sig::Offset{0x7E},
+        "48 8D 1D ?? ?? ?? ??", 0x23F0116};
+    inline const sig::Signature kImageAudio05{"census_image_audio_05", kImageAudio05Site, sig::Rel32{0x03, 0x07},
+        "", 0x5C500B0};
+    inline const sig::Signature kImageAudio05Method{"census_image_audio_05_method",
+        "40 53 48 83 EC 20 65 48 8B 14 25 58 00 00 00 48 8B D9 8B 05 ?? ?? ?? ?? B9 1C 06 00 00 48 8B 04 C2 F6 04 01 "
+        "01 0F 84 ?? ?? ?? ??", 0x30FCD14};
+    inline const sig::Signature kImageAudio06Ctor{"census_image_audio_06_ctor",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 "
+        "8D 8B E0 01 00 00 48 89 03", 0x3100604};
+    inline const sig::Signature kImageAudio06Vtable{"census_image_audio_06_vtable", kImageAudio06Ctor,
+        sig::Rel32{0x1F, 0x23}, "", 0x3832418};
+    inline const sig::Signature kImageAudio06{"census_image_audio_06", kImageAudio06Vtable, sig::Instance{},
+        "", 0x5C505C0};
+    inline const sig::Signature kImageAudio07Ctor{"census_image_audio_07_ctor",
+        "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 8D 8B D0 01 00 "
+        "00 48 89 03", 0x3100234};
+    inline const sig::Signature kImageAudio07Vtable{"census_image_audio_07_vtable", kImageAudio07Ctor,
+        sig::Rel32{0x1A, 0x1E}, "", 0x3833618};
+    inline const sig::Signature kImageAudio07{"census_image_audio_07", kImageAudio07Vtable, sig::Instance{},
+        "", 0x5C77390};
+    inline const sig::Signature kImageAudio08Ctor{"census_image_audio_08_ctor",
+        "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 30 0F 29 70 E8 48 8B D9 E8 ?? ?? ?? "
+        "?? 48 8D 05 ?? ?? ?? ?? BD 0A 00 00 00 48 89 03", 0x3100C68};
+    inline const sig::Signature kImageAudio08Vtable{"census_image_audio_08_vtable", kImageAudio08Ctor,
+        sig::Rel32{0x28, 0x2C}, "", 0x38326C8};
+    inline const sig::Signature kImageAudio08{"census_image_audio_08", kImageAudio08Vtable, sig::Instance{},
+        "", 0x5C79E80};
+    inline const sig::Signature kImageAudio09User{"census_image_audio_09_user",
+        "40 53 48 83 EC 20 8B 91 90 00 00 00 48 8B D9 48 8D 0D ?? ?? ?? ??", 0x3102C00};
+    inline const sig::Signature kImageAudio09{"census_image_audio_09", kImageAudio09User, sig::Rel32{0x12, 0x16},
+        "", 0x5C7CE90};
+    inline const sig::Signature kImageAudio09Method{"census_image_audio_09_method",
+        "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 33 D2 8D 4A 08", 0x30FDA24};
+    // 10: the script audio.
+    inline const sig::Signature kImageAudio10Ctor{"census_image_audio_10_ctor",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 65 48 8B 14 25 58 00 00 "
+        "00 48 8D 05 ?? ?? ?? ?? 48 89 03", 0x31B9958};
+    inline const sig::Signature kImageAudio10Vtable{"census_image_audio_10_vtable", kImageAudio10Ctor,
+        sig::Rel32{0x28, 0x2C}, "", 0x383D4A8};
+    inline const sig::Signature kImageAudio10{"census_image_audio_10", kImageAudio10Vtable, sig::Instance{},
+        "", 0x5C81C20};
+    inline const sig::Signature kImageAudio11{"census_image_audio_11", kWeatherEntityVtable, sig::Instance{},
+        "", 0x5C90070};
+    inline const sig::Signature kImageAudio12Init{"census_image_audio_12_init",
+        "48 89 5C 24 08 57 48 83 EC 20 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? BF 80 00 00 00 48 89 "
+        "05 ?? ?? ?? ??", 0x115550};
+    inline const sig::Signature kImageAudio12Vtable{"census_image_audio_12_vtable", kImageAudio12Init,
+        sig::Rel32{0x19, 0x1D}, "", 0x383ECF0};
+    inline const sig::Signature kImageAudio12{"census_image_audio_12", kImageAudio12Vtable, sig::Instance{},
+        "", 0x5C9A660};
+    // 13: the ambient audio.
+    inline const sig::Signature kImageAudio13Ctor{"census_image_audio_13_ctor",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 30 48 8B D9 E8 ?? ?? ?? ?? 33 ED 48 8D 05 ?? ?? ?? "
+        "?? 48 89 03", 0x31FA614};
+    inline const sig::Signature kImageAudio13Vtable{"census_image_audio_13_vtable", kImageAudio13Ctor,
+        sig::Rel32{0x21, 0x25}, "", 0x383F010};
+    inline const sig::Signature kImageAudio13{"census_image_audio_13", kImageAudio13Vtable, sig::Instance{},
+        "", 0x5CA7BB0};
+
+    struct ImageAudioSignatures
+    {
+        const sig::Signature* object;
+        // Null: the object's own vtable in the game, checked by `method` at
+        // `slot` (the 5th and the 9th).
+        const sig::Signature* vtable;
+        const sig::Signature* method = nullptr;
+        std::uint32_t slot = 0;
+    };
+    inline const ImageAudioSignatures kImageAudioSignatures[kImageAudioCount] = {
+        {&kImageAudio01, &kImageAudio01Vtable}, {&kImageAudio02, &kImageAudio02Vtable},
+        {&kImageAudio03, &kImageAudio03Vtable}, {&kImageAudio04, &kImageAudio04Vtable},
+        {&kImageAudio05, nullptr, &kImageAudio05Method, 0x10}, {&kImageAudio06, &kImageAudio06Vtable},
+        {&kImageAudio07, &kImageAudio07Vtable}, {&kImageAudio08, &kImageAudio08Vtable},
+        {&kImageAudio09, nullptr, &kImageAudio09Method, 0x10}, {&kImageAudio10, &kImageAudio10Vtable},
+        {&kImageAudio11, &kWeatherEntityVtable}, {&kImageAudio12, &kImageAudio12Vtable},
+        {&kImageAudio13, &kImageAudio13Vtable}
+    };
+
+    // The 1491.50 exe's table (the signatures' addresses there): what the
+    // offline tools read that build's clips with. The 5th's and the 9th's
+    // vtables are known in the game only (0 here).
+    inline ImageAudioTable KnownImageAudioTable()
+    {
+        ImageAudioTable table{};
+        for (std::size_t n = 0; n < kImageAudioCount; ++n)
+        {
+            const ImageAudioSignatures& s = kImageAudioSignatures[n];
+            table.entry[n] = {s.object->rva, s.vtable ? s.vtable->rva : 0u};
+        }
+        return table;
+    }
+
+    // The vtable RVA the static audio entity at `rva` must have; false for an
+    // RVA that is not one of `table`'s.
+    inline bool KnownImageAudio(std::uint64_t rva, std::uint32_t& vtableRva, const ImageAudioTable& table)
+    {
+        for (const ImageAudio& known : table.entry)
+            if (known.rva && known.rva == rva)
             {
                 vtableRva = known.vtableRva;
                 return true;
@@ -180,11 +329,10 @@ namespace replay::census
         return "?";
     }
 
-    // A vehicle's audio entity is the pointer at vehicle+0x900
-    // (build 1491.50: 222 sites read it and call into the vehicle audio
-    // code 0x310xxxx..0x313xxxx; the train whistle 0x154D500 reads the
-    // engine car's [+0x900] and calls 0x313F42C on it, which writes +0x1318,
-    // so the object is longer than 0x1318 bytes).
+    // A vehicle's audio entity is the pointer at vehicle+0x900 (222 sites
+    // read it and call into the vehicle audio code; the train whistle reads
+    // the engine car's [+0x900] and calls a vehicle audio method on it that
+    // writes +0x1318, so the object is longer than 0x1318 bytes).
     constexpr std::uint32_t kVehicleAudioField = 0x900;
     constexpr std::uint32_t kVehicleAudioSpan = 0x1800;
     constexpr std::uint32_t kFieldScanBytes = 0x1400; // entity bytes FindFieldBase reads
@@ -689,24 +837,51 @@ namespace replay::census
     // above the low 32 bits are the bank, 0x800002.. to 0x800006..).
     inline std::uint64_t RefLow(std::uint64_t ref) { return ref & 0xFFFFFFFFull; }
 
-    // The frames of the shared create-and-play queue path
-    // (puppet_audio_rule.h: the drain 0x258A348 returns to 0x258A469, the
-    // audio update calls it at 0x2F1CEF3 and 0x2F1D239). Every queued
-    // one-shot shows them, so two refs on that path are not one request.
-    inline bool QueueFrame(std::uint32_t frame)
+    // The return addresses (RVAs) the census compares call paths with: the
+    // running game's, found by signature (audio::CensusCallSites), or the
+    // 1491.50 ones (the tests). 0: not found, no frame is it.
+    inline constexpr std::size_t kQueueFrames = 5;
+    struct CallSites
     {
-        return frame == 0x258a469u || frame == 0x2f1d23eu || frame == 0x2f1cef8u || frame == 0x2ee86b1u ||
-            frame == 0x25a74dbu || frame == 0;
+        // The shared create-and-play queue path from the create up: the queue
+        // drain's create-and-play call, the audio update's two calls of the
+        // drain, its caller's call of the update and the frame above that (an
+        // indirect call).
+        std::uint32_t queue[kQueueFrames] = {};
+        // The speech line controller's sound creations: the wave and the type
+        // 2 layer (puppet_audio_rule.h SpeechControllerCaller).
+        std::uint32_t speechWave = 0;
+        std::uint32_t speechLayer = 0;
+        // The persistent cores: the creator entry's call of creator A, then
+        // the by-ref core's call of that entry or the by-hash core's call of
+        // the wrapper that jumps to it.
+        std::uint32_t creatorEntry = 0;
+        std::uint32_t byRefCore = 0;
+        std::uint32_t byHashCore = 0;
+    };
+
+    // The frames of the shared create-and-play queue path (and no frame).
+    // Every queued one-shot shows them, so two refs on that path are not one
+    // request.
+    inline bool QueueFrame(std::uint32_t frame, const CallSites& sites)
+    {
+        if (!frame)
+            return true;
+        for (const std::uint32_t site : sites.queue)
+            if (site && frame == site)
+                return true;
+        return false;
     }
 
     // Two findings asked by the same call: the whole path equal, and at
     // least one frame past the creator that is not the shared queue's.
-    inline bool SameRequestPath(const std::uint32_t a[kPathDepth], const std::uint32_t b[kPathDepth])
+    inline bool SameRequestPath(const std::uint32_t a[kPathDepth], const std::uint32_t b[kPathDepth],
+        const CallSites& sites)
     {
         if (std::memcmp(a, b, sizeof(std::uint32_t) * kPathDepth) != 0 || !a[0])
             return false;
         for (std::uint32_t n = 1; n < kPathDepth; ++n)
-            if (!QueueFrame(a[n]))
+            if (!QueueFrame(a[n], sites))
                 return true;
         return false;
     }
@@ -757,25 +932,25 @@ namespace replay::census
         return ref;
     }
 
-    // The return addresses of the speech line controller's
-    // sound creations (0x2FA10CF, the wave in 0x2FA10A4; 0x2FA0DCC, a type 2
-    // layer in 0x2FA0D88; puppet_audio_rule.h SpeechControllerCaller).
-    inline bool SpeechControllerPath(const std::uint32_t path[kPathDepth])
+    // A path through the speech line controller's sound creations.
+    inline bool SpeechControllerPath(const std::uint32_t path[kPathDepth], const CallSites& sites)
     {
         for (std::uint32_t n = 0; n < kPathDepth; ++n)
-            if (path[n] == 0x2FA10CFu || path[n] == 0x2FA0DCCu)
+            if ((sites.speechWave && path[n] == sites.speechWave) ||
+                (sites.speechLayer && path[n] == sites.speechLayer))
                 return true;
         return false;
     }
 
     // A line of the recorded player said by the hidden live player
-    // (SpeechPlayerOnPlayer, SPEECH_PLAYER_ROUTE speaker=player) makes its
+    // (SPEECH_PLAYER_ROUTE speaker=player) makes its
     // sounds on the hidden player's speech entity: counted as the recorded
     // player's, the census compares them with the recorded line. `proxyOn`:
     // the route is on.
-    inline void ProxySpeechKey(bool proxyOn, std::uint32_t recordedPlayer, SummaryKey& key)
+    inline void ProxySpeechKey(bool proxyOn, std::uint32_t recordedPlayer, SummaryKey& key, const CallSites& sites)
     {
-        if (!proxyOn || recordedPlayer == kNoOwner || key.cls != OwnerClass::LivePlayer || !SpeechControllerPath(key.path))
+        if (!proxyOn || recordedPlayer == kNoOwner || key.cls != OwnerClass::LivePlayer ||
+            !SpeechControllerPath(key.path, sites))
             return;
         key.owner = recordedPlayer;
         key.cls = OwnerClass::Player;
@@ -786,7 +961,8 @@ namespace replay::census
     // Linear in the cells (a 140 s busy clip: tens of thousands), run once
     // at the end of a playback on the script thread.
     inline DiffResult Diff(const Summary& recorded, const Summary& played,
-        const std::unordered_map<std::uint32_t, std::uint16_t>& passes, const IgnoreList& ignore)
+        const std::unordered_map<std::uint32_t, std::uint16_t>& passes, const IgnoreList& ignore,
+        const CallSites& sites)
     {
         DiffResult result;
         DiffTotals& totals = result.totals;
@@ -1071,9 +1247,9 @@ namespace replay::census
         // queue path, SameRequestPath), at the same times (the extra's
         // windows within one window of the missing ones) and in about the
         // same number: the engine picked another sound for the same call (a
-        // weapon's shot layer at 0x2EFAEAF: the ref 0x2EF9F7C picks from the
-        // fire info and the weapon audio's state, which the puppet's weapon
-        // does not have). The other side is any pair the replay made more of
+        // weapon's shot layer in the gunshot's play function: the shot ref
+        // picker chooses from the fire info and the weapon audio's state,
+        // which the puppet's weapon does not have). The other side is any pair the replay made more of
         // (not only a finding: an excess of 1 per pass is no EXTRA line), and
         // an excess larger than the loss keeps its own MORE line.
         for (Finding& lost : result.findings)
@@ -1083,7 +1259,8 @@ namespace replay::census
             const double shortBy = lost.recorded - lost.matched;
             for (Leftover& over : leftovers)
             {
-                if (over.owner != lost.owner || PairRef(over.ref) == PairRef(lost.ref) || !SameRequestPath(lost.path, over.path))
+                if (over.owner != lost.owner || PairRef(over.ref) == PairRef(lost.ref) ||
+                    !SameRequestPath(lost.path, over.path, sites))
                     continue;
                 if (over.left < shortBy * 0.5 - 1e-9 || !SpansMeet(lost.spans, over.spans))
                     continue;
@@ -1726,12 +1903,12 @@ namespace replay::census
     }
 
     // The persistent cores the entity sound track (ESND) already watches:
-    // 0x251688D is the return in 0x251686C after the creator call, then
-    // 0x2589214 (in the by-ref core 0x2589124) or 0x25890E7 (in the by-hash
-    // core 0x2589058, through 0x2516808 which jumps to 0x251686C).
-    inline bool PersistentCorePath(const std::uint32_t path[kPathDepth])
+    // the creator entry's call of creator A, then the by-ref core's or the
+    // by-hash core's call (CallSites).
+    inline bool PersistentCorePath(const std::uint32_t path[kPathDepth], const CallSites& sites)
     {
-        return path[0] == 0x251688Du && (path[1] == 0x2589214u || path[1] == 0x25890E7u);
+        return sites.creatorEntry && path[0] == sites.creatorEntry &&
+            ((sites.byRefCore && path[1] == sites.byRefCore) || (sites.byHashCore && path[1] == sites.byHashCore));
     }
 
     // Learns where an audio entity hangs off its entity: the qword in the

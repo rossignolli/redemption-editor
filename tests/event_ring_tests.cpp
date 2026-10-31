@@ -107,9 +107,11 @@ namespace
             late.Publish();
         }
         Check(g_counters.writerDropped.load() == droppedBefore + 1, "the drop is counted");
-        Check(ring[0].value.ticket == 0 && Whole(ring[0].value), "the lagging writer's payload was not touched");
         lagging->Publish();
         delete lagging;
+        Event lagged;
+        Check(TryRead(ring[0], 0, lagged) == Read::Ready && lagged.ticket == 0 && Whole(lagged),
+            "the lagging writer's payload was not touched");
         cursor = 1; // ticket 0 is a lap old: what matters is 1..4
         const Drained drained = ForEachSince(ring, 4, next, cursor, read);
         Check(seen.size() == 3 && seen[0] == 1 && seen[2] == 3 && cursor == 5 && drained.lost == 1 && !drained.waiting,
@@ -251,6 +253,89 @@ namespace
         Check(bigRead == static_cast<std::uint64_t>(kWriters) * 10000 && bigLost == 0,
             "threads: with room in the ring every event is read, none skipped while its writer was preempted");
     }
+
+    // A payload whose size is not a multiple of 8 (the last word is padded)
+    // and a checksum over every other field: a copy that mixes two writers'
+    // words fails the checksum. Writers on several threads, one reader,
+    // a ring small enough that writers lap the reader all the time.
+    struct Odd
+    {
+        std::uint32_t ticket = 0;
+        std::uint32_t parts[8] = {};
+        std::uint8_t tail[3] = {};
+        std::uint32_t checksum = 0;
+    };
+    static_assert(sizeof(Odd) % 8 != 0, "the test needs a padded last word");
+
+    std::uint32_t Checksum(const Odd& odd)
+    {
+        std::uint32_t sum = odd.ticket * 2654435761u;
+        for (const std::uint32_t part : odd.parts)
+            sum = (sum ^ part) * 16777619u;
+        for (const std::uint8_t byte : odd.tail)
+            sum = (sum ^ byte) * 16777619u;
+        return sum;
+    }
+
+    void TestChecksumUnderLaps()
+    {
+        using namespace replay::ring;
+        constexpr std::uint64_t kSize = 8;
+        static Slot<Odd> ring[kSize];
+        std::atomic<std::uint64_t> next{0};
+        std::atomic<int> writersDone{0};
+        constexpr int kWriters = 6;
+        constexpr int kPerWriter = 40000;
+        std::vector<std::thread> writers;
+        for (int w = 0; w < kWriters; ++w)
+            writers.emplace_back([&, w]() {
+                std::uint32_t mix = 0x9E3779B9u * static_cast<std::uint32_t>(w + 1);
+                for (int n = 0; n < kPerWriter; ++n)
+                {
+                    Writer<Odd> slot(ring, kSize, next);
+                    Odd& odd = slot.value;
+                    odd.ticket = static_cast<std::uint32_t>(slot.Ticket());
+                    for (std::uint32_t& part : odd.parts)
+                        part = (mix = mix * 1664525u + 1013904223u);
+                    for (std::uint8_t& byte : odd.tail)
+                        byte = static_cast<std::uint8_t>(mix >> 24);
+                    odd.checksum = Checksum(odd);
+                    slot.Publish();
+                }
+                writersDone.fetch_add(1);
+            });
+        std::uint64_t cursor = 0, read = 0, bad = 0, wrongTicket = 0, windowRead = 0;
+        const auto each = [&](const Odd& odd) {
+            ++read;
+            if (odd.checksum != Checksum(odd))
+                ++bad;
+        };
+        while (writersDone.load() < kWriters)
+        {
+            ForEachSince(ring, kSize, next, cursor, each);
+            // The window reader and TryRead race the writers too.
+            ForEachPublished(ring, kSize, next, [&](const Odd& odd) {
+                ++windowRead;
+                if (odd.checksum != Checksum(odd))
+                    ++bad;
+            });
+            const std::uint64_t end = next.load();
+            Odd out;
+            if (end > 0 && TryRead(ring[(end - 1) % kSize], end - 1, out) == Read::Ready)
+            {
+                if (out.checksum != Checksum(out))
+                    ++bad;
+                if (out.ticket != end - 1)
+                    ++wrongTicket;
+            }
+        }
+        for (std::thread& t : writers)
+            t.join();
+        ForEachSince(ring, kSize, next, cursor, each);
+        Check(bad == 0, "checksum: no copy mixing two writers is ever accepted");
+        Check(wrongTicket == 0, "checksum: TryRead returns the ticket it was asked for");
+        Check(read > 0 && windowRead > 0, "checksum: the readers saw events");
+    }
 }
 
 int RunEventRingTests()
@@ -259,6 +344,7 @@ int RunEventRingTests()
     TestWriterDropsAndAbandons();
     TestOverflowAndTornCopy();
     TestThreads();
+    TestChecksumUnderLaps();
     if (g_ringFailures == 0)
         std::printf("event ring tests passed\n");
     return g_ringFailures;

@@ -1,21 +1,24 @@
 #pragma once
 
 // The weapon effects of the shot track, audited and (clips recorded before
-// WeaponFxEvents) de-duplicated.
+// the weapon effects were events) de-duplicated.
 //
-// Clips without WeaponFxEvents do not keep the muzzle flash and the bullet
+// Older clips (before the weapon effect events) do not keep the muzzle flash and the bullet
 // impact as effects: each shot took the nearest trigger of the muzzle site
-// (0x1452671) and of the impact site (0x144D33A) within its window
+// (weapon_fx_intent_core.h kWeaponMuzzleCall) and of the impact site
+// (kShotImpactCall) within its window
 // (FlushPoseV2FxWindows) and the playback makes them again with scale 1 and
 // no engine state. In a gunfight two shots of different shooters a few ms
 // apart can claim the same trigger, so one flash or impact plays twice and
 // the other shooter's is lost; a shot that hit a body also gets the nearest
 // surface impact. Newer clips record one event per effect start
-// (WeaponFxEvents), never a match by time, and the shot keeps none. For
+// (the weapon effect events), never a match by time, and the shot keeps none. For
 // older clips the audit counts the shared claims and the legacy rule plays a
 // shared hash once.
 //
 // Pure (no game); unit tested in tests/particle_replay_tests.cpp.
+
+#include "game_sig_core.h"
 
 #include <cstdint>
 #include <sstream>
@@ -24,9 +27,22 @@
 
 namespace replay::shotfx
 {
-    constexpr std::uint32_t kMuzzleSite = 0x1452671;
-    constexpr std::uint32_t kImpactSite = 0x144D33A;
-    constexpr std::uint32_t kBodySite = 0x144C076;   // the blood/body hit effect of a bullet (one-shot track)
+    // The trigger sites of a shot's effects other than the muzzle flash (the
+    // call of the triggered instance wrapper; the recorded site is its return
+    // address, fx_observer.h BulletImpactSite and BodyHitSite): the bullet
+    // impact on a surface, and the blood/body hit effect of a bullet (a
+    // one-shot track).
+    inline const sig::Signature kShotImpactCore{"fx_bullet_impact_core",
+        "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D A8 18 FF FF FF 48 81 EC C0 01 "
+        "00 00 4C 8B BD 10 01 00 00",
+        0x144D0CC};
+    inline const sig::Signature kShotImpactCall{"fx_bullet_impact_call", kShotImpactCore, sig::Offset{0x269},
+        "E8 ?? ?? ?? ?? 48 8B D8 48 85 C0", 0x144D335};
+    inline const sig::Signature kShotBodyHit{"fx_body_hit_core",
+        "48 8B C4 48 89 58 10 48 89 48 08 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 90 48 81 EC 70 01 00 00",
+        0x144BF9C};
+    inline const sig::Signature kShotBodyCall{"fx_body_hit_call", kShotBodyHit, sig::Offset{0xD5},
+        "E8 ?? ?? ?? ?? 4C 8B F0 48 85 C0", 0x144C071};
     constexpr std::uint32_t kSharedWindowMs = 100;    // two shots this close claimed the same trigger
     constexpr std::int32_t kBodyBeforeMs = 30;        // a body effect within [-30, +10] ms of the shot: it hit a body
     constexpr std::int32_t kBodyAfterMs = 10;
@@ -62,7 +78,7 @@ namespace replay::shotfx
         std::uint32_t pelletShots = 0;
         std::uint32_t legacySkippedMuzzle = 0;
         std::uint32_t legacySkippedImpact = 0;
-        bool weaponEvents = false; // the clip has the weapon effects as events (WeaponFxEvents)
+        bool weaponEvents = false; // the clip has the weapon effects as events (the weapon effect events)
 
         const char* Verdict() const
         {
@@ -86,7 +102,7 @@ namespace replay::shotfx
     inline std::uint32_t AbsDiff(std::uint32_t a, std::uint32_t b) { return a > b ? a - b : b - a; }
 
     // shots: time ascending. bodyTimes: the times of the clip's body hit
-    // effects (site kBodySite). dedupe: the legacy rule (ShotFxLegacyDedupe).
+    // effects (site kShotBodyCall). dedupe: the legacy rule (always on for an older clip).
     // A shared hash is played once: by the player's shot when one of the
     // group is the player's, else by the first; a surface impact is not
     // played for a shot with a body hit effect in [-30, +10] ms.

@@ -2,46 +2,28 @@
 
 // The player state the ped audio of a puppet reads.
 //
-// (a) Foley variants. The ped audio holder (vtables 0x3839538, 0x3839630,
-// 0x3839728; constructor 0x3178860) has at +0x210 a component (vtable
-// 0x3839038, constructor 0x3178D6C writes -1 to +0xEC and +0xF0). Its
-// activation (vtable slot +0x68, 0x318A2D8) draws the two variant indices
-// once, when +0xEC is still -1 (0x3194FF4): the local player gets 0 and 0
-// (0x319504C, 0x3195117: component row +0xB8 flags bit 1 set and bit 0
-// clear, the same test as the weapon audio's predicate 0x2F02F8C); every
-// other ped, horse and animal gets 1 + floor((N - 1) * rand / 32768) from
-// the game RNG 0x3CE3C90, N the tunables at 0x5C7EAB0 + 0x60 and + 0x70.
-// The activation also requests a resource into +0x168 when either index is
-// 2 or 3 (0x318A3FA..0x318A414; the deactivation 0x318A5DC does not release
-// it). 0x3196B04 copies the two indices into the init params of every sound
-// its 26 callers create (variables 0x99789761 and 0xDF33D3DE, through the
-// params' variable setter 0x2573638): the sound's variant is chosen by
-// them. A puppet is never the local player, so left alone the recorded
-// player's puppet would draw random variants where the player had 0 and 0,
-// and every other puppet would draw new ones.
-//
+// (a) Foley variants. The engine draws two variant indices per ped audio
+// holder once, at activation: 0 and 0 for the local player, random for every
+// other ped, horse and animal; every sound the holder creates picks its
+// variant by them. A puppet is never the local player, so left alone the
+// player's puppet would draw random variants and every other puppet new ones.
 // So each recorded owner's two indices are recorded once (clip section FVAR)
-// and written into its puppet's component, the player's 0 and 0 included. A clip without the
-
-// section gives the recorded player's puppet the live player's indices.
-// A puppet whose activation already ran without the resource of an index 2
-// or 3 is left as it is (the resource is requested only there).
+// and written into its puppet's component, the player's 0 and 0 included. A
+// clip without the section gives the recorded player's puppet the live
+// player's indices. A puppet whose activation already ran without the
+// resource of an index 2 or 3 is left as it is (the resource is requested
+// only there).
 //
-// (b) Ped variables (evidence only). Each ped audio holder owns a variable
-// block named PED_VARIABLES (0x549DD7FB, made by 0x317AD78; its index is the
-// word at holder +0x12, -1 none; the blocks are 16-byte entries {descriptor,
-// values} at 0x53598F0; the descriptor holds the count at +8 and the names at
-// +0xC + 8 * i; the values are floats, 0x253708C writes, 0x25293C8 finds).
-// The ped variable update 0x31A3ABC writes them each audio update through
-// 0x258A9B4; among them is_player (0x836BD219) and 0xA1691FFD (both the
-// row +0xB8 player test), 0xDB583619 (holder +0x4662 bit 0, the player or
-// focus flag) and, for the player only, 0x4A276B23 (the bits of
-// joaat("player")). A sound reads an entity variable through the lookup
-// 0x25876A8: its own variables first, then the global ones, then the block
-// whose index its request copied from its entity at init (0x257955C), then
-// the global categories. The replay's evidence: the block of each recorded
-// owner (record) and puppet (play), and which names the sounds resolved in
-// those blocks (a read-only detour on 0x25876A8, ped_audio_state.cpp).
+// (b) Ped variables (evidence only). The block of each recorded owner
+// (record) and puppet (play), and which names the sounds resolved in those
+// blocks (a read-only detour on the variable lookup, ped_audio_state.cpp).
+//
+// The engine code is found by signature (game_sig_core.h): the signatures of
+// (a) and (b) in ped_audio_state.cpp, those of (c) and (d) below.
+// Evidence: offline dump of build 1491.50.
+// Research: docs/research/ped-audio-state.md
+
+#include "game_sig_core.h"
 
 #include <algorithm>
 #include <cmath>
@@ -54,16 +36,7 @@
 
 namespace replay::pedaudiostate
 {
-    // ---- (a) foley variants (build 1491.50) ----
-    constexpr std::uintptr_t kDrawRva = 0x3194FF4;      // the variant draw (leaf, no unwind entry)
-    constexpr std::uintptr_t kDrawStoreRva = 0x3195117; // mov [r8+0ECh],r9d; ret
-    constexpr std::uintptr_t kReaderRva = 0x3196B04;    // the two indices into a sound's init params
-    constexpr std::uintptr_t kActivateRva = 0x318A2D8;  // component slot +0x68
-    constexpr std::uintptr_t kActivateResourceRva = 0x318A3EC; // the +0x168 request for an index 2 or 3
-    constexpr std::uintptr_t kHolderCtorComponentRva = 0x3178898; // lea rcx,[rsi+210h]; mov rdx,rsi; call 0x3178D6C
-    constexpr std::uintptr_t kComponentVtableLeaRva = 0x3178D7C;  // lea rax,[rip+..] = 0x3839038
-    constexpr std::uintptr_t kComponentVtableRva = 0x3839038;
-    constexpr std::uintptr_t kHolderVtableRvas[] = {0x3839538, 0x3839630, 0x3839728};
+    // ---- (a) foley variants ----
     constexpr std::size_t kComponentOffset = 0x210; // in the holder
     constexpr std::size_t kVariantAOffset = 0xEC;
     constexpr std::size_t kVariantBOffset = 0xF0;
@@ -239,21 +212,14 @@ namespace replay::pedaudiostate
         return TargetSource::None;
     }
 
-    // ---- (b) ped variables (build 1491.50) ----
-    constexpr std::uintptr_t kBlockTableRva = 0x53598F0;    // 16-byte entries {descriptor, values}
-    constexpr std::uintptr_t kBlockSetterRva = 0x258A9B4;   // (audio entity, name, value): pins +0x12 and the table
-    constexpr std::uintptr_t kBlockAllocRva = 0x317AD78;    // the holder's PED_VARIABLES block
-    constexpr std::uintptr_t kBlockWriteRva = 0x253708C;    // (block, name, value): pins the descriptor layout
-    constexpr std::uintptr_t kBlockFindRva = 0x25293C8;     // (block, name) -> float*
-    constexpr std::uintptr_t kUpdatePedVariablesRva = 0x31A3ABC;
-    constexpr std::uintptr_t kVariableLookupRva = 0x25876A8; // a sound's variable by name (the probe's detour)
+    // ---- (b) ped variables ----
     constexpr std::size_t kHolderBlockIndexOffset = 0x12; // int16, -1 none
-    constexpr std::size_t kBlockEntryBytes = 16;
+    constexpr std::size_t kBlockEntryBytes = 16;        // in the block table
     constexpr std::size_t kBlockValuesOffset = 8;      // in the entry
     constexpr std::size_t kDescriptorCountOffset = 8;  // u32
     constexpr std::size_t kDescriptorNamesOffset = 0xC; // u32 name every 8 bytes
     constexpr std::size_t kDescriptorNameStride = 8;
-    constexpr std::int32_t kMaxBlockIndex = 0x1FF;     // 0x257955C counts blocks up to 0x1FF
+    constexpr std::int32_t kMaxBlockIndex = 0x1FF;     // a sound's request counts blocks up to 0x1FF
     constexpr std::uint32_t kMaxBlockVariables = 32;   // PED_VARIABLES has 20
     constexpr std::uint32_t kPedVariablesName = 0x549DD7FBu; // joaat("PED_VARIABLES")
     constexpr std::uint32_t kIsPlayer = 0x836BD219u;         // joaat("is_player")
@@ -266,21 +232,21 @@ namespace replay::pedaudiostate
         const char* label;
     };
     constexpr KnownVariable kKnownVariables[] = {
-        {0x836BD219u, "is_player"},           // row +0xB8 player test (0x31A3C69)
-        {0xA1691FFDu, "player_test_b"},       // the same value (0x31A3C9B)
-        {0xDB583619u, "holder_4662_bit0"},    // player or focus flag (0x31A3CAE)
-        {0xA40EABB8u, "row88_61c"},           // component row +0x88, +0x61C (0x31A3D0F)
+        {0x836BD219u, "is_player"},           // row +0xB8 player test
+        {0xA1691FFDu, "player_test_b"},       // the same value
+        {0xDB583619u, "holder_4662_bit0"},    // player or focus flag
+        {0xA40EABB8u, "row88_61c"},           // component row +0x88, +0x61C
         {0x1E6DE9ACu, "row88_620"},           // same component, +0x620
-        {0x5712CB55u, "fn_317b548"},          // 0x317B548(ped)
+        {0x5712CB55u, "fn_317b548"},          // a function of the ped (the label is its address)
         {0xBDE9B2A5u, "ped_b0_bit7"},         // ped +0xB0 bit 7
-        {0x67B5B64Au, "fn_31893fc"},          // 0x31893FC(ped)
+        {0x67B5B64Au, "fn_31893fc"},          // a function of the ped (the label is its address)
         {0x16755137u, "rowf0_dead"},          // row +0xF0 health component at or below 0
-        {0x66778478u, "rowd0_398_bit3"},      // 0x3276C30(holder +0x1A0) or row +0xD0 +0x398 bit 3
-        {0x8BAE9C31u, "speed"},               // row +0x88 +0x5DC, else the velocity length of 0xF0AD44(ped)
-        {0x758A1FDAu, "fn_317c120"},          // 0x317C120(ped, holder +0x4608)
+        {0x66778478u, "rowd0_398_bit3"},      // a function of holder +0x1A0, or row +0xD0 +0x398 bit 3
+        {0x8BAE9C31u, "speed"},               // row +0x88 +0x5DC, else the length of the ped's velocity
+        {0x758A1FDAu, "fn_317c120"},          // a function of the ped and holder +0x4608 (the label: its address)
         {0x39F3F833u, "row50_22_bit3"},       // with a global flag: row +0x50 +0x22 bit 3
         {0x4A276B23u, "player_settings"},     // player only: the bits of joaat("player")
-        {0x69AB332Bu, "holder_465c"},         // at the block's creation (0x317ADA1)
+        {0x69AB332Bu, "holder_465c"},         // at the block's creation (the block alloc)
     };
 
     inline const char* KnownLabel(std::uint32_t name)
@@ -300,17 +266,19 @@ namespace replay::pedaudiostate
         float data[kMaxBlockVariables] = {};
     };
 
-    // The holder's block. read(address, out, size) -> bool: a guarded read.
+    // The holder's block in the block table at `table` (where the block
+    // setter has it, ped_audio_state.cpp; 0: not found). read(address, out,
+    // size) -> bool: a guarded read.
     template <typename Read>
-    bool ReadBlock(std::uintptr_t base, std::uintptr_t holder, Read read, Block& out)
+    bool ReadBlock(std::uintptr_t table, std::uintptr_t holder, Read read, Block& out)
     {
         out = Block{};
-        if (!base || !holder)
+        if (!table || !holder)
             return false;
         std::int16_t index = -1;
         if (!read(holder + kHolderBlockIndexOffset, &index, sizeof(index)) || index < 0 || index > kMaxBlockIndex)
             return false;
-        const std::uintptr_t entry = base + kBlockTableRva + static_cast<std::uintptr_t>(index) * kBlockEntryBytes;
+        const std::uintptr_t entry = table + static_cast<std::uintptr_t>(index) * kBlockEntryBytes;
         std::uintptr_t descriptor = 0;
         std::uintptr_t values = 0;
         std::uint32_t count = 0;
@@ -457,7 +425,6 @@ namespace replay::pedaudiostate
         }
     };
 
-    // ---- the read probe (ped_audio_state.cpp) ----
     // A published block: the values range of one owner's PED_VARIABLES.
     struct Range
     {
@@ -468,8 +435,6 @@ namespace replay::pedaudiostate
         // variable pointer (wvol=ped:...).
         std::uint32_t names[kMaxBlockVariables] = {};
     };
-    constexpr std::uint32_t kMaxRanges = 64;
-
     // Index of the range holding `address` (a float of the block), -1 none.
     inline int RangeOf(const Range* ranges, std::uint32_t n, std::uintptr_t address)
     {
@@ -483,16 +448,6 @@ namespace replay::pedaudiostate
         return -1;
     }
 
-    // One resolved read: a sound found `name` in a published block.
-    struct VarRead
-    {
-        std::uint32_t name = 0;
-        std::uint32_t owner = 0;
-        std::uint32_t slot = 0; // index in the block
-        float value = 0.0f;
-        std::uint32_t thread = 0;
-    };
-
     // Engine side (ped_audio_state.cpp).
     // The signatures of (a) and (b); false leaves both off (`error` names the first mismatch).
     bool Init(std::string& error);
@@ -500,24 +455,8 @@ namespace replay::pedaudiostate
     bool BlocksReady();
     // Script thread: the holder's component indices and whether +0x168 is held.
     bool ReadVariants(std::uintptr_t holder, Variants& out, bool& resourceHeld);
-    // Script thread: writes both indices (holder and component vtables checked first).
-    bool WriteVariants(std::uintptr_t holder, const Variants& v);
     // Script thread: the holder's PED_VARIABLES block.
     bool ReadHolderBlock(std::uintptr_t holder, Block& out);
-
-    // The read probe: a read-only detour on 0x25876A8 (PedVariablesReadProbe).
-    bool InstallReadProbe(std::string& error);
-    void ShutdownReadProbe();
-    bool ReadProbeInstalled();
-    void SetRanges(const std::vector<Range>& ranges);
-    void DrainReads(std::vector<VarRead>& out, std::uint64_t& dropped);
-    struct ReadStats
-    {
-        std::uint64_t calls = 0;     // every lookup
-        std::uint64_t outermost = 0; // lookups not nested in another
-        std::uint64_t inRange = 0;   // outermost lookups answered from a published block
-    };
-    ReadStats ReadSnapshot();
 
     // Script thread: the blocks of the last
     // PED_VARS scan with their names; the owner and name of a float of one
@@ -525,14 +464,28 @@ namespace replay::pedaudiostate
     void SetNamedRanges(const std::vector<Range>& ranges);
     bool DescribeAddress(std::uintptr_t address, std::uint32_t& owner, std::uint32_t& name);
 
-    // ---- (c) the puppets' speed (ped_speed_core.h, PedSpeedReplay) ----
-    // A detour on the ped variable update 0x31A3ABC (prologue and the
-    // speed store checked) that forwards every call and, for a holder the
+    // (c) the puppets' speed (ped_speed_core.h, PedSpeedReplay).
+    // A detour on the ped variable update (its prologue, the speed source and
+    // the speed store checked) that forwards every call and, for a holder the
     // script thread published (a puppet's), writes the recorded speed into
     // the holder's block right after the engine wrote its own (the frozen
     // puppet's 0). Nothing else is touched; no native is called.
-    constexpr std::uintptr_t kSpeedStoreRva = 0x31A3F7A;  // mov edx,8BAE9C31h; mov rcx,rbx; call 0x258A9B4
-    constexpr std::uintptr_t kSpeedSourceRva = 0x31A3EF4; // movss xmm2,[rcx+5DCh]
+    //
+    // The update up to the block's creation (the detour's jump fits in it):
+    // mov [rsp+18h],rbx; push rsi; push rdi; push r15; sub rsp,50h; cmp word
+    // [rcx+12h],-1 (the holder's block index); mov rbx,rcx; movaps
+    // [rsp+40h],xmm6; movaps [rsp+30h],xmm7; jne +5; call the block alloc.
+    inline const sig::Signature kUpdatePedVariables{"pedaudio_update_ped_variables",
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 83 79 12 FF 48 8B D9 0F 29 74 24 40 0F 29 7C 24 30 75 05 E8 ?? ?? ?? "
+        "??",
+        0x31A3ABC};
+    // movss xmm2,[rcx+5DCh] (the movement component's speed).
+    inline const sig::Signature kSpeedSource{"pedaudio_speed_source", kUpdatePedVariables, sig::Offset{0x438},
+        "F3 0F 10 91 DC 05 00 00", 0x31A3EF4};
+    // mov edx,8BAE9C31h; mov rcx,rbx; call the block setter (the speed into
+    // the holder's block).
+    inline const sig::Signature kSpeedStore{"pedaudio_speed_store", kUpdatePedVariables, sig::Offset{0x4BE},
+        "BA 31 9C AE 8B 48 8B CB E8 ?? ?? ?? ??", 0x31A3F7A};
     constexpr std::uint32_t kMaxSpeedTargets = 256;
     struct SpeedTarget
     {
@@ -559,40 +512,51 @@ namespace replay::pedaudiostate
     };
     SpeedCounts SpeedSnapshot();
 
-    // ---- (d) the movement component's speed (MotionSpeedReplay) ----
-    // The block speed of (c) is a copy: the engine reads the movement
-    // component's own speed C +0x5DC (C = row +0x88) in the step volume curve
-    // (0x318D747), 0x318E237, 0x3192813, 0x319D9F0 and the gait classifier
-    // (0x8F162A: the gait C +0x630 from +0x5DC against the thresholds of
-    // [C +0x4C0]), and the gait picks the per-gait lift thresholds
-    // (0x8ED774), the foot routine and the type of the secondary steps. The
-    // only writer of +0x5DC is 0x8EC5D1: the smoother 0x2521410 over the raw
-    // speed 0x8AABCC(C) = |physical velocity (row +0xE0 vtable +0xC8) - ground
-    // velocity (C +0x5A0)|, 0 on a frozen puppet. A detour on 0x8AABCC
-    // (prologue and the writer, the sound and the gait read
+    // (d) the movement component's speed (MotionSpeedReplay).
+    // The block speed of (c) is a copy: the step volume curve, three other ped
+    // audio reads and the gait classifier read the movement component's own
+    // speed C +0x5DC, which a frozen puppet holds at 0. A detour on the raw
+    // speed (its prologue, and the writer, the sound and the gait read
     // checked) forwards every call and, in normal play, answers the published
-
     // puppets' recorded speed (the target of (c): PSPD, else the recorded
     // motion). The smoother's rates do not smooth at ped speeds (ped_speed_core.h).
-    constexpr std::uintptr_t kMotionSpeedSourceRva = 0x8AABCC; // float(C)
-    constexpr std::uintptr_t kMotionSpeedWriterRva = 0x8EC5BA; // call 0x8AABCC; ...; movss [rbx+5DCh],xmm0 (0x8EC5D1)
-    constexpr std::uintptr_t kMotionSpeedSoundRva = 0x31A16D3; // call 0x8AABCC in the sound 0x31A15DC
-    constexpr std::uintptr_t kMotionGaitReadRva = 0x8F162A;    // movss xmm0,[rdi+5DCh] (the gait classifier 0x8F14A4)
+    // Research: docs/research/ped-audio-state.md
     constexpr std::uintptr_t kMotionSpeedOffset = 0x5DC;
-    // 0x8AABCC: mov [rsp+10h],rbx; push rdi; sub rsp,40h; mov rbx,[rcx+8];
-    // mov rdi,rcx; movaps [rsp+30h],xmm6; xorps xmm6,xmm6; and rbx,-10h
-    // (29 bytes, unique in .text).
-    constexpr std::uint8_t kMotionSpeedSourceSignature[] = {0x48, 0x89, 0x5C, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x40,
-        0x48, 0x8B, 0x59, 0x08, 0x48, 0x8B, 0xF9, 0x0F, 0x29, 0x74, 0x24, 0x30, 0x0F, 0x57, 0xF6, 0x48, 0x83, 0xE3, 0xF0};
-    // 0x8EC5BA: call 0x8AABCC; movaps xmm1,xmm0; lea rcx,[rbx+4C8h]; movaps
-    // xmm2,xmm6; call 0x2521410; movss [rbx+5DCh],xmm0 (31 bytes, unique).
-    constexpr std::uint8_t kMotionSpeedWriterSignature[] = {0xE8, 0x0D, 0xE6, 0xFB, 0xFF, 0x0F, 0x28, 0xC8, 0x48, 0x8D,
-        0x8B, 0xC8, 0x04, 0x00, 0x00, 0x0F, 0x28, 0xD6, 0xE8, 0x3F, 0x4E, 0xC3, 0x01, 0xF3, 0x0F, 0x11, 0x83, 0xDC, 0x05,
-        0x00, 0x00};
-    // 0x31A16D3: call 0x8AABCC.
-    constexpr std::uint8_t kMotionSpeedSoundSignature[] = {0xE8, 0xF4, 0x94, 0x70, 0xFD};
-    // 0x8F162A: movss xmm0,[rdi+5DCh].
-    constexpr std::uint8_t kMotionGaitReadSignature[] = {0xF3, 0x0F, 0x10, 0x87, 0xDC, 0x05, 0x00, 0x00};
+    // The raw speed, float(C): mov [rsp+10h],rbx; push rdi; sub rsp,40h; mov
+    // rbx,[rcx+8]; mov rdi,rcx; movaps [rsp+30h],xmm6; xorps xmm6,xmm6; and
+    // rbx,-10h (unique in the code: a call that lands on these bytes calls it).
+    inline const sig::Signature kMotionSpeedSource{"pedaudio_motion_speed_source",
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 48 8B F9 0F 29 74 24 30 0F 57 F6 48 83 E3 F0",
+        0x8AABCC};
+    // The movement speed update and its writer: call the raw speed; movaps
+    // xmm1,xmm0; lea rcx,[rbx+4C8h]; movaps xmm2,xmm6; call the smoother; movss
+    // [rbx+5DCh],xmm0. Its first call lands on the raw speed, the second on the
+    // smoother.
+    inline const sig::Signature kMotionSpeedUpdate{"pedaudio_motion_speed_update",
+        "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 40 48 8B 79 08", 0x8EC40C};
+    inline const sig::Signature kMotionSpeedWriter{"pedaudio_motion_speed_writer", kMotionSpeedUpdate,
+        sig::Offset{0x1AE},
+        "E8 ?? ?? ?? ?? 0F 28 C8 48 8D 8B C8 04 00 00 0F 28 D6 E8 ?? ?? ?? ?? F3 0F 11 83 DC 05 00 00", 0x8EC5BA};
+    inline const sig::Signature kMotionWriterSource{"pedaudio_motion_writer_source", kMotionSpeedWriter,
+        sig::Rel32{1, 5},
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 48 8B F9 0F 29 74 24 30 0F 57 F6 48 83 E3 F0",
+        0x8AABCC};
+    inline const sig::Signature kMotionSmoother{"pedaudio_motion_smoother", kMotionSpeedWriter, sig::Rel32{0x13, 0x17},
+        "8A 41 18 A8 01 75 04 0F 57 C0 C3 0F 28 C1", 0x2521410};
+    // The sound that calls the raw speed, and its call.
+    inline const sig::Signature kMotionSound{"pedaudio_motion_sound",
+        "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 48 8D A8 08 FF FF FF 48 81 EC F0 01 00 00 0F 29 70 E8",
+        0x31A15DC};
+    inline const sig::Signature kMotionSpeedSound{"pedaudio_motion_speed_sound", kMotionSound, sig::Offset{0xF7},
+        "E8 ?? ?? ?? ??", 0x31A16D3};
+    inline const sig::Signature kMotionSoundSource{"pedaudio_motion_sound_source", kMotionSpeedSound, sig::Rel32{1, 5},
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 48 8B F9 0F 29 74 24 30 0F 57 F6 48 83 E3 F0",
+        0x8AABCC};
+    // The gait classifier and its read: movss xmm0,[rdi+5DCh].
+    inline const sig::Signature kGaitClassifier{"pedaudio_gait_classifier",
+        "48 89 5C 24 10 48 89 74 24 18 55 57 41 54 41 56 41 57 48 8B EC 48 81 EC 80 00 00 00 4C 8B 71 08", 0x8F14A4};
+    inline const sig::Signature kMotionGaitRead{"pedaudio_motion_gait_read", kGaitClassifier, sig::Offset{0x186},
+        "F3 0F 10 87 DC 05 00 00", 0x8F162A};
     constexpr std::uint32_t kMaxMotionTargets = 256;
     struct MotionTarget
     {
@@ -608,7 +572,7 @@ namespace replay::pedaudiostate
     bool EngineMotionOf(std::uintptr_t ped, float& out);
     struct MotionCounts
     {
-        std::uint64_t calls = 0;   // 0x8AABCC calls
+        std::uint64_t calls = 0;   // the raw speed's calls
         std::uint64_t hits = 0;    // ... for a published puppet (answered with its target)
         std::uint64_t failed = 0;  // the component's ped unreadable while targets were published
     };

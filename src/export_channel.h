@@ -35,8 +35,11 @@ namespace replay::exportchannel
 {
     constexpr std::uint32_t kMagic = 0x31505845; // "EXP1"
     // v2: audio pass, look options, stage timings, tag geometry; v3: audio capture
-    // acknowledgement; v4: whole project export (SegmentDone, the segment fields).
-    constexpr std::uint32_t kVersion = 4;
+    // acknowledgement; v4: whole project export (SegmentDone, the segment fields);
+    // v5: a segmented export resumed (the resume fields, rangeFrames); v6: the
+    // hold while the game shows a menu (export_hold.h: hold, holdAck, closeRequests);
+    // v7: the screens that wait for the player cancel, no input count.
+    constexpr std::uint32_t kVersion = 7;
     constexpr std::uint32_t kTickRing = 256; // > any render latency
     constexpr std::uint32_t kPathCapacity = 260;
 
@@ -265,6 +268,31 @@ namespace replay::exportchannel
         std::atomic<std::uint32_t> segmentCount{0};
         std::atomic<std::uint64_t> projectFramesBefore{0};
         std::atomic<std::uint64_t> projectFramesTotal{0};
+        // v5, add-on -> probe (written with the settings, before StartExport):
+        // a segmented export resumed (editor/render_export/export_segments.h).
+        // settings keeps the whole range (the audio pass plays all of it); the
+        // video pass starts at resumeStartMs and takes exactly resumeFrames
+        // frames (the pre-roll, then the missing segments). resumeFrames 0:
+        // every segment is done, no video pass. Ignored for a project's piece.
+        std::atomic<std::uint32_t> resume{0};
+        std::atomic<std::uint64_t> resumeStartMs{0};
+        std::atomic<std::uint64_t> resumeFrames{0};
+        // v5, probe -> add-on: the range's frames counted as for a fresh export
+        // (a resume checks them against its manifest: a marker moved since).
+        std::atomic<std::uint64_t> rangeFrames{0};
+        // v6, probe -> add-on: the hold (src/export_hold.h). hold: 0 the clock
+        // runs, 1 held (a loading screen is up: Hold ticks only),
+        // 2 resync (tagged Hold ticks: the add-on puts its present count in
+        // step with the serials again and sets holdAck). holdEpoch is written
+        // before hold; holdReasons: exporthold::Signal bits of the hold.
+        std::atomic<std::uint32_t> hold{0};
+        std::atomic<std::uint32_t> holdEpoch{0};
+        std::atomic<std::uint32_t> holdReasons{0};
+        // v6, add-on -> probe: the epoch whose resync the add-on finished, and
+        // the close requests it saw on the game window (WM_CLOSE, SC_CLOSE,
+        // Alt+F4; a counter): the probe cancels the export.
+        std::atomic<std::uint32_t> holdAck{0};
+        std::atomic<std::uint32_t> closeRequests{0};
     };
 
     // Local\ReplayExportChannel-<pid>.

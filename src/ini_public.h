@@ -43,8 +43,9 @@ namespace replay::inipublic
 
 [RedemptionEditor]
 ; The language of the editor and its notices: auto (the game's language) or
-; one of en, pt-BR, es, es-MX, fr, de, it, pl, ru, ja, ko, zh-CN, zh-TW (a file
-; of the RedemptionEditor\lang folder, without .lang).
+; one of en, pt-BR, es, es-MX, fr, de, it, pl, ru, ja, ko, zh-CN, zh-TW, tr
+; (a file of the RedemptionEditor\lang folder, without .lang). The game has no
+; Turkish, so auto never picks tr: set Language=tr for it.
 Language=auto
 
 ; The replay buffer: the mod always records the last seconds around you while
@@ -67,6 +68,12 @@ ReplayBufferMB=128
 ManualMaxSeconds=0
 ManualMaxMB=900
 
+; The pose detail of the recording (Replay Settings): standard (the detail you
+; see in the game) or maximum (every movement of every bone, at full
+; precision; the poses take about twice the memory, so the buffer holds about
+; 40% fewer seconds, and clips grow about 1.6 times).
+PoseDetail=standard
+
 ; Clips are saved compressed. Clips you have not opened for CompressAfterDays
 ; days are compressed further in the background (they still open in the
 ; editor). Level 1 (fast) to 22 (smallest).
@@ -83,8 +90,9 @@ LockCutsceneCamera=0
 ReplayDeadEye=0
 ; 1: the world stays frozen while a replay is paused (Replay Settings).
 FreezeWorldOnPause=1
-; The REC notice while you record (Replay Settings): normal; brief (3 seconds
-; when a recording starts, stops or saves); hidden (you see it, screen
+; The REC notice while you record (Replay Settings): normal (REC always, REPLAY
+; ON for 5 seconds when the buffer starts); brief (3 seconds when a recording
+; starts, stops or saves); hidden (you see it, screen
 ; recorders such as OBS, NVIDIA and Game Bar do not; Windows 10 2004 or newer
 ; and the game windowed or borderless, else it works as brief); off.
 RecordingIndicator=normal
@@ -92,6 +100,14 @@ RecordingIndicator=normal
 ; (Replay Settings): 80, 90, 100, 110 or 125. 100 looks the same at every
 ; resolution. A 4:3 screen stays at 100 at most.
 InterfaceScale=100
+; The font of the editor's titles, menus and notices (Replay Settings):
+; redemption (the game's) or segoe (Segoe UI Bold, easier to read).
+Font=redemption
+; Who draws the editor: auto (the mod's own overlay; when ReShade with the
+; RedemptionEditor.addon64 add-on is installed, ReShade does it), native (always
+; the mod's own overlay) or reshade (only through ReShade, never the own overlay).
+; Read when the game starts.
+Host=auto
 
 ; The map state of the clip (doors, buildings and other world pieces of the
 ; place where it was recorded) is put back while it plays. 0: only a notice.
@@ -155,6 +171,9 @@ Lut=
 ; How many ms the game's sound is moved earlier in the video, so shots land on
 ; their muzzle flash.
 AudioOffsetMs=140
+; Long videos are written in parts of this many seconds, joined at the end; an
+; export cut short continues from its last part. 0: one file.
+SegmentSeconds=60
 
 [Keys]
 ; Every action's keys (the defaults below): one or two keys separated by a
@@ -203,7 +222,7 @@ CameraOverlay=Backquote
         {"RedemptionEditor", "ManualMaxSeconds"}, {"RedemptionEditor", "ManualMaxMB"}, {"RedemptionEditor", "CompressClips"},
         {"RedemptionEditor", "CompressAfterDays"}, {"RedemptionEditor", "CompressLevel"}, {"RedemptionEditor", "RecordCutscenes"},
         {"RedemptionEditor", "LockCutsceneCamera"}, {"RedemptionEditor", "ReplayDeadEye"}, {"RedemptionEditor", "FreezeWorldOnPause"},
-        {"RedemptionEditor", "RecordingIndicator"}, {"RedemptionEditor", "InterfaceScale"},
+        {"RedemptionEditor", "RecordingIndicator"}, {"RedemptionEditor", "InterfaceScale"}, {"RedemptionEditor", "Font"}, {"RedemptionEditor", "Host"}, {"RedemptionEditor", "PoseDetail"},
         {"RedemptionEditor", "RestoreWorldState"}, {"RedemptionEditor", "RestoreWorldStateInMission"}, {"RedemptionEditor", "FullLog"},
         {"RedemptionEditor", "QaMarks"}, {"RedemptionEditor", "ReportIncludeClips"}, {"RedemptionEditor", "Language"},
         {"RedemptionEditor", "FreeCamMotion"}, {"RedemptionEditor", "FreeCamWalk"},
@@ -237,10 +256,10 @@ CameraOverlay=Backquote
         {"RedemptionEditor", "FootEventReplay"}, {"RedemptionEditor", "EntityQueryRecord"}, {"RedemptionEditor", "EntityQueryReplay"},
         {"RedemptionEditor", "EntityQueryRelation"}, {"RedemptionEditor", "ShotEnvGroupReplay"}, {"RedemptionEditor", "FireCharCreate"},
         {"RedemptionEditor", "ObjectBurnLevel"}, {"RedemptionEditor", "PuppetScriptPose"}, {"RedemptionEditor", "FrameEnd"},
-        {"RedemptionEditor", "PhysicsFilter"},
+        {"RedemptionEditor", "PhysicsFilter"}, {"RedemptionEditor", "MuscleReplay"},
         // [Export]
         {"Export", "Enabled"}, {"Export", "Folder"}, {"Export", "Encoder"}, {"Export", "Hdr10"}, {"Export", "Lut"},
-        {"Export", "AudioOffsetMs"},
+        {"Export", "AudioOffsetMs"}, {"Export", "SegmentSeconds"},
         // [Keys]: every action of editor_keys.h kActions (tests/ini_public_tests.cpp checks the two lists match).
         {"Keys", "PlayPause"}, {"Keys", "FrameBack"}, {"Keys", "FrameForward"}, {"Keys", "Rewind"}, {"Keys", "FastForward"},
         {"Keys", "SpeedDown"}, {"Keys", "SpeedUp"}, {"Keys", "FreeCam"}, {"Keys", "HideUi"}, {"Keys", "Editor"}, {"Keys", "Stop"},
@@ -276,7 +295,7 @@ CameraOverlay=Backquote
         {"FootMovementReplay", "1"}, {"MotionSpeedReplay", "1"}, {"PedSpeedReplay", "1"}, {"FootEventReplay", "1"},
         {"EntityQueryRecord", "1"}, {"EntityQueryReplay", "1"}, {"EntityQueryRelation", "1"},
         {"ShotEnvGroupReplay", "1"}, {"FireCharCreate", "1"}, {"ObjectBurnLevel", "1"}, {"PuppetScriptPose", "1"},
-        {"FrameEnd", "1"}, {"PhysicsFilter", "1"},
+        {"FrameEnd", "1"}, {"PhysicsFilter", "1"}, {"MuscleReplay", "1"},
     };
     inline constexpr std::size_t kSupportSwitchCount = sizeof(kSupportSwitches) / sizeof(kSupportSwitches[0]);
 

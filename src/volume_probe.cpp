@@ -4,6 +4,7 @@
 #include "audio_observer.h"
 #include "entity_cache.h"
 #include "game_listener_core.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "mix_probe_core.h"
 #include "mod_clock.h"
@@ -257,13 +258,12 @@ namespace replay::volumeprobe
             }
             if (!failed)
             {
-                for (const replay::gamelistener::Site& site : replay::gamelistener::kSites)
+                for (const replay::sig::Signature* site : replay::gamelistener::kSites)
                 {
-                    std::uint8_t code[16]{};
-                    if (!mem::Copy(code, g_base + site.rva, site.size) || !replay::gamelistener::SiteMatches(site, code))
+                    if (!replay::sig::Find(*site))
                     {
-                        failed = site.name;
-                        failedRva = site.rva;
+                        failed = site->name;
+                        failedRva = site->rva;
                         break;
                     }
                 }
@@ -351,7 +351,8 @@ namespace replay::volumeprobe
             replay::audio::CollectPlayRequestsSince(g_requestCursor, g_requestBatch);
             for (const replay::audio::SoundRequest& request : g_requestBatch)
                 if (!request.flags[0]) // a queued create-and-play, not a persistent create
-                    g_requests.Note(request.audioEntity, request.soundRef, nowUs, request.callers, 4);
+                    g_requests.Note(request.audioEntity, request.soundRef, nowUs, request.callers, 4,
+                        replay::audio::OwnerCallerRanges());
             g_requests.Prune(nowUs);
 
             for (const census::TickRow& tick : census::Rows())
@@ -364,7 +365,8 @@ namespace replay::volumeprobe
                 const bool weapon = owned &&
                     (owner.cls == census::OwnerClass::Weapon || owner.base == census::AudioBase::WeaponAudio);
                 const bool horse = owned && owner.cls == census::OwnerClass::Horse;
-                mp::Kind kind = mp::KindOf(weapon, horse, row.ref, row.callers, census::kRowCallers);
+                mp::Kind kind =
+                    mp::KindOf(weapon, horse, row.ref, row.callers, census::kRowCallers, replay::audio::OwnerCallerRanges());
                 if (kind == mp::Kind::Generic && row.audio)
                 {
                     soundowner::Family family = soundowner::Family::Owned;
@@ -438,8 +440,8 @@ namespace replay::volumeprobe
 
         // Rebuilt right before every snapshot, with only the sounds the
         // speakers' lines hold NOW. The line's reference is cleared when the
-        // sound is freed (0x2FA10C0 passes &data+0xC0 to the creator
-        // 0x2C2AA5C), and the pool gives that slot to the next sound of the
+        // sound is freed (the speech sound's creation passes &data+0xC0 to
+        // the sound creator), and the pool gives that slot to the next sound of the
         // bucket, so a stale table would count any sound born there (a step, a
         // hoof, an ambience loop) as speech_script or speech_ambient.
         void NoteSpeech(Context& context, bool play, std::uint64_t wall)
@@ -553,9 +555,9 @@ namespace replay::volumeprobe
         Listener ReadListener()
         {
             Listener l;
-            const std::uintptr_t env = g_base + replay::gamelistener::kEnvironmentRva;
+            const std::uintptr_t env = replay::sig::Find(replay::gamelistener::kEnvironment);
             std::uint8_t current = 0xFF;
-            if (!mem::Read(env + replay::gamelistener::kCurrentIndex, current) ||
+            if (!env || !mem::Read(env + replay::gamelistener::kCurrentIndex, current) ||
                 current >= replay::gamelistener::kListenerCount)
                 return l;
             const std::uintptr_t desc = env + replay::gamelistener::ListenerOffset(current);
@@ -1079,7 +1081,7 @@ namespace replay::volumeprobe
                     ++w.c.backlinkBad;
                     continue;
                 }
-                // A freed voice (FreeVoice 0x2573810 clears E+0x240) whose
+                // A freed voice (FreeVoice clears E+0x240) whose
                 // entry the destructor left (it clears the list only while
                 // E+0x242 holds the entry).
                 if (voiceIndex == kNoIndex)
@@ -1496,7 +1498,7 @@ namespace replay::volumeprobe
         // ------------------------------------------------ lines
 
         // The top sound's {name, value} pairs hold ref: their slot is the
-        // pool slot [top+0x9C] of the top's bucket (the layout 0x25736B4
+        // pool slot [top+0x9C] of the top's bucket (the layout kVariableFind
         // reads), the count at slot+0x80. Guarded reads only.
         bool PairOf(std::uint64_t top, std::uint64_t ref, std::uint32_t& name)
         {
@@ -1561,7 +1563,7 @@ namespace replay::volumeprobe
                 return w;
             }
             // A pair only inside the top sound's own pairs
-            // (0x25736B4, sites var_req_*); anything else is "other", never a
+            // (kVariableFind, sites var_req_*); anything else is "other", never a
             // name read from the dword before an unknown float.
             std::uint32_t pairName = 0;
             if (PairOf(top, ref, pairName))

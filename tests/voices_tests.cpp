@@ -28,20 +28,22 @@ namespace
     void TestKinds()
     {
         using namespace replay::mixscene;
-        Check(KindOfCaller(0x2FC2335) == Kind::Conversation, "kind: the conversation duck's start site");
-        Check(KindOfCaller(0x31C88EB) == Kind::Script, "kind: START_AUDIO_SCENE's start site");
-        Check(KindOfCaller(0x3211FE7) == Kind::Code, "kind: the engine's own code");
-        Check(Replayable(Kind::Conversation) && Replayable(Kind::Script) && !Replayable(Kind::Code),
-            "kind: code scenes are not replayed");
+        // The two start sites' returns as the game has them (mix_scene.cpp finds them).
+        const Callers callers{0x2FC2335, 0x31C88EB};
+        Check(KindOfCaller(0x2FC2335, callers) == Kind::Conversation, "kind: the conversation duck's start site");
+        Check(KindOfCaller(0x31C88EB, callers) == Kind::Script, "kind: START_AUDIO_SCENE's start site");
+        Check(KindOfCaller(0x3211FE7, callers) == Kind::Code, "kind: the engine's own code");
+        Check(KindOfCaller(0, Callers{}) == Kind::Code, "kind: start sites not found, every start is code");
     }
 
     void TestLiveAndTrack()
     {
         using namespace replay::mixscene;
         Live live;
+        live.callers = Callers{0x2FC2335, 0x31C88EB};
         Track track;
         const std::uint32_t tags[2] = {0x1111u, 0x2222u};
-        const Instance& convo = live.Start(0xA000, kConversationScene, kCallerConversation, 1000, tags, 2);
+        const Instance& convo = live.Start(0xA000, kConversationScene, 0x2FC2335, 1000, tags, 2);
         TrackStart(track, convo);
         const Instance& weather = live.Start(0xB000, 0x6BF72A2u, 0x3211FE7u, 1200, nullptr, 0);
         TrackStart(track, weather);
@@ -102,33 +104,9 @@ namespace
             "cut: the groups at the window start, then the changes inside it");
     }
 
-    void TestPlan()
+    void TestParticipant()
     {
         using namespace replay::mixscene;
-        Track track;
-        Instance a;
-        a.id = 1;
-        a.kind = Kind::Conversation;
-        a.startMs = 0;
-        a.stopMs = 5000;
-        Instance b;
-        b.id = 2;
-        b.kind = Kind::Code;
-        b.startMs = 0;
-        Instance c;
-        c.id = 3;
-        c.kind = Kind::Script;
-        c.startMs = 6000;
-        track.instances = {a, b, c};
-        Check(Wanted(track, 1000, 8) == std::vector<std::uint32_t>{1}, "plan: only replayable scenes at the playhead");
-        Check(Wanted(track, 7000, 8) == std::vector<std::uint32_t>{3}, "plan: the open script scene later on");
-        const Diff d = Plan({3}, {1});
-        Check(d.start == std::vector<std::uint32_t>{3} && d.stop == std::vector<std::uint32_t>{1}, "plan: a jump stops and starts");
-        Check(Plan({1}, {1}).start.empty() && Plan({1}, {1}).stop.empty(), "plan: nothing to do");
-        Check(DecideGroup(0x77u, 0, false) == GroupAction::Add, "group: the recorded group is put on");
-        Check(DecideGroup(0x77u, 0x77u, true) == GroupAction::None, "group: already in it");
-        Check(DecideGroup(0, 0x77u, true) == GroupAction::Remove, "group: the replay's group comes off when the recording has none");
-        Check(DecideGroup(0, 0x55u, false) == GroupAction::None, "group: a group the replay did not put is left");
         Instance convo;
         convo.kind = Kind::Conversation;
         convo.tagCount = 2;
@@ -138,50 +116,18 @@ namespace
             "conversation: the speakers are its participants, everyone else is ducked");
     }
 
-    // Kinds per key, the engine-owned and skipped hashes, stale stops, the
-    // variables through trim and cut.
-    void TestReplayKindsAndVars()
+    // Hash lists, stale stops, the variables through trim and cut.
+    void TestHashesAndVars()
     {
         using namespace replay::mixscene;
-        Check(Replayable(Kind::Script, kReplayDefault) && Replayable(Kind::Conversation, kReplayDefault) &&
-                  !Replayable(Kind::Code, kReplayDefault),
-            "kinds: code scenes off by default");
-        Check(Replayable(Kind::Code, kReplayDefault | kReplayCode) && !Replayable(Kind::Conversation, kReplayScript),
-            "kinds: each key turns its kind on or off");
-        Track track;
         Instance script;
         script.id = 5;
         script.hash = 0x914C7229u;
         script.kind = Kind::Script;
-        Instance zone;
-        zone.id = 6;
-        zone.hash = 0x3AED2C21u;
-        zone.kind = Kind::Code;
-        Instance engine;
-        engine.id = 7;
-        engine.hash = 0x1BFC4208u;
-        engine.kind = Kind::Code;
-        Instance skipped;
-        skipped.id = 8;
-        skipped.hash = 0x24BFC688u;
-        skipped.kind = Kind::Code;
-        Instance convo;
-        convo.id = 9;
-        convo.hash = kConversationScene;
-        convo.kind = Kind::Conversation;
-        track.instances = {script, zone, engine, skipped, convo};
-        const std::vector<std::uint32_t> engineOpen = {0x1BFC4208u, kConversationScene};
-        const std::vector<std::uint32_t> skip = {0x24BFC688u};
-        Check(Wanted(track, 100, 16, kReplayDefault, engineOpen, skip) == std::vector<std::uint32_t>({5, 9}),
-            "wanted: script and conversation by default (a conversation is never filtered by hash)");
-        Check(Wanted(track, 100, 16, kReplayDefault | kReplayCode, engineOpen, skip) == std::vector<std::uint32_t>({5, 6, 9}),
-            "wanted: code scenes the engine does not have open, minus the skipped ones");
-        Check(Wanted(track, 100, 16, kReplayDefault, {0x914C7229u}, {}) == std::vector<std::uint32_t>({9}),
-            "wanted: a script scene the engine already has is the engine's");
         Check(ParseHashList("0x1bfc4208, 24bfc688;0X24BFC688 123 0x 0x1FFFFFFFF") ==
                   std::vector<std::uint32_t>({0x1BFC4208u, 24u, 0x24BFC688u, 123u}),
-            "skip list: hex and decimal, malformed and too big items dropped");
-        Check(ParseHashList(nullptr).empty() && ParseHashList("").empty(), "skip list: empty");
+            "hash list: hex and decimal, malformed and too big items dropped");
+        Check(ParseHashList(nullptr).empty() && ParseHashList("").empty(), "hash list: empty");
         Check(StaleStop(script, 0) && !StaleStop(script, 0x914C7229u), "stop: hash 0 at the stop is a stale reference");
         Check(SceneAlive(0x914C7229u, 0x1000, 0x914C7229u) && !SceneAlive(0x914C7229u, 0, 0x914C7229u) &&
                   !SceneAlive(0, 0x1000, 0x914C7229u),
@@ -217,7 +163,7 @@ namespace
             "vars cut: the values at the window start at 0, then the changes");
     }
 
-    void TestScriptPath()
+    void TestAsk()
     {
         using namespace replay::speech;
         request::Fields script;
@@ -229,33 +175,6 @@ namespace
         camp.read = true;
         camp.value[request::Source] = 3;
         camp.value[request::LineBits] = 0x02680000u;
-        Check(scriptpath::Source(true, false, script) == 2, "script path: a source 2 line goes on the script path");
-        Check(scriptpath::Source(false, false, script) == 0 && scriptpath::Source(true, true, script) == 0 &&
-                  scriptpath::Source(true, false, camp) == 0,
-            "script path: key off, animals and other sources do not");
-        request::Fields old;
-        Check(scriptpath::Source(true, false, old) == 0, "script path: an old clip (no SPRQ) does not");
-        request::Ask ask = request::BuildAsk(2, script, true, true);
-        const std::uint8_t before = ask.count;
-        Check(scriptpath::Apply(true, false, script, ask), "script path: applied");
-        bool pd4 = false;
-        for (std::uint8_t n = 0; n < ask.count; ++n)
-            pd4 = pd4 || (ask.writes[n].offset == 0xD4 && ask.writes[n].value == 0xF);
-        Check(pd4 && ask.count == before + 1, "script path: the recorded pD4 is asked");
-        Check(ask.byteCount == 1 && ask.bytes[0].offset == 0x19E && ask.bytes[0].value == 0,
-            "script path: the recorded duck bit (clear) is asked");
-        request::Ask campAsk = request::BuildAsk(1, camp, true, true);
-        Check(!scriptpath::Apply(true, false, camp, campAsk) && campAsk.byteCount == 0, "script path: a camp line is left");
-        request::Fields ducking = script;
-        ducking.value[request::LineBits] = 0x02680000u;
-        request::Ask duckAsk;
-        scriptpath::Apply(true, false, ducking, duckAsk);
-        Check(duckAsk.byteCount == 1 && duckAsk.bytes[0].value == 1, "script path: a set duck bit is asked set");
-        request::Fields wide = script;
-        wide.value[request::PD4] = 0x30;
-        request::Ask wideAsk;
-        scriptpath::Apply(true, false, wide, wideAsk);
-        Check(wideAsk.count == 0, "script path: a pD4 out of its 4 bits is not written");
         // Set replaces an earlier write at the same offset.
         request::Ask set;
         set.Set(0xDC, 1);
@@ -265,28 +184,6 @@ namespace
         request::Ask bytes;
         bytes.SetByte(0x19E, 1);
         Check(!bytes.Empty() && bytes.byteCount == 1, "ask: a byte write is not empty");
-    }
-
-    void TestPlayerNear()
-    {
-        using namespace replay::speech::scriptpath;
-        Check(ChoosePlayerNear(false, true, true, 0.2f) == PlayerNear::Off, "near: key off");
-        Check(ChoosePlayerNear(true, false, true, 0.2f) == PlayerNear::NotScript, "near: an NPC's line");
-        Check(ChoosePlayerNear(true, true, false, 0.2f) == PlayerNear::NotScript, "near: the player's ambient line");
-        Check(ChoosePlayerNear(true, true, true, 0.2f) == PlayerNear::Frontend, "near: at the recorded game camera, frontend");
-        Check(ChoosePlayerNear(true, true, true, 12.0f) == PlayerNear::Positioned, "near: a free camera, positioned on the puppet");
-        Check(ChoosePlayerNear(true, true, true, -1.0f) == PlayerNear::Positioned, "near: no game camera samples, positioned");
-        Check(PuppetSays(PlayerNear::Frontend) && PuppetSays(PlayerNear::Positioned) && !PuppetSays(PlayerNear::Off) &&
-                  !PuppetSays(PlayerNear::NotScript),
-            "near: the puppet says it on both");
-        replay::speech::request::Ask ask;
-        ask.Set(kParamsVolumeType, 0);
-        ApplyPlayerNear(PlayerNear::Frontend, ask);
-        Check(ask.count == 1 && ask.writes[0].offset == 0xDC && ask.writes[0].value == 2,
-            "near: frontend replaces the recorded volume type");
-        replay::speech::request::Ask kept;
-        ApplyPlayerNear(PlayerNear::Positioned, kept);
-        Check(kept.count == 0, "near: positioned keeps the recorded fields");
     }
 
     void TestLevel()
@@ -313,10 +210,9 @@ int RunVoicesTests()
     TestKinds();
     TestLiveAndTrack();
     TestTrimAndCut();
-    TestPlan();
-    TestReplayKindsAndVars();
-    TestScriptPath();
-    TestPlayerNear();
+    TestParticipant();
+    TestHashesAndVars();
+    TestAsk();
     TestLevel();
     if (!g_voicesFailures)
         std::printf("Voices tests passed.\n");

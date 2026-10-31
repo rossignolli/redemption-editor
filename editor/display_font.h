@@ -6,6 +6,7 @@
 //   title: Redemption, an OpenType CFF file shipped in RedemptionEditor\fonts,
 //          fitted (RedemptionFit) to the layout the labels were designed for
 //          and drawn upper case.
+//          Replay Settings > Font can draw Segoe UI Bold (Windows) instead.
 //   body:  Georgia from the Windows fonts folder, for paragraphs (wrapped).
 // Without a font file the editor keeps ReShade's font for that role.
 //
@@ -319,6 +320,7 @@ namespace display_font
         }
 
         bool Ready() const { return m_ready; }
+        bool Failed() const { return m_tried && !m_ready; }
         // The atlas's size in bytes (RGBA) and the code points baked past ASCII.
         std::size_t AtlasBytes() const { return m_ready ? static_cast<std::size_t>(kAtlasSize) * m_atlasHeight * 4 : 0; }
         std::size_t ExtraGlyphs() const { return m_extraCodes.size(); }
@@ -637,6 +639,24 @@ namespace display_font
     inline BakedFont g_title({L"Redemption.otf"}, 72.0f, Source::Bundled, RedemptionFit, {{0x00A0, 0x04FF, {L"georgia.ttf"}, Source::Installed}});
     inline BakedFont g_body({L"georgia.ttf"}, 48.0f);
 
+    // Replay Settings > Font: Segoe UI Bold from the Windows fonts folder in
+    // place of Redemption, drawn in capitals a little smaller (it is wider) so
+    // the layout holds. 0 Redemption (the default), 1 Segoe UI Bold.
+    inline BakedFont g_titleSegoe({L"segoeuib.ttf"}, 72.0f, Source::Installed, Fit{TitleFit.capHeight / 1.15f, TitleFit.capMiddle, true},
+        {{0x00A0, 0x04FF, {L"georgia.ttf"}, Source::Installed}});
+    inline int g_titleFace = 0;
+    constexpr int kTitleFaces = 2;
+
+    inline BakedFont* TitleFaces(int face) { return face == 1 ? &g_titleSegoe : &g_title; }
+
+    // The title face drawn now: the chosen one, Redemption while it bakes or
+    // when Windows does not have it.
+    inline BakedFont& Title()
+    {
+        BakedFont& chosen = *TitleFaces(g_titleFace);
+        return &chosen == &g_title || chosen.Ready() ? chosen : g_title;
+    }
+
     // The Windows faces of a CJK language, its own first, then the others
     // (a PC without the first still draws from the next); none for another
     // language.
@@ -663,32 +683,38 @@ namespace display_font
             title.push_back({0x1100, 0xFFEF, {face}, Source::Installed, kCjkTitleScale});
             body.push_back({0x1100, 0xFFEF, {face}, Source::Installed, kCjkBodyScale});
         }
-        g_title.SetLanguageFaces(std::move(title));
+        for (int face = 0; face < kTitleFaces; ++face)
+        {
+            TitleFaces(face)->SetLanguageFaces(title);
+            TitleFaces(face)->SetExtraGlyphs(codes);
+        }
         g_body.SetLanguageFaces(std::move(body));
-        g_title.SetExtraGlyphs(codes);
         g_body.SetExtraGlyphs(codes);
     }
 
     // The share of the language's glyphs neither font could bake (0 to 1).
     inline float MissingShare()
     {
-        const std::size_t wanted = g_title.WantedGlyphs() + g_body.WantedGlyphs();
-        return wanted ? static_cast<float>(g_title.MissingGlyphs() + g_body.MissingGlyphs()) / static_cast<float>(wanted) : 0.0f;
+        const std::size_t wanted = Title().WantedGlyphs() + g_body.WantedGlyphs();
+        return wanted ? static_cast<float>(Title().MissingGlyphs() + g_body.MissingGlyphs()) / static_cast<float>(wanted) : 0.0f;
     }
 
     inline void Ensure(reshade::api::effect_runtime* runtime)
     {
-        g_title.Ensure(runtime);
+        g_title.Ensure(runtime); // the fallback of the others
+        if (g_titleFace != 0)
+            TitleFaces(g_titleFace)->Ensure(runtime);
         g_body.Ensure(runtime);
     }
 
     inline void Release()
     {
-        g_title.Release();
+        for (int face = 0; face < kTitleFaces; ++face)
+            TitleFaces(face)->Release();
         g_body.Release();
     }
 
-    inline bool Ready() { return g_title.Ready(); }
-    inline float Width(float px, const char* text) { return g_title.Width(px, text); }
-    inline void Draw(ImDrawList* draw, ImVec2 pos, float px, ImU32 color, const char* text) { g_title.Draw(draw, pos, px, color, text); }
+    inline bool Ready() { return Title().Ready(); }
+    inline float Width(float px, const char* text) { return Title().Width(px, text); }
+    inline void Draw(ImDrawList* draw, ImVec2 pos, float px, ImU32 color, const char* text) { Title().Draw(draw, pos, px, color, text); }
 }

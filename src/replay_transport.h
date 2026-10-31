@@ -76,6 +76,14 @@ namespace replay::transport
         // millisecond carry over between frames.
         void SetRate(double rate) { m_rate = rate > 0.0 ? rate : 1.0; }
         double Rate() const { return m_rate; }
+        // Playhead time normal play did not get from the wall clock since Start
+        // (ms at the rate): frames held (entities loading, a seek settling, a
+        // puppet's creation) and the rest of stalled frames past
+        // kMaxNormalStepMs. What a sound already playing (a speech line, the
+        // export's audio pass on the wall clock) runs ahead of the picture by.
+        std::uint64_t HeldMs() const { return static_cast<std::uint64_t>(m_heldMs); }
+        std::uint64_t CappedMs() const { return static_cast<std::uint64_t>(m_cappedMs); }
+        std::uint64_t LostMs() const { return HeldMs() + CappedMs(); }
 
     private:
         std::uint32_t EndScrub(std::uint64_t now);
@@ -89,6 +97,8 @@ namespace replay::transport
         std::uint64_t m_lastUpdateAt = 0;
         double m_rate = 1.0;
         double m_fractionMs = 0.0;
+        double m_heldMs = 0.0;
+        double m_cappedMs = 0.0;
         ScrubState m_scrub;
         ScrubState m_endedScrub;
     };

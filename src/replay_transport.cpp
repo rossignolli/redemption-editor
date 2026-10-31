@@ -25,6 +25,8 @@ namespace replay::transport
         m_scrub = {};
         m_endedScrub = {};
         m_fractionMs = 0.0;
+        m_heldMs = 0.0;
+        m_cappedMs = 0.0;
     }
 
     void Transport::Seek(std::uint64_t timeMs)
@@ -59,6 +61,9 @@ namespace replay::transport
             return 0;
         if (input.hold)
         {
+            // Held in normal play: the wall clock went on, the playhead did not.
+            if (!m_paused && !m_scrubbing && m_lastUpdateAt != 0 && now > m_lastUpdateAt)
+                m_heldMs += static_cast<double>(now - m_lastUpdateAt) * m_rate;
             m_lastUpdateAt = now;
             return 0;
         }
@@ -118,6 +123,8 @@ namespace replay::transport
         // next frames play at their normal step.
         const std::uint64_t stepMs = NormalStepMs(wholeMs);
         m_fractionMs = stepMs == wholeMs ? scaled - static_cast<double>(stepMs) : 0.0;
+        if (stepMs != wholeMs)
+            m_cappedMs += scaled - static_cast<double>(stepMs);
         const AdvanceResult advance = Advance(m_playheadMs, stepMs, m_durationMs);
         m_playheadMs = advance.timeMs;
         if (advance.reachedBoundary)

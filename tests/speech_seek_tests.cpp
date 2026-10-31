@@ -217,6 +217,57 @@ namespace
             "silent: the cause reaches the QA report");
     }
 
+    // A line asked after waiting for the speaker's previous one: at the
+    // playhead's point in it (no ratchet along a run of back-to-back lines),
+    // dropped when under kMinRemainingMs of a known end is left; and the sync
+    // probe's measure.
+    void TestAskAfterWait()
+    {
+        const SpeechEvent line = Line(7, 10000, 15000);
+        const resume::LineEnd end = resume::EndOf(line, 0, 0);
+        resume::AfterWait ask = resume::AskAfterWait(line, 10000, end);
+        Check(ask.offsetMs == 0 && !ask.drop, "on time: from its start");
+        ask = resume::AskAfterWait(line, 10040, end);
+        Check(ask.offsetMs == 0 && !ask.drop, "under the offset floor: from its start");
+        ask = resume::AskAfterWait(line, 10467, end);
+        Check(ask.offsetMs == 467 && !ask.drop, "a 467 ms wait: asked 467 ms in");
+        ask = resume::AskAfterWait(line, 14900, end);
+        Check(ask.drop, "under 250 ms of a known end left: dropped");
+        const SpeechEvent unknown = Line(7, 10000, 0);
+        ask = resume::AskAfterWait(unknown, 14900, resume::EndOf(unknown, 0, 0));
+        Check(ask.offsetMs == 4900 && !ask.drop, "an unknown end is not dropped for it");
+        SpeechEvent adopted = Line(7, 0, 3000);
+        adopted.startedBeforeMs = 500;
+        ask = resume::AskAfterWait(adopted, 0, resume::EndOf(adopted, 0, 0));
+        Check(ask.offsetMs == 500, "an adopted line goes on from where it was");
+
+        // A run of back-to-back lines (5 s each, one frame apart) where every
+        // line waits 40 ms for the previous one's late end: asked from the
+        // start the lateness adds up line after line; at the playhead's point
+        // it never passes one wait.
+        std::int64_t fromStart = 0;
+        std::int64_t atPoint = 0;
+        std::int64_t worstAtPoint = 0;
+        for (int n = 0; n < 60; ++n)
+        {
+            const std::uint32_t start = static_cast<std::uint32_t>(n) * 5017u;
+            const SpeechEvent run = Line(9, start, start + 5000);
+            const std::uint32_t waitFromStart = static_cast<std::uint32_t>(fromStart > 17 ? fromStart - 17 : 0) + 40;
+            fromStart = waitFromStart; // asked from its start: late by the whole wait
+            const std::uint32_t waitAtPoint = static_cast<std::uint32_t>(atPoint > 17 ? atPoint - 17 : 0) + 40;
+            const resume::AfterWait point = resume::AskAfterWait(run, start + waitAtPoint, resume::EndOf(run, 0, 0));
+            atPoint = static_cast<std::int64_t>(waitAtPoint) - point.offsetMs;
+            worstAtPoint = atPoint > worstAtPoint ? atPoint : worstAtPoint;
+        }
+        Check(fromStart > 1000, "from the start the run ratchets past a second");
+        Check(worstAtPoint < static_cast<std::int64_t>(resume::kMinOffsetMs), "at the playhead's point it stays under the floor");
+
+        Check(resume::AudioAheadMs(line, 15000, 0, 5000) == 0, "in sync at the end");
+        Check(resume::AudioAheadMs(line, 15467, 0, 5000) == -467, "asked 467 ms late from its start: sound behind");
+        Check(resume::AudioAheadMs(line, 14600, 0, 5000) == 400, "playhead held 400 ms: sound ahead");
+        Check(resume::AudioAheadMs(line, 15000, 467, 4533) == 0, "asked at its point: in sync");
+    }
+
     void TestCameraRelease()
     {
         using namespace replay::camcut;
@@ -239,19 +290,16 @@ namespace
         camera.scriptHash = kScriptHookThreadHash;
         camera.paused = 1;
         camera.pausable = 1;
-        Check(UnpauseForScriptHook(camera, false), "the camera mod's thread runs again");
-        Check(!UnpauseForScriptHook(camera, true), "TheatrePauseScriptHook=1: it stays paused");
+        Check(UnpauseForScriptHook(camera), "the camera mod's thread runs again");
         ThreadView game = camera;
         game.scriptHash = Joaat("ambient_camp");
-        Check(!UnpauseForScriptHook(game, false), "a game script stays paused");
+        Check(!UnpauseForScriptHook(game), "a game script stays paused");
         ThreadView idle = camera;
         idle.paused = 0;
-        Check(!UnpauseForScriptHook(idle, false), "a thread the native left alone: nothing to write");
+        Check(!UnpauseForScriptHook(idle), "a thread the native left alone: nothing to write");
         ThreadView empty = camera;
         empty.id = 0;
-        Check(!UnpauseForScriptHook(empty, false), "a free slot: nothing");
-        Config config;
-        Check(!config.pauseScriptHook, "default: the other ASIs are not paused");
+        Check(!UnpauseForScriptHook(empty), "a free slot: nothing");
     }
 }
 
@@ -263,6 +311,7 @@ int RunSpeechSeekTests()
     TestLeadWindow();
     TestEndSources();
     TestWatch();
+    TestAskAfterWait();
     TestCauses();
     TestQaLines();
     TestCameraRelease();

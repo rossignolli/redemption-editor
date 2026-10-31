@@ -1,5 +1,5 @@
 // Closed theater (world_theatre.h): the engine functions' signatures and sites
-// against the offline dump's addresses, the census reasons and the spawn label copy.
+// on the offline dump's addresses, the census reasons and the spawn label copy.
 #include "world_theatre.h"
 
 #include <cstdio>
@@ -23,37 +23,49 @@ namespace
 
     void TestSites()
     {
-        Check(SiteTarget(kPedFlushSite) == 0xC03C84, "sites: RemoveAllPedsWithException calls FlushPedQueues 0xC03C84");
-        Check(SiteTarget(kPedDestroySite) == 0x73381C, "sites: and ends with a jmp to the deferred destruction 0x73381C");
-        Check(SiteTarget(kVehicleReuseSite) == 0x130DD84, "sites: RemoveAllVehs calls FlushVehicleReusePool 0x130DD84");
-        Check(SiteTarget(kEmitterManagerSite) == 0x5C505C0, "sites: the static emitter manager is 0x5C505C0");
-        Check(SiteTarget(kPerscharManagerSite) == 0x4A35800, "sites: the perschar manager pointer is 0x4A35800");
-        Check(SiteTarget(kSpeechManagerSite) == 0x5BB9750, "sites: the speech manager is 0x5BB9750");
-        for (const Site* site : {&kPedFlushSite, &kPedDestroySite, &kVehicleReuseSite, &kEmitterManagerSite,
-                 &kPerscharManagerSite, &kSpeechManagerSite})
+        using replay::sig::Signature;
+        Check(kPedFlushQueues.rva == 0xC03C84 && kPedFlushQueues.parent == &kPedFlushCall &&
+                kPedFlushCall.parent == &kRemoveAllPeds,
+            "sites: RemoveAllPedsWithException calls FlushPedQueues 0xC03C84");
+        Check(kPedDeferredDestroy.rva == 0x73381C && kPedDeferredDestroy.parent == &kPedDestroyJump &&
+                kPedDestroyJump.parent == &kRemoveAllPeds,
+            "sites: and ends with a jmp to the deferred destruction 0x73381C");
+        Check(kFlushVehicleReuse.rva == 0x130DD84 && kFlushVehicleReuse.parent == &kVehicleReuseCall &&
+                kVehicleReuseCall.parent == &kRemoveAllVehs,
+            "sites: RemoveAllVehs calls FlushVehicleReusePool 0x130DD84");
+        Check(kStaticEmitterManager.rva == 0x5C505C0 && kStaticEmitterManager.parent == &kEmitterReset &&
+                kStaticEmitters.parent == &kEmitterReset,
+            "sites: the static emitter manager is 0x5C505C0, passed to the reset");
+        Check(kPerscharManager.rva == 0x4A35800, "sites: the perschar manager pointer is 0x4A35800");
+        Check(kSpeechManager.rva == 0x5BB9750 && kAmbientRelease.parent == kSpeechManager.parent,
+            "sites: the speech manager is 0x5BB9750, passed to the release");
+        // A call or jump site: its opcode, the rel32 masked.
+        for (const Signature* site :
+            {&kPedFlushCall, &kPedDestroyJump, &kVehicleReuseCall, &replay::enginesig::kConversationSceneCall})
         {
-            Check(SiteMatches(*site, site->bytes, site->size), "sites: a site matches its own bytes");
-            std::uint8_t other[8]{};
-            std::memcpy(other, site->bytes, site->size);
-            other[site->size - 1] ^= 1;
-            Check(!SiteMatches(*site, other, site->size), "sites: one byte off does not match");
+            replay::sig::Pattern pattern;
+            Check(replay::sig::Parse(site->pattern, pattern) && pattern.size == 5 && !pattern.wild[0] && pattern.wild[1] &&
+                    pattern.wild[4],
+                "sites: an opcode and its rel32");
         }
     }
 
     void TestSignatures()
     {
-        const Signature* all[] = {&kSpawnFunnelSignature, &kMixSceneSignature, &kRemoveAllVehsSignature,
-            &kFlushVehicleReuseSignature, &kRemoveAllPedsSignature, &kStaticEmittersSignature, &kSpeechRulesSignature};
+        using replay::sig::Signature;
+        const Signature* all[] = {&kSpawnFunnel, &replay::enginesig::kMixerStartScene, &kRemoveAllVehs, &kFlushVehicleReuse,
+            &kRemoveAllPeds, &kStaticEmitters, &kSpeechRules};
         const std::uint32_t rvas[] = {0xBF23D4, 0x2F19018, 0x134E95C, 0x130DD84, 0xC0F83C, 0x312F7A4, 0x2F972C4};
         for (std::size_t n = 0; n < std::size(all); ++n)
         {
+            replay::sig::Pattern pattern;
             Check(all[n]->rva == rvas[n], "signatures: the research's RVAs");
-            Check(SignatureMatches(*all[n], all[n]->bytes, sizeof(all[n]->bytes)), "signatures: match their bytes");
-            Check(!SignatureMatches(*all[n], all[n]->bytes, 16), "signatures: 24 bytes are needed");
+            Check(replay::sig::Parse(all[n]->pattern, pattern) && pattern.size >= 24, "signatures: 24 bytes at least");
         }
-        // The two generic 16-byte prologues differ past byte 16.
-        Check(std::memcmp(kRemoveAllPedsSignature.bytes, kSpeechRulesSignature.bytes, 16) == 0 &&
-                std::memcmp(kRemoveAllPedsSignature.bytes, kSpeechRulesSignature.bytes, 24) != 0,
+        // The two generic 16-byte prologues differ past byte 16 (the rules'
+        // first 14 bytes are ??: it is hooked).
+        Check(std::strncmp(kRemoveAllPeds.pattern + 14 * 3, kSpeechRules.pattern + 14 * 3, 2 * 3) == 0 &&
+                std::strncmp(kRemoveAllPeds.pattern + 14 * 3, kSpeechRules.pattern + 14 * 3, 10 * 3) != 0,
             "signatures: the shared prologue is told apart by the next bytes");
         Check(kRemovePedsForceAllRandomAndMission == 4, "peds: mode 4 is ForceAllRandomAndMission");
     }

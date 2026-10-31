@@ -2,25 +2,14 @@
 
 // The player's puppet is never hidden in a replay (a design rule).
 //
-// QA 224 (a tester: "Arthur becomes invisible, mostly when the recording stops
-// and starts another"): the clip's player record had lost its first 68 s. A
-// pose track used to drop its oldest chunks past a 32 MiB budget of its own
-// (pose_stream.h StreamConfig::byteBudget); Arthur's record, 1050 bones on
-// the move, is the heaviest of a scene and reached it first (33.36 MB kept,
-// 34 two-second chunks dropped, the horse beside him at 29.6 MB). The
-// playback hid every body before its record's first frame, so he was missing
-// for the whole start while his horse rode on alone. The capture now leaves
-// the bytes to the recorder's own budgets (pose_capture_rules.h
-// kCaptureTrackByteBudget); for clips already recorded, and any hole a
-// recording may still leave, the player's puppet holds the nearest recorded
+// Where the player's record has a hole (older clips lost the start of the
+// heaviest track; QA 224), the player's puppet holds the nearest recorded
 // pose (the track's sample clamps to its first and last frame) instead of
-// being hidden.
-//
-// When his first frame has him on a horse (QA 224: in the saddle of 0:1 at
-// 68 s, the horse ridden since 0 s), the held pose rides that horse: before his
-// first frame he keeps the rider-in-mount offset of that frame on the mount's
+// being hidden. When his first frame has him on a horse, the held pose before
+// that frame keeps the rider-in-mount offset of that frame on the mount's
 // recorded transform (Carry), instead of standing frozen where the record
-// begins, hundreds of metres from the camera.
+// begins.
+// Research: docs/research/peds-puppets.md
 //
 // Pure rules, compiled by the core tests (tests/player_hold_tests.cpp): which
 // created entity is the recorded player, the puppet's visibility verdict for a

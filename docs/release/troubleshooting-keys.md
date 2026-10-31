@@ -5,7 +5,7 @@ advanced switches exist and that we will tell the player when one is needed.
 
 ## What they are
 
-51 engine safety switches. Each one turns on code that changes or calls the game's engine (a detour, an engine
+52 engine safety switches. Each one turns on code that changes or calls the game's engine (a detour, an engine
 function or a memory write). All are **on** by default. Since release 1.0 they are **not in the shipped ini**
 (`src/ini_public.h` `kShippedIni`, `dist/RedemptionEditor.ini`), but the public build **still reads them**: they are in
 `kPublicReadKeys` and listed with their defaults in `kSupportSwitches`. `tools/check_public_build.py` checks that
@@ -100,10 +100,11 @@ points at it.
 | Key | Default | What turning it off disables | When to suggest it |
 |---|---|---|---|
 | `RecordPedAnimVisible` | `1` | Recorded people and animals animating as if seen up close (hats, faces). `0`: off-screen detail can be wrong. | Frame drops while **recording** in busy places. |
-| `RecordPedAnimLod0` | `1` | Recorded faces animating at full detail far from the camera. `0`: far faces can freeze. | Frame drops while recording, when `RecordPedAnimVisible=0` was not enough. |
+| `RecordPedAnimLod0` | `1` | Recorded faces animating at full detail far from the camera, and the replay's people and horses at full animation detail (the same engine hook). `0`: far faces can freeze, and a horse's muscles may flicker in the replay. | Frame drops while recording or in the replay, when `RecordPedAnimVisible=0` was not enough. |
 | `PuppetScriptPose` | `1` | Writing a puppet's pose when the engine stops animating it. `0`: far puppets can freeze. | Puppets popping or snapping into a pose, or a crash in posing. |
 | `FrameEnd` | `1` | Placing puppets at the end of each frame. `0`: riders and wagons can jitter. | A crash or stutter in the per-frame placement; expect jitter with it off. |
 | `PhysicsFilter` | `1` | Puppets colliding only with plants. `0`: puppets can push each other. | Puppets passing through the world, or a physics crash. |
+| `MuscleReplay` | `1` | Writing a horse's recorded muscles (the shader values of its coat) on the replay's horses, through an engine hook. `0`: the replay's horses show the engine's own muscles. | A crash in the shader update of horses while a replay plays, or horse coats that flicker or look wrong in a replay. |
 
 ### Effects and sky
 

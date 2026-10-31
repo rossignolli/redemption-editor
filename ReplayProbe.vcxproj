@@ -9,7 +9,17 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="script.cpp" />
+    <ClCompile Include="src\script_camera.cpp" />
+    <ClCompile Include="src\script_clip_world.cpp" />
+    <ClCompile Include="src\script_config.cpp" />
+    <ClCompile Include="src\script_editor.cpp" />
+    <ClCompile Include="src\script_free_cam.cpp" />
+    <ClCompile Include="src\script_recording.cpp" />
+    <ClCompile Include="src\script_theatre.cpp" />
+    <ClCompile Include="src\script_transport.cpp" />
     <ClCompile Include="src\camera_track.cpp" />
+    <ClCompile Include="src\camera_track_spline.cpp" />
+    <ClCompile Include="src\camera_track_markers.cpp" />
     <ClCompile Include="src\camera_shake.cpp" />
     <ClCompile Include="src\camera_shake_custom.cpp" />
     <ClCompile Include="src\camera_spline.cpp" />
@@ -20,6 +30,9 @@
     <ClCompile Include="src\replay_doors.cpp" />
     <ClCompile Include="src\replay_world.cpp" />
     <ClCompile Include="src\pose_capture.cpp" />
+    <ClCompile Include="src\pose_capture_worker.cpp" />
+    <ClCompile Include="src\pose_capture_recording.cpp" />
+    <ClCompile Include="src\pose_capture_override.cpp" />
     <ClCompile Include="src\fx_observer.cpp" />
     <ClCompile Include="src\decal_observer.cpp" />
     <ClCompile Include="src\ped_gore.cpp" />
@@ -31,8 +44,6 @@
     <ClCompile Include="src\sun_control.cpp" />
     <ClCompile Include="src\frag_observer.cpp" />
     <ClCompile Include="src\world_theatre_engine.cpp" />
-    <ClCompile Include="src\water_observer.cpp" />
-    <ClCompile Include="src\water_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
     <ClCompile Include="src\export_probe.cpp" />
     <ClCompile Include="src\export_timer.cpp" />
     <ClCompile Include="src\export_audio_mute.cpp" />
@@ -40,12 +51,19 @@
     <ClCompile Include="src\burn_level.cpp" />
     <ClCompile Include="src\object_look.cpp" />
     <ClCompile Include="src\audio_observer.cpp" />
+    <ClCompile Include="src\audio_observer_foot.cpp" />
+    <ClCompile Include="src\audio_observer_generic.cpp" />
+    <ClCompile Include="src\audio_observer_ped.cpp" />
+    <ClCompile Include="src\audio_observer_sounds.cpp" />
+    <ClCompile Include="src\audio_observer_speech.cpp" />
     <ClCompile Include="src\horse_audio_evidence.cpp" />
     <ClCompile Include="src\sound_census.cpp" />
     <ClCompile Include="src\mix_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
     <ClCompile Include="src\render_target.cpp" />
     <ClCompile Include="src\drawstore_probe.cpp" />
     <ClCompile Include="src\game_listener.cpp" />
+    <ClCompile Include="src\game_sig.cpp" />
+    <ClCompile Include="src\engine_calls.cpp" />
     <ClCompile Include="src\mix_scene.cpp" />
     <ClCompile Include="src\speech_level_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
     <ClCompile Include="src\volume_probe.cpp" Condition="'$(RedemptionDev)'=='true'" />
@@ -81,6 +99,7 @@
     <ClCompile Include="src\pose_playback.cpp" />
     <ClCompile Include="src\pose_skeleton_layout.cpp" />
     <ClCompile Include="src\pose_stream.cpp" />
+    <ClCompile Include="src\pose_deadband_smooth.cpp" />
     <ClCompile Include="src\pose_segments.cpp" />
     <ClCompile Include="src\pose_jerk.cpp" />
     <ClCompile Include="src\pose_fidelity_core.cpp" />
@@ -92,17 +111,44 @@
     <ClCompile Include="src\rope_track.cpp" />
     <ClCompile Include="src\replay_ropes.cpp" />
     <ClCompile Include="src\replay_objects.cpp" />
+    <ClCompile Include="src\replay_objects_playback.cpp" />
+    <ClCompile Include="src\replay_objects_record_parts.cpp" />
+    <ClCompile Include="src\replay_objects_recording.cpp" />
+    <ClCompile Include="src\replay_objects_recording_world.cpp" />
+    <ClCompile Include="src\replay_objects_stands.cpp" />
+    <ClCompile Include="src\replay_objects_weapon_play.cpp" />
     <ClCompile Include="src\replay_trains.cpp" />
     <ClCompile Include="src\vehicle_doors_engine.cpp" />
     <ClCompile Include="src\replay_events.cpp" />
+    <ClCompile Include="src\replay_events_blood_gore.cpp" />
+    <ClCompile Include="src\replay_events_decals.cpp" />
+    <ClCompile Include="src\replay_events_fire.cpp" />
+    <ClCompile Include="src\replay_events_fx.cpp" />
+    <ClCompile Include="src\replay_events_fx_registered.cpp" />
+    <ClCompile Include="src\replay_events_ped_audio.cpp" />
+    <ClCompile Include="src\replay_events_playback.cpp" />
+    <ClCompile Include="src\replay_events_sounds.cpp" />
+    <ClCompile Include="src\replay_events_speech.cpp" />
+    <ClCompile Include="src\replay_events_speech_record.cpp" />
+    <ClCompile Include="src\replay_events_weapons.cpp" />
     <ClCompile Include="src\skeleton_resolve.cpp" />
     <ClCompile Include="src\replay_capture.cpp" />
+    <ClCompile Include="src\replay_capture_sampling.cpp" />
     <ClCompile Include="src\replay_playback.cpp" />
+    <ClCompile Include="src\replay_playback_advance.cpp" />
+    <ClCompile Include="src\replay_playback_look.cpp" />
+    <ClCompile Include="src\replay_playback_puppets.cpp" />
+    <ClCompile Include="src\replay_playback_watch.cpp" />
+    <ClCompile Include="src\replay_playback_world.cpp" />
     <ClCompile Include="src\engine_hud.cpp" />
     <ClCompile Include="src\editor_bridge.cpp" />
     <ClCompile Include="src\bench_script.cpp" Condition="'$(RedemptionDev)'=='true'" />
     <ClCompile Include="src\replay_bench.cpp" Condition="'$(RedemptionDev)'=='true'" />
+    <ClCompile Include="src\replay_bench_execute.cpp" Condition="'$(RedemptionDev)'=='true'" />
     <ClCompile Include="src\clip_file.cpp" />
+    <ClCompile Include="src\clip_file_events.cpp" />
+    <ClCompile Include="src\clip_file_world.cpp" />
+    <ClCompile Include="src\clip_file_sounds.cpp" />
     <ClCompile Include="src\clip_compress.cpp" />
     <ClCompile Include="src\clip_compress_worker.cpp" />
     <ClCompile Include="external\zstd\zstd.c">
@@ -151,11 +197,26 @@
     <ClCompile Include="src\recording_window.cpp" />
     <ClCompile Include="src\qa_kit.cpp" />
     <ClCompile Include="src\qa_bundle.cpp" />
-    <ClCompile Include="external\reshade\deps\minhook\src\buffer.c" />
-    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde32.c" />
-    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde64.c" />
-    <ClCompile Include="external\reshade\deps\minhook\src\hook.c" />
-    <ClCompile Include="external\reshade\deps\minhook\src\trampoline.c" />
+    <ClCompile Include="external\reshade\deps\minhook\src\buffer.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde32.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde64.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hook.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\trampoline.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\main.h" />
@@ -163,7 +224,9 @@
     <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\natives.h" />
     <ClInclude Include="$(ScriptHookRdr2SdkDir)inc\types.h" />
     <ClInclude Include="script.h" />
+    <ClInclude Include="script_internal.h" />
     <ClInclude Include="src\camera_track.h" />
+    <ClInclude Include="src\camera_track_internal.h" />
     <ClInclude Include="src\camera_bones.h" />
     <ClInclude Include="src\camera_shake.h" />
     <ClInclude Include="src\camera_shake_custom.h" />
@@ -187,6 +250,7 @@
     <ClInclude Include="src\no_record_fallback.h" />
     <ClInclude Include="src\world_theatre_engine.h" />
     <ClInclude Include="src\clip_file.h" />
+    <ClInclude Include="src\clip_file_internal.h" />
     <ClInclude Include="src\clip_compress.h" />
     <ClInclude Include="src\clip_pack.h" />
     <ClInclude Include="src\clip_compress_worker.h" />
@@ -194,12 +258,14 @@
     <ClInclude Include="src\editor_bridge.h" />
     <ClInclude Include="src\bench_script.h" />
     <ClInclude Include="src\replay_bench.h" />
+    <ClInclude Include="src\replay_bench_internal.h" />
     <ClInclude Include="src\bench_paths.h" />
     <ClInclude Include="src\editor_protocol.h" />
     <ClInclude Include="src\playback_time.h" />
     <ClInclude Include="src\version.generated.h" />
     <ClInclude Include="src\qa_report.h" />
     <ClInclude Include="src\pose_capture.h" />
+    <ClInclude Include="src\pose_capture_internal.h" />
     <ClInclude Include="src\pose_capture_rules.h" />
     <ClInclude Include="src\pause_spans.h" />
     <ClInclude Include="src\session_reset.h" />
@@ -220,14 +286,13 @@
     <ClInclude Include="src\env_override.h" />
     <ClInclude Include="src\sun_control.h" />
     <ClInclude Include="src\frag_observer.h" />
-    <ClInclude Include="src\water_observer.h" />
-    <ClInclude Include="src\water_probe.h" />
     <ClInclude Include="src\fire_observer.h" />
     <ClInclude Include="src\fire_initial.h" />
     <ClInclude Include="src\burn_level.h" />
     <ClInclude Include="src\object_look.h" />
     <ClInclude Include="src\object_look_core.h" />
     <ClInclude Include="src\audio_observer.h" />
+    <ClInclude Include="src\audio_observer_internal.h" />
     <ClInclude Include="src\sound_census.h" />
     <ClInclude Include="src\sound_census_core.h" />
     <ClInclude Include="src\sound_generic.h" />
@@ -244,6 +309,12 @@
     <ClInclude Include="src\world_focus_core.h" />
     <ClInclude Include="src\game_listener.h" />
     <ClInclude Include="src\game_listener_core.h" />
+    <ClInclude Include="src\engine_calls.h" />
+    <ClInclude Include="src\engine_sigs.h" />
+    <ClInclude Include="src\game_sig.h" />
+    <ClInclude Include="src\game_sig_core.h" />
+    <ClInclude Include="src\game_sig_site.h" />
+    <ClInclude Include="src\clip_sites.h" />
     <ClInclude Include="src\mix_scene.h" />
     <ClInclude Include="src\mix_scene_core.h" />
     <ClInclude Include="src\speech_level_probe.h" />
@@ -340,14 +411,19 @@
     <ClInclude Include="src\replay_recorder.h" />
     <ClInclude Include="src\replay_context.h" />
     <ClInclude Include="src\replay_objects.h" />
+    <ClInclude Include="src\replay_objects_internal.h" />
+    <ClInclude Include="src\replay_objects_recording_internal.h" />
     <ClInclude Include="src\replay_trains.h" />
     <ClInclude Include="src\train_consist.h" />
     <ClInclude Include="src\vehicle_doors.h" />
     <ClInclude Include="src\vehicle_doors_engine.h" />
     <ClInclude Include="src\replay_events.h" />
+    <ClInclude Include="src\replay_events_internal.h" />
     <ClInclude Include="src\skeleton_resolve.h" />
     <ClInclude Include="src\replay_capture.h" />
+    <ClInclude Include="src\replay_capture_internal.h" />
     <ClInclude Include="src\replay_playback.h" />
+    <ClInclude Include="src\replay_playback_internal.h" />
     <ClInclude Include="src\engine_hud.h" />
     <ClInclude Include="src\replay_ropes.h" />
     <ClInclude Include="src\log_policy.h" />
@@ -397,6 +473,7 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
+    <RedemptionVersionBinary>1</RedemptionVersionBinary>
     <!-- The product name; the project keeps its historical file name. -->
     <TargetName>RedemptionEditor</TargetName>
     <RedemptionUsesScriptHookSdk>true</RedemptionUsesScriptHookSdk>
@@ -408,6 +485,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
       <PrecompiledHeader />
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>

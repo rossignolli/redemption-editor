@@ -2,13 +2,13 @@
 
 // The rules of the registered (continuous) effects in playback.
 //
-// Build 1491.50: the registered get-or-create core 0x2C49B08 sets the entry's
-// "got this frame" byte (+0x28 = 1, 0x2C49D02) on every call; the registry
-// update 0x2C52554 walks the entries once per frame and, for one not got
+// Build 1491.50: the registered get-or-create core sets the entry's
+// "got this frame" byte (+0x28 = 1) on every call; the registry
+// update walks the entries once per frame and, for one not got
 // (+0x28 == 0) whose instance is playing (+0x344 == 2), calls the instance
-// stop 0x29E7C3C(inst, 0) (0x2C52635), then frees the entry when the instance
-// reached state 5 (0x2C52651 -> 0x2C50F68, 0x2C4DA88); an entry that was got
-// has the byte cleared for the next frame (0x2C5268F). So the engine does stop
+// stop(inst, 0), then frees the entry when the instance
+// reached state 5 (the registry's free, the map removal); an entry that was got
+// has the byte cleared for the next frame. So the engine does stop
 // an instance the replay stops calling, one frame later, letting its particles
 // die off. The replay stops it itself at the track's end (looped effects are
 // stopped explicitly), and kills it (state 4, a removal on a cursor jump) when
@@ -114,7 +114,7 @@ namespace replay::regfx
     // the 250 ms the key stays live in the recording; that tenant's attach must
     // not be taken as the track's owner (the whole track would ride, say, a horse's
     // hoof bone with the map offset). The engine hands an instance to another
-    // effect only after its key stopped calling (registry update 0x2C52554 frees
+    // effect only after its key stopped calling (the registry update frees
     // the entry at state 5), so an attach record belongs to a key only while the
     // key is called: in a tick where it was called, or right after its last call
     // (the site attaches right after the get, dt_us 0 to 14).

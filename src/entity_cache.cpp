@@ -1,5 +1,8 @@
 #include "entity_cache.h"
 
+#include "engine_sigs.h"
+#include "game_sig.h"
+
 #include "main.h"
 #include "natives.h"
 
@@ -12,24 +15,19 @@
 // See entity_cache.h.
 namespace replay::entities
 {
+    using enginesig::kGoreCount;
+    using enginesig::kGoreMaskGetter;
+    using enginesig::kGoreTable;
+
     namespace
     {
-        // _HAS_PED_TAKEN_GORE_DAMAGE's getter 0xB4498C (the rip
-        // displacements pin the count 0x497CB88 and the table 0x497CB80)
-        // and its core 0xFD66F4 (`bt [entry+0x18], limb`). Build 1491.50.
-        constexpr std::uintptr_t kGoreTableRva = 0x497CB80;
-        constexpr std::uintptr_t kGoreCountRva = 0x497CB88;
-        constexpr std::uintptr_t kGoreGetterRva = 0xB4498C;
-        constexpr std::uint8_t kGoreGetterSignature[] = {
-            0x33, 0xC0, 0x48, 0x85, 0xC9, 0x74, 0x2C, 0x0F, 0xB7, 0x15, 0xEE, 0x81, 0xE3, 0x03, 0x48, 0x85, 0xD2, 0x74,
-            0x20, 0x4C, 0x8B, 0x15, 0xDA, 0x81, 0xE3, 0x03, 0x44, 0x8B, 0xC8, 0x4D, 0x8B, 0xC2, 0x49, 0x39, 0x08, 0x74,
-            0x11, 0xFF, 0xC0, 0x49, 0xFF, 0xC1, 0x49, 0x83, 0xC0, 0x20, 0x4C, 0x3B, 0xCA, 0x7C, 0xED, 0x33, 0xC0, 0xC3,
-            0x8B, 0xC0, 0x48, 0xC1, 0xE0, 0x05, 0x49, 0x03, 0xC2, 0xC3};
-        constexpr std::uintptr_t kGoreCoreRva = 0xFD66F4;
-        constexpr std::uint8_t kGoreCoreSignature[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x8B, 0xDA, 0x48, 0x85, 0xC9, 0x74, 0x15, 0xE8, 0x86, 0xE2, 0xB6, 0xFF,
-            0x48, 0x85, 0xC0, 0x74, 0x0B, 0x8B, 0x40, 0x18, 0x0F, 0xA3, 0xD8, 0x0F, 0x92, 0xC0, 0xEB, 0x02, 0x32, 0xC0,
-            0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3};
+        // _HAS_PED_TAKEN_GORE_DAMAGE's core (`bt [entry+0x18], limb`); the
+        // getter it calls gives the u16 count and the table (entries of 0x20,
+        // the ped at +0; engine_sigs.h).
+        const sig::Signature kGoreCore{"cache_gore_core",
+            "40 53 48 83 EC 20 8B DA 48 85 C9 74 15 E8 ?? ?? ?? ?? 48 85 C0 74 0B 8B 40 18 0F A3 D8 0F 92 C0 EB 02 32 "
+            "C0 48 83 C4 20 5B C3",
+            0xFD66F4};
 
         DWORD g_scriptThread = 0;
         std::uint64_t g_frame = 0;
@@ -39,7 +37,8 @@ namespace replay::entities
         bool g_signaturesOk = false;
         bool g_goreSignatureOk = false;
         std::string g_error;
-        std::uintptr_t g_base = 0;
+        std::uintptr_t g_goreTable = 0; // kGoreTable, kGoreCount (0: not in this game)
+        std::uintptr_t g_goreCount = 0;
         CrossCheck g_resolveCheck;
         CrossCheck g_positionCheck;
         CrossCheck g_goreCheck;
@@ -90,18 +89,6 @@ namespace replay::entities
             }
         }
 
-        bool GuardedCompare(std::uintptr_t target, const std::uint8_t* signature, std::size_t size)
-        {
-            __try
-            {
-                return std::memcmp(reinterpret_cast<const void*>(target), signature, size) == 0;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
-        }
-
         void Log(const std::string& line)
         {
             // The mod's log is owned by script.cpp; the cache reports through
@@ -115,14 +102,13 @@ namespace replay::entities
             if (g_checked)
                 return;
             g_checked = true;
-            g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
             std::string poolError;
             g_signaturesOk = pools::Check(poolError);
             if (!g_signaturesOk)
                 g_error = "pools:" + poolError;
-            g_goreSignatureOk = g_base &&
-                GuardedCompare(g_base + kGoreGetterRva, kGoreGetterSignature, sizeof(kGoreGetterSignature)) &&
-                GuardedCompare(g_base + kGoreCoreRva, kGoreCoreSignature, sizeof(kGoreCoreSignature));
+            g_goreTable = sig::Find(kGoreTable);
+            g_goreCount = sig::Find(kGoreCount);
+            g_goreSignatureOk = sig::Find(kGoreCore) && sig::Find(kGoreMaskGetter) && g_goreTable && g_goreCount;
         }
 
         bool OnScriptThread() { return g_scriptThread && GetCurrentThreadId() == g_scriptThread; }
@@ -394,9 +380,7 @@ namespace replay::entities
     {
         mask = 0;
         CheckOnce();
-        // EntityPoolReader=0 (the ini's kill switch) sends the gore poll back
-        // to the natives too.
-        available = g_goreSignatureOk && !g_goreCheck.disabled && pools::Enabled() && OnScriptThread();
+        available = g_goreSignatureOk && !g_goreCheck.disabled && OnScriptThread();
         if (!available || !ped)
             return false;
         if (g_goreFrame != g_frame)
@@ -405,8 +389,8 @@ namespace replay::entities
             g_gore.clear();
             std::uint64_t table = 0;
             std::uint16_t count = 0;
-            g_goreOk = GuardedQword(g_base + kGoreTableRva, table) &&
-                GuardedCopy(&count, g_base + kGoreCountRva, sizeof(count)) && count <= kGoreMaxEntries;
+            g_goreOk = GuardedQword(g_goreTable, table) && GuardedCopy(&count, g_goreCount, sizeof(count)) &&
+                count <= kGoreMaxEntries;
             if (g_goreOk && table && count)
             {
                 g_goreBytes.resize(static_cast<std::size_t>(count) * kGoreEntryBytes);

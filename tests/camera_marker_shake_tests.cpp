@@ -858,6 +858,54 @@ namespace
         Check(full.find("samples=32") != std::string::npos && full.find("proof=") == std::string::npos,
             "proof cost: the developer line as it was");
     }
+
+    // A direct cut between two still shots (5 m apart, no blend): the speed
+    // the shake reads never spans the jump, so the shake neither swells nor,
+    // with Stop When Still, starts in the 40 ms around the cut. A blended move
+    // still reads its speed.
+    void TestDirectCut()
+    {
+        for (int variant = 0; variant < 3; ++variant)
+        {
+            Track track;
+            Keyframe a = FreeAt(0, {0, 0, 0}, Blend::None);
+            Keyframe b = FreeAt(2000, {5, 0, 0}, Blend::None);
+            Keyframe c = FreeAt(4000, {5, 0, 0}, Blend::None);
+            a.shake = editor::DefaultMarkerShake(); // speed coupling on
+            a.shake.on = 1;
+            if (variant == 1)
+                mshake::ApplyProfile(a.shake, static_cast<std::uint8_t>(ShakeType::Handheld));
+            if (variant == 2)
+                a.shake.still = 1;
+            b.shake = mshake::Continued(a.shake);
+            c.shake = mshake::Continued(a.shake);
+            track.AddMarker(a);
+            track.AddMarker(b);
+            track.AddMarker(c);
+            bool still = true;
+            for (std::int64_t at = 1940; at <= 2060; at += 5)
+                still = still && camera::ShakeCurveSpeed(track, {}, at) == 0.0f;
+            Check(still, "direct cut: the camera reads still across the cut");
+            // The shake around the cut no larger than the shot's own.
+            double held = 0.0, around = 0.0;
+            const auto size = [&](std::uint64_t t) {
+                const camera::ShakeDelta d = mshake::Delta(track, t, {});
+                return static_cast<double>(std::sqrt(d.rotation.x * d.rotation.x + d.rotation.y * d.rotation.y + d.rotation.z * d.rotation.z));
+            };
+            for (std::uint64_t t = 500; t < 1900; t += 10)
+                held = std::max(held, size(t));
+            for (std::uint64_t t = 1950; t <= 2050; t += 2)
+                around = std::max(around, size(t));
+            Check(around <= held * 1.05 + 1e-9, "direct cut: no swell of the shake around the cut");
+            if (variant == 2)
+                Check(held == 0.0 && around == 0.0, "direct cut: Stop When Still keeps the still shots still");
+        }
+        Track move;
+        move.AddMarker(FreeAt(0, {0, 0, 0}, Blend::Linear));
+        move.AddMarker(FreeAt(2000, {10, 0, 0}, Blend::None));
+        move.AddMarker(FreeAt(4000, {10, 0, 0}, Blend::None));
+        Check(std::fabs(camera::ShakeCurveSpeed(move, {}, 1000) - 5.0f) < 0.05f, "direct cut: a blended move reads 5 m/s");
+    }
 }
 
 int RunCameraMarkerShakeTests()
@@ -871,6 +919,7 @@ int RunCameraMarkerShakeTests()
     TestFields();
     TestOneShot();
     TestGunshot();
+    TestDirectCut();
     std::printf("  shake-markers: %d migrations proved, worst shake diff %.3g, worst path diff %.3g\n", g_cases, g_worstShake,
         g_worstPath);
     if (g_failures == 0)

@@ -129,29 +129,6 @@ namespace
         Check(plan.close.size() == 1 && plan.open.size() == 1, "another entry: close then open");
     }
 
-    void TestAppDrawsTarget()
-    {
-        const Track track = Ledger();
-        Check(AppDrawsTarget(track, kShop, 9000), "the ledger's app draws into ledger_ct");
-        Check(!AppDrawsTarget(track, kShop, 12500), "no span after the close");
-        Track screenOnly;
-        screenOnly.events.push_back(Make(100, kAppOpen, "", kShop, kEntry));
-        screenOnly.events.push_back(Make(900, kAppClose, "", kShop));
-        Check(!AppDrawsTarget(screenOnly, kShop, 500), "an app with no target alive is not relaunched");
-        // A target registered after the open, inside the span.
-        Track late;
-        late.events.push_back(Make(100, kAppOpen, "", kShop, kEntry));
-        late.events.push_back(Make(300, kRegister, "ledger_ct"));
-        late.events.push_back(Make(900, kAppClose, "", kShop));
-        Check(AppDrawsTarget(late, kShop, 150), "a target registered inside the span counts");
-        // A target released before the open does not.
-        Track before;
-        before.events.push_back(Make(50, kRegister, "ledger_ct"));
-        before.events.push_back(Make(60, kRelease, "ledger_ct"));
-        before.events.push_back(Make(100, kAppOpen, "", kShop, kEntry));
-        Check(!AppDrawsTarget(before, kShop, 150), "a target gone before the open does not count");
-    }
-
     void TestLive()
     {
         Live live;
@@ -204,12 +181,8 @@ namespace
 
     void TestIni()
     {
-        const std::vector<std::uint32_t> apps = ParseAppList(" SHOP_BROWSING , 0x0000ABCD;;shop_browsing,");
-        Check(apps.size() == 2 && apps[0] == kShop && apps[1] == 0xABCDu, "app list: names, 0x hashes, deduplicated");
-        Check(ParseAppList("").empty(), "empty list");
-        Check(ModeFromInt(0) == Mode::Off && ModeFromInt(1) == Mode::Relink && ModeFromInt(2) == Mode::UiApp &&
-                  ModeFromInt(9) == Mode::UiApp,
-            "modes");
+        Check(ModeFromInt(0) == Mode::Off && ModeFromInt(1) == Mode::Relink && ModeFromInt(2) == Mode::Relink,
+            "modes: 0 off, any other value relinks");
     }
 
     void TestNames()
@@ -231,7 +204,6 @@ int RunRenderTargetTests()
     TestJoaat();
     TestStateAt();
     TestReconcile();
-    TestAppDrawsTarget();
     TestLive();
     TestPoll();
     TestCut();

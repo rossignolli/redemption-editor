@@ -1,7 +1,7 @@
 #pragma once
 
 // Fragment breaks: a fragment object that loses groups (a crate splitting, a
-// fence board flying off) calls its virtual PartsBrokeOff 0x6EAE68(parent
+// fence board flying off) calls its virtual PartsBrokeOff(parent
 // entity, groups bitset 0x80 bytes, new inst) after the piece exists. A
 // read-only detour, signature-checked, forwards first and records the parent
 // and the groups into a ring the script thread reads. It never calls natives.
@@ -32,9 +32,9 @@ namespace replay::frag
     std::uint64_t NowUs();
 
     // A recorded fragment group of a vehicle taken off a vehicle puppet
-    // through the engine's own DeleteAboveGroup 0x296AD24 (fragInst*, u16
-    // group), the call its wheel code reaches through DeleteAbove 0x296ACCC
-    // (0x1579816) and whose PartsBrokeOff 0x6EAE68 already keeps the vehicle's
+    // through the engine's own DeleteAboveGroup (fragInst*, u16 group), the
+    // call its wheel code reaches through DeleteAbove (in the vehicle's
+    // break-off) and whose PartsBrokeOff already keeps the vehicle's
     // wheel and door flags in step. The group and its subtree go, no piece is
     // made. Script thread only.
     enum class VehicleGroupResult : int
@@ -58,8 +58,8 @@ namespace replay::frag
         const std::uint16_t* reserved = nullptr, int reservedCount = 0);
     // The recorded piece made again the way the engine made it: the group (and
     // what is still under it) breaks off the vehicle puppet as a new object
-    // through BreakOffAboveGroup 0x2965F2C (inst, group, 0, 0), the call
-    // BreakOffAbove 0x2965ECC makes for a wheel (0x15796C0). Same checks as
+    // through BreakOffAboveGroup (inst, group, 0, 0), the call
+    // BreakOffAbove makes for a wheel (in the vehicle's break-off). Same checks as
     // DeleteVehicleGroup (wheels and doors included: a piece may be one);
     // `pieceEntity` is the new object's address. Deleted means the piece exists
     // now.
@@ -75,11 +75,12 @@ namespace replay::frag
 
     // Object fragments (a crate's loose board, frag_piece.h). Script thread,
     // guarded reads, checked once against build 1491.50: the object path of
-    // BREAK_OBJECT_FRAGMENT_CHILD (0xE30560: the is-fragment bit 6 of
-    // [obj+0xB0], fragInst [obj+0x38]), the parent of a group (u16 [group+6],
-    // 0x2974FE6), the cache entry [inst+0x128], its root group (u16
-    // [cache+0x180], 0x2974F63: the inst's groups are the ones above it) and
-    // its slots (s16 [cache+0x148], -1 gone, 0x29651B5).
+    // BREAK_OBJECT_FRAGMENT_CHILD (the is-fragment bit 6 of [obj+0xB0],
+    // fragInst [obj+0x38]), the parent of a group (u16 [group+6], read by the
+    // inst's group break-off), the cache entry [inst+0x128], its root group
+    // (u16 [cache+0x180], read there too: the inst's groups are the ones above
+    // it) and its slots (s16 [cache+0x148], -1 gone, read by the inst's group
+    // walk).
     constexpr int kMaxObjectGroups = 0x80 * 8;
     struct ObjectFragState
     {
@@ -95,9 +96,9 @@ namespace replay::frag
     // offsets are unsupported or a read faulted.
     bool ReadObjectFrag(std::uint64_t object, ObjectFragState& out);
     // The group (and what is still under it) breaks off the object as a new
-    // object through BreakOffAboveGroup 0x2965F2C (inst, group, 0, 0), the
-    // call BreakOffAbove 0x2965ECC makes for BREAK_OBJECT_FRAGMENT_CHILD
-    // without deletion (0xE3060E). Never the root (group 0 or at or below
+    // object through BreakOffAboveGroup (inst, group, 0, 0), the
+    // call BreakOffAbove makes for BREAK_OBJECT_FRAGMENT_CHILD
+    // without deletion. Never the root (group 0 or at or below
     // the cache root). Deleted means the piece exists now; `pieceEntity` is
     // its address.
     VehicleGroupResult BreakOffObjectGroup(std::uint64_t object, std::uint16_t group, std::uint64_t& pieceEntity);

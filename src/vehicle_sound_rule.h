@@ -3,32 +3,23 @@
 // The vehicle and train car sounds of the generic sound player, pure part
 // (unit tested in ReplayCoreTests: tests/vehicle_sound_tests.cpp).
 //
-// A vehicle's audio entity ([vehicle + 0x900]) creates at the creators
-// directly (e.g. sound 0x1056365 by creator B 0x2516900 through the audio
-// entity wrapper 0x25167D0, return 0x25167F1, every 33 to 50 ms for a
-// rolling wagon), past every port the ped/weapon block watches
-// (soundowner::PortsBlockClass). In packets mode the generic player replays
-// the recorded packets and the puppet vehicle's own audio makes the same
-// sounds at the same call site, so they double and repeat.
+// A vehicle's audio entity creates at the creators directly, past every port
+// the ped/weapon block watches (soundowner::PortsBlockClass). In packets mode
+// the generic player replays the recorded packets and the puppet vehicle's
+// own audio makes the same sounds at the same call site, so they double.
 //
-// The recording's packets own a vehicle's recorded sound: the puppet's own
-// vehicle audio alone measures about 9 to 11 dB under the recording, the
-// packets on the puppet's audio entity about 3 dB under; the own copy adds
-// at most 0.8 dB and is what repeats. So the peds' rule applies to vehicles
-// and train cars: an own create of a sound whose recorded packet is alive
-// then (Recorded) or of another set at that entry (Alternative) is refused;
-// the rest (Passed: the recording never had it then) is left to the puppet.
-// The refusal is the one the creator itself makes when its slot pool is
-// full (return 0, the out slot untouched; the wrapper 0x25167D0 then zeroes
-// it), behind the ini key SoundGenericVehicleBlock (default 1) because it
-// changes what a creator detour does.
+// The packets own a vehicle's recorded sound (measured: they come closer to
+// the recording than the puppet's own audio, and the own copy is what
+// repeats). So an own create of a sound whose recorded packet is alive then
+// (Recorded) or of another set at that entry (Alternative) is refused; the rest
+// (Passed) is left to the puppet. The refusal is the creator's own "slot pool
+// full" return, behind SoundGenericVehicleBlock (default 1) because it changes
+// what a creator detour does.
 //
-// Trains: the train cars' own vehicle audio makes nothing in a replay, so
-// the packets are the train's whole sound. The per-owner slot cap (6: a ped
-// controller's foley layers) would steal the cars' sounds and the 120 m
-// limit would refuse the locomotive; a wagon can have 13 recorded sounds
-// alive at once. Vehicles and train cars get their own cap, and train cars
-// their own audible distance (LimitsFor).
+// Train cars' own audio makes nothing in a replay, so the packets are the
+// train's whole sound; vehicles and train cars get their own slot cap, and
+// train cars their own audible distance (LimitsFor).
+// Research: docs/research/audio-generic-sounds.md
 
 #include "sound_owner_table.h"
 #include "sound_slot_policy.h"

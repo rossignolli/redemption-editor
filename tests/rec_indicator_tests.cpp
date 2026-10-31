@@ -150,6 +150,27 @@ namespace
         c.Update(300, K::Rec, 5, 0);
         Check(c.Visible(3299) && !c.Visible(3300) && c.Shown() == K::Rec && !c.Stopped(), "a new start restarts the 3 s with the live row");
     }
+    // The normal mode's REPLAY ON: 5 s when the buffer starts, counted once
+    // the gate opens; back from a manual recording, nothing.
+    void TestReplayOn()
+    {
+        using K = ri::Kind;
+        ri::ReplayOnTimer t;
+        t.Update(0, K::None, false);
+        t.Update(100, K::Replay, true); // the game entered behind a loading screen
+        Check(!t.Visible(200), "not while the gate holds");
+        t.Update(1000, K::Replay, false);
+        Check(t.Visible(1000) && t.Visible(5999) && !t.Visible(6000), "5 s from the gate's opening");
+        t.Update(7000, K::Rec, false);
+        t.Update(8000, K::Replay, false);
+        Check(!t.Visible(8000), "a manual recording back into the buffer shows nothing");
+        t.Update(9000, K::None, false);
+        t.Update(9500, K::Replay, false);
+        Check(t.Visible(9500) && !t.Visible(14500), "the buffer turned on again: 5 s again");
+        ri::ReplayOnTimer first;
+        first.Update(50, K::Replay, false); // the first snapshot already has it running
+        Check(first.Visible(50) && !first.Visible(5050), "the buffer running at the first snapshot");
+    }
 }
 
 int RunRecIndicatorTests()
@@ -160,6 +181,7 @@ int RunRecIndicatorTests()
     TestExclusiveFullscreen();
     TestScale();
     TestBrief();
+    TestReplayOn();
     std::printf("rec indicator tests: %s (%d failures)\n", g_failures ? "FAILED" : "ok", g_failures);
     return g_failures;
 }

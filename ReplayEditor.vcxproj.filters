@@ -4,6 +4,24 @@
     <ClCompile Include="editor\replay_editor_addon.cpp">
       <Filter>Editor</Filter>
     </ClCompile>
+    <ClCompile Include="editor\replay_editor_addon_menus.cpp">
+      <Filter>Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="editor\replay_editor_addon_export.cpp">
+      <Filter>Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="editor\replay_editor_addon_projects.cpp">
+      <Filter>Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="editor\replay_editor_addon_markers.cpp">
+      <Filter>Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="editor\replay_editor_addon_timeline.cpp">
+      <Filter>Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="editor\replay_editor_addon_help.cpp">
+      <Filter>Editor</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\editor_protocol.h">

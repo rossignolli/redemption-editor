@@ -15,7 +15,7 @@
 // evidence: the human ones from a reference dump of player_zero;
 // PH_SaddleHorn, SKEL_Tail5, bodyshell, chassis_dummy and seat_front from the
 // game's own scripts; the weapon ones from the engine's weapon bone name
-// table in .rdata of RDR2 1491.50 (RVA 0x33B74B8 on), the names the weapon
+// table in .rdata of RDR2 1491.50 (after the exhaust_N names), the names the weapon
 // code looks up on every weapon model. Whether a model has one is decided by
 // the engine (WEAPON_BONE_NAMES logs what each model answered). The other
 // families' names are candidates; a name the skeleton lacks is not offered.

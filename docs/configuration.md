@@ -12,7 +12,7 @@ Recording, clips, the world state, logging and reports. The commented lines at t
 
 | Key | Default | What it does |
 |---|---|---|
-| `Language` | `auto` | The language of the editor and its notices: auto (the game's language) or one of en, pt-BR, es, es-MX, fr, de, it, pl, ru, ja, ko, zh-CN, zh-TW (a file of the RedemptionEditor\lang folder, without .lang). |
+| `Language` | `auto` | The language of the editor and its notices: auto (the game's language) or one of en, pt-BR, es, es-MX, fr, de, it, pl, ru, ja, ko, zh-CN, zh-TW, tr (a file of the RedemptionEditor\lang folder, without .lang). The game has no Turkish, so auto never picks tr: set Language=tr for it. |
 | `ReplayBuffer` | `1` | The replay buffer: the mod always records the last seconds around you while nothing plays; the SaveBuffer key saves them as a clip. 1 on, 0 off. |
 | `ReplayBufferSeconds` | `60` | How many seconds the buffer keeps (10 or more). |
 | `ReplayBufferMB` | `128` | The buffer's memory in MB (16 or more). In busy places (Saint Denis) the buffer may keep fewer seconds than asked; the save tells you when it does. The buffer's seconds and memory do not limit a manual recording. 16 to 960 (a saved buffer stays under the 1 GiB a clip file may hold). |
@@ -23,6 +23,10 @@ Manual recording (the Record key starts and stops it), with the buffer on or off
 |---|---|
 | `ManualMaxSeconds` | `0` |
 | `ManualMaxMB` | `900` |
+
+| Key | Default | What it does |
+|---|---|---|
+| `PoseDetail` | `standard` | The pose detail of the recording (Replay Settings): standard (the detail you see in the game) or maximum (every movement of every bone, at full precision; the poses take about twice the memory, so the buffer holds about 40% fewer seconds, and clips grow about 1.6 times). |
 
 Clips are saved compressed. Clips you have not opened for CompressAfterDays days are compressed further in the background (they still open in the editor). Level 1 (fast) to 22 (smallest).
 
@@ -43,8 +47,10 @@ Cutscenes: 0 pauses the recording while a cutscene plays, 1 records it. LockCuts
 |---|---|---|
 | `ReplayDeadEye` | `0` | 1: the Dead Eye look is played back with the clip (Replay Settings). |
 | `FreezeWorldOnPause` | `1` | 1: the world stays frozen while a replay is paused (Replay Settings). |
-| `RecordingIndicator` | `normal` | The REC notice while you record (Replay Settings): normal; brief (3 seconds when a recording starts, stops or saves); hidden (you see it, screen recorders such as OBS, NVIDIA and Game Bar do not; Windows 10 2004 or newer and the game windowed or borderless, else it works as brief); off. |
+| `RecordingIndicator` | `normal` | The REC notice while you record (Replay Settings): normal (REC always, REPLAY ON for 5 seconds when the buffer starts); brief (3 seconds when a recording starts, stops or saves); hidden (you see it, screen recorders such as OBS, NVIDIA and Game Bar do not; Windows 10 2004 or newer and the game windowed or borderless, else it works as brief); off. |
 | `InterfaceScale` | `100` | The size of the editor's menus, panels, texts and notices, in percent (Replay Settings): 80, 90, 100, 110 or 125. 100 looks the same at every resolution. A 4:3 screen stays at 100 at most. |
+| `Font` | `redemption` | The font of the editor's titles, menus and notices (Replay Settings): redemption (the game's) or segoe (Segoe UI Bold, easier to read). |
+| `Host` | `auto` | Who draws the editor: auto (the mod's own overlay; when ReShade with the RedemptionEditor.addon64 add-on is installed, ReShade does it), native (always the mod's own overlay) or reshade (only through ReShade, never the own overlay). Read when the game starts. |
 | `RestoreWorldState` | `1` | The map state of the clip (doors, buildings and other world pieces of the place where it was recorded) is put back while it plays. 0: only a notice. |
 | `RestoreWorldStateInMission` | `0` | 1: also while a mission runs (by default a mission's world is left alone). |
 | `FullLog` | `1` | Logging. 1 writes the full log (RedemptionEditor.log), what we need when you report a problem; 0 keeps only the essential lines (a smaller file). |
@@ -91,6 +97,7 @@ The editor's preferences. The editor writes these when you change them in its me
 | `Hdr10` | `0` | 1: HDR10 video. |
 | `Lut` | (empty) | A .cube colour LUT applied to the export (a full path). Empty: none. |
 | `AudioOffsetMs` | `140` | How many ms the game's sound is moved earlier in the video, so shots land on their muzzle flash. |
+| `SegmentSeconds` | `60` | Long videos are written in parts of this many seconds, joined at the end; an export cut short continues from its last part. 0: one file. |
 
 ## [Keys]
 

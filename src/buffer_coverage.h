@@ -6,9 +6,7 @@
 // The ring keeps ReplayBufferSeconds while its recording fits in
 // ReplayBufferMB; past the budget the head moves on and the window shrinks
 // (Saint Denis, 220 to 260 entities: 6.3 to 7.4 MB/s, 128 MB hold 17 to 20 s).
-// The buffer says what it really covers (the reason it is short) and, with
-// ReplayBufferAdaptive=1, grows its budget up to ReplayBufferMaxMB to keep the
-// seconds, never while the machine is short of free memory.
+// The buffer says what it really covers (the reason it is short).
 //
 // A manual recording is saved in parts (chained recordings): a part closes at
 // ManualMaxMB, with the buffer on or off (with the buffer on, at its budget
@@ -77,50 +75,6 @@ namespace replay::buffercov
     {
         return coverage.limit == Limit::Memory &&
             static_cast<std::uint64_t>(coverage.coveredMs) * 10u < static_cast<std::uint64_t>(coverage.targetMs) * 9u;
-    }
-
-    // ReplayBufferAdaptive: the budget the ring trims to. Off: the
-    // configured ReplayBufferMB. On: up to maxMB while the machine has more
-    // than reserveMB of physical memory free (the save's cut copies the
-    // window once more), back to the configured budget below that.
-    struct AdaptiveConfig
-    {
-        bool enabled = false;
-        std::uint32_t baseMB = 128;
-        std::uint32_t maxMB = 512;
-        std::uint32_t reserveMB = 2048;
-    };
-
-    struct Budget
-    {
-        std::size_t bytes = 0;
-        bool grown = false;   // above the configured budget
-        bool memoryLow = false; // the free memory kept it at the configured one
-    };
-
-    inline Budget AdaptiveBudget(const AdaptiveConfig& config, std::size_t usedBytes, std::uint64_t availPhysMB)
-    {
-        Budget budget;
-        const std::size_t base = static_cast<std::size_t>(config.baseMB) * 1024 * 1024;
-        budget.bytes = base;
-        if (!config.enabled || config.maxMB <= config.baseMB)
-            return budget;
-        // Each MB the ring grows past the base comes out of free memory:
-        // it may grow while the rest stays above the reserve.
-        const std::uint64_t usedMB = usedBytes / (1024 * 1024);
-        const std::uint64_t grownMB = usedMB > config.baseMB ? usedMB - config.baseMB : 0;
-        const std::uint64_t free = availPhysMB + grownMB; // what it had before growing
-        if (free <= config.reserveMB)
-        {
-            budget.memoryLow = true;
-            return budget;
-        }
-        const std::uint64_t room = free - config.reserveMB;
-        const std::uint64_t capMB = (std::min<std::uint64_t>)(config.maxMB, config.baseMB + room);
-        budget.bytes = static_cast<std::size_t>(capMB) * 1024 * 1024;
-        budget.grown = capMB > config.baseMB;
-        budget.memoryLow = capMB < config.maxMB;
-        return budget;
     }
 
     // The budget that would hold `seconds` at `mbPerSecond`, rounded up to the

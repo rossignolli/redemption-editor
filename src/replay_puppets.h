@@ -36,26 +36,6 @@ namespace replay::playback
     constexpr std::uint64_t kCreateRetryMs = 200;
     // Puppets built per frame, at most.
     constexpr std::uint32_t kMaxCreatesPerFrame = 4;
-    // ClipStartStagger (clip_start_gate.h): while the clip start creates in batches, every kind of puppet (bodies,
-    // weapons, scenery stand-ins) shares one budget per tick. 0: no cap (the
-    // per-kind budgets above only). The script sets the cap and clears the
-    // use once per tick (replay::playback::BeginStartBatchTick).
-    inline std::uint32_t g_startBatchCap = 0;
-    inline std::uint32_t g_startBatchUsed = 0;
-    inline std::uint64_t g_startBatchCreates = 0; // created under the cap, for STREAM_PRESSURE
-    inline void BeginStartBatchTick(std::uint32_t cap)
-    {
-        g_startBatchCap = cap;
-        g_startBatchUsed = 0;
-    }
-    inline bool StartBatchLeft() { return g_startBatchCap == 0 || g_startBatchUsed < g_startBatchCap; }
-    inline void StartBatchUse()
-    {
-        if (g_startBatchCap == 0)
-            return;
-        ++g_startBatchUsed;
-        ++g_startBatchCreates;
-    }
 
     enum class PuppetState
     {
@@ -318,6 +298,12 @@ namespace replay::playback
         bool attachFrameApplied = false;
         Ped attachFrameParent = 0;
         weapon::AttachFrame attachFrame;
+        // entity_transform.h AttachFrameAgreement: the frame entry judged
+        // against the recording (its start in the frame track, UINT32_MAX
+        // none yet) and whether it agreed; a frame that did not is left
+        // out and the relative track places the object.
+        std::uint32_t attachJudgedFrom = 0xFFFFFFFFu;
+        bool attachJudgedOk = true;
         // puppet_lod.h: LOD multiplier and
         // pre-render applied to lod.clone, the pose writes seen per tick.
         lod::PuppetState lod;

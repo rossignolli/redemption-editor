@@ -3,7 +3,7 @@
 // Which world positions may grow the clip area, and the repair of an area
 // that an invalid position stretched.
 //
-// Foot dust puffs (site 0x145320F, flags 0x200) can be recorded as world
+// Foot dust puffs (the foot vfx site, flags 0x200) can be recorded as world
 // effects at (0; -0.03; 0): their instance has a parent matrix of zeros
 // (mode 1, the parent not written yet), so the composition keeps the local
 // offset as if it were the world matrix. The area then grows from the

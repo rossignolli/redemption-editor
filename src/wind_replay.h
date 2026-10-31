@@ -4,14 +4,14 @@
 // are in wind_replay_core.h).
 //
 // - The fix (WindReplay=1, default): a detour of the box streamer's "loaded
-//   about pos" 0x2B98AF8, prologue checked, installed with the other hooks
+//   about pos" (the gate), prologue checked, installed with the other hooks
 //   at load. It forwards every call unchanged; only the weather audio
-//   pre-update's call (return address 0x31B8715) while the replay owns the
+//   pre-update's call (told by its return address) while the replay owns the
 //   world and a scene position is fresh gets the replay's scene position
 //   (the focus puppet the trail map follows, else the rendered camera)
 //   instead of the hidden live player's. Same streamer, same mask; the
 //   engine answers and computes the wind itself. Never calls natives.
-// - The evidence (WindReplayLog=1, default): the recording keeps the audio
+// - The evidence: the recording keeps the audio
 //   wind strength, the wind rows' weather and the simple path flag (clip
 //   section WNDA, 4 samples a second); the playback logs the recorded value
 //   against the engine's (WIND_REPLAY every 5 s of clip time,
@@ -36,7 +36,6 @@ namespace replay::windreplay
     struct Config
     {
         bool fix = true; // WindReplay
-        bool log = true; // WindReplayLog
     };
     void Configure(const Config& config);
     const Config& GetConfig();

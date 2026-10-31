@@ -1,4 +1,7 @@
 #include "ped_gore.h"
+#include "engine_sigs.h"
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "mod_clock.h"
 
 #include "profiler.h"
@@ -18,29 +21,30 @@
 
 namespace replay::gore
 {
+    using enginesig::kGoreCount;
+    using enginesig::kGoreTable;
+
     namespace
     {
-        constexpr std::uintptr_t kApplyRva = 0xB5203C;
-        constexpr std::uint8_t kApplySignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x44, 0x88, 0x48, 0x20, 0x89, 0x48, 0x08, 0x55, 0x56,
-            0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41};
+        namespace sig = replay::sig;
+
+        // The limb apply (limb, context*, hash*, u8): through its read of the
+        // context's ped (+0x00).
+        const sig::Signature kGoreApply{"gore_apply",
+            "48 8B C4 48 89 58 18 44 88 48 20 89 48 08 55 56 57 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC E0 00 00 "
+            "00 8B F1 49 8B F8 48 8B 0A",
+            0xB5203C};
+        // The engine's own mask replay builds the context on its stack and calls
+        // the apply: the ped at +0x00, zeros, the hash at +0x40, +0x44, +0x48 and
+        // +0x4A zero (the layout of Context below).
+        const sig::Signature kGoreContextBuild{"gore_context_build",
+            "0F 57 C0 48 89 75 88 B8 D5 46 DF E4 0F 29 45 90 45 8A CD 0F 29 45 A0 4C 8D 85 18 02 00 00 0F 29 45 B0 48 "
+            "8D 55 80 89 45 C0 8B CB 89 85 18 02 00 00 89 75 C4 66 89 75 C8 40 88 75 CA 4C 89 7D 80 E8 ?? ?? ?? ??",
+            0xEACC21};
         constexpr std::uint32_t kContextHash = 0xE4DF46D5;
-        using ApplyFn = bool(__fastcall*)(int, void*, std::uint32_t*, std::uint8_t);
 
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            __try
-            {
-                return std::memcmp(target, signature, size) == 0;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
-        }
-
-        // The context 0xEAC808 builds on its stack: the ped, zeros, the hash
-        // at +0x40 (0x50 bytes with room to spare).
+        // The context the mask replay builds on its stack: the ped, zeros, the
+        // hash at +0x40 (0x50 bytes with room to spare).
         struct alignas(16) Context
         {
             void* ped = nullptr;
@@ -53,20 +57,12 @@ namespace replay::gore
             std::uint8_t pad[0x35] = {};
         };
 
-        bool GuardedApply(ApplyFn fn, int limb, void* ped, bool& result, std::uint32_t& code)
+        bool GuardedApply(std::uintptr_t fn, int limb, void* ped, bool& result, std::uint32_t& code)
         {
-            __try
-            {
-                Context context;
-                context.ped = ped;
-                std::uint32_t hash = kContextHash;
-                result = fn(limb, &context, &hash, 1);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            Context context;
+            context.ped = ped;
+            std::uint32_t hash = kContextHash;
+            return engine::Call(engine::kGoreApply, fn, result, limb, &context, &hash, 1) || engine::Failed(code);
         }
     }
 
@@ -77,15 +73,17 @@ namespace replay::gore
             error = "no_ped";
             return false;
         }
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        if (!GuardedCompare(base + kApplyRva, kApplySignature, sizeof(kApplySignature)))
+        // The context is written only in the layout the engine's own build of it
+        // has.
+        const std::uintptr_t apply = sig::Find(kGoreApply);
+        if (!apply || !sig::Find(kGoreContextBuild))
         {
             error = "gore_apply_signature_mismatch";
             return false;
         }
         bool result = false;
         std::uint32_t code = 0;
-        if (!GuardedApply(reinterpret_cast<ApplyFn>(base + kApplyRva), limb, ped, result, code))
+        if (!GuardedApply(apply, limb, ped, result, code))
         {
             char text[32]{};
             std::snprintf(text, sizeof(text), "exception_%08X", code);
@@ -102,10 +100,18 @@ namespace replay::gore
 {
     namespace
     {
-        constexpr std::uintptr_t kHandlerRva = 0xB4EB3C;
-        constexpr std::uint8_t kHandlerSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-            0x48, 0x8D, 0x6C, 0x24, 0xD0, 0x48, 0x81, 0xEC, 0x30, 0x01, 0x00, 0x00};
+        // The gore event handler (event*), through its first reads of the event:
+        // the limb mask (+0x48) and the ped (+0x00).
+        const sig::Signature kGoreHandler{"gore_handler",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 57 48 8D 6C 24 D0 48 81 EC 30 01 00 00 45 33 ED 48 8B D9 66 "
+            "44 39 69 48 0F 84 ?? ?? ?? ?? 48 8B 09",
+            0xB4EB3C};
+        // Its reads of the hash (+0x40) and of the inflictor (+0x08): the other
+        // fields a replayed or bench event writes.
+        const sig::Signature kGoreEventHash{"gore_event_hash", kGoreHandler, sig::Offset{0x2EE},
+            "8B 43 40 4C 8D 4D C0 0F 10 43 30 4C 8D 45 B0", 0xB4EE2A};
+        const sig::Signature kGoreEventInflictor{"gore_event_inflictor", kGoreHandler, sig::Offset{0x36F},
+            "4C 8B 43 08 48 8D 0D ?? ?? ?? ??", 0xB4EEAB};
         using HandlerFn = bool(__fastcall*)(void*);
 
         constexpr std::uint32_t kRingSize = 256;
@@ -139,6 +145,17 @@ namespace replay::gore
             }
         }
 
+        // The handler to call with an event the replay writes (the trampoline
+        // when observed, else the entry), 0 when the game lacks one of its
+        // reads of the fields written.
+        std::uintptr_t EventHandler(bool writesHash)
+        {
+            if (!sig::Find(kGoreEventInflictor) || (writesHash && !sig::Find(kGoreEventHash)))
+                return 0;
+            const HandlerFn original = g_original.load(std::memory_order_acquire);
+            return original ? reinterpret_cast<std::uintptr_t>(original) : sig::Find(kGoreHandler);
+        }
+
         bool __fastcall HandlerDetour(void* event)
         {
             replay::lifetime::DetourScope lifetime; // the whole call, first
@@ -168,17 +185,9 @@ namespace replay::gore
             return result;
         }
 
-        bool GuardedHandler(HandlerFn fn, std::uint8_t* event, bool& result, std::uint32_t& code)
+        bool GuardedHandler(std::uintptr_t fn, std::uint8_t* event, bool& result, std::uint32_t& code)
         {
-            __try
-            {
-                result = fn(event);
-                return true;
-            }
-            __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(engine::kGoreHandler, fn, result, event) || engine::Failed(code);
         }
     }
 
@@ -192,8 +201,8 @@ namespace replay::gore
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
         g_base = reinterpret_cast<std::uintptr_t>(base);
         g_imageEnd = g_base + nt->OptionalHeader.SizeOfImage;
-        void* target = base + kHandlerRva;
-        if (!GuardedCompare(target, kHandlerSignature, sizeof(kHandlerSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kGoreHandler));
+        if (!target)
         {
             error = "gore_handler_signature_mismatch";
             return false;
@@ -255,18 +264,12 @@ namespace replay::gore
             return false;
         }
         // With the observer installed the entry holds the hook jump, so the
-        // replay calls the trampoline (the original); otherwise the entry,
-        // after its signature check.
-        HandlerFn fn = g_original.load(std::memory_order_acquire);
+        // replay calls the trampoline (the original); otherwise the entry.
+        const std::uintptr_t fn = EventHandler(false);
         if (!fn)
         {
-            auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-            if (!GuardedCompare(base + kHandlerRva, kHandlerSignature, sizeof(kHandlerSignature)))
-            {
-                error = "gore_handler_signature_mismatch";
-                return false;
-            }
-            fn = reinterpret_cast<HandlerFn>(base + kHandlerRva);
+            error = "gore_handler_signature_mismatch";
+            return false;
         }
         alignas(16) std::uint8_t event[0x60] = {};
         std::memcpy(event, context, kEventBytes);
@@ -294,13 +297,13 @@ namespace replay::gore
             error = "no_ped";
             return false;
         }
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        if (!g_target && !GuardedCompare(base + kHandlerRva, kHandlerSignature, sizeof(kHandlerSignature)))
+        // The entry (the hook jump when observed).
+        const std::uintptr_t fn = EventHandler(true) ? sig::Find(kGoreHandler) : 0;
+        if (!fn)
         {
             error = "gore_handler_signature_mismatch";
             return false;
         }
-        const HandlerFn fn = reinterpret_cast<HandlerFn>(base + kHandlerRva);
         alignas(16) std::uint8_t event[0x60] = {};
         std::memcpy(event + 0x00, &ped, sizeof(ped));
         std::memcpy(event + 0x08, &inflictor, sizeof(inflictor));
@@ -337,12 +340,13 @@ namespace replay::gore
 {
     namespace
     {
-        bool GuardedReadMask(std::uintptr_t base, const void* ped, std::uint32_t& mask, bool& found)
+        bool GuardedReadMask(std::uintptr_t tableAt, std::uintptr_t countAt, const void* ped, std::uint32_t& mask,
+            bool& found)
         {
             __try
             {
-                const std::uintptr_t table = *reinterpret_cast<const std::uintptr_t*>(base + 0x497CB80);
-                const std::uint16_t count = *reinterpret_cast<const std::uint16_t*>(base + 0x497CB88);
+                const std::uintptr_t table = *reinterpret_cast<const std::uintptr_t*>(tableAt);
+                const std::uint16_t count = *reinterpret_cast<const std::uint16_t*>(countAt);
                 if (!table || count > 4096)
                     return true;
                 for (std::uint32_t n = 0; n < count; ++n)
@@ -369,7 +373,8 @@ namespace replay::gore
         if (!ped)
             return false;
         bool found = false;
-        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        return GuardedReadMask(base, ped, mask, found) && found;
+        const std::uintptr_t table = sig::Find(kGoreTable);
+        const std::uintptr_t count = sig::Find(kGoreCount);
+        return table && count && GuardedReadMask(table, count, ped, mask, found) && found;
     }
 }

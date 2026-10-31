@@ -2,6 +2,7 @@
 
 #include "category_state.h"
 
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "hook_batch.h"
 #include "module_lifetime.h"
@@ -18,10 +19,10 @@
 #include <map>
 
 // Implementation of category_state.h. Every read goes through replay::mem
-// (SEH, range filtered) after the sites of category_state_core.h matched
-// once; the detour is installed only after the resolver's prologue and the
-// same sites matched, and its reads and writes run under SEH (a fault stops
-// imposing for the session and is counted).
+// (SEH, range filtered) after the sites of category_state_core.h were found
+// once (game_sig.h); the detour is installed only on the resolver found with
+// its prologue and after the same sites, and its reads and writes run under
+// SEH (a fault stops imposing for the session and is counted).
 
 namespace replay::catstate
 {
@@ -29,8 +30,26 @@ namespace replay::catstate
     {
         using U = std::uint64_t;
 
+        namespace sig = replay::sig;
+
         Config g_cfg;
-        std::uintptr_t g_base = 0;
+
+        // The globals the reads use, found by the proof (the resolved table is
+        // read by the detour too).
+        struct Globals
+        {
+            std::uintptr_t resolvedTable = 0;
+            std::uintptr_t staticCount = 0;
+            std::uintptr_t categoryPool = 0;
+            std::uintptr_t categoryMap = 0;
+        };
+        Globals g_at;
+
+        std::uintptr_t Rva(std::uintptr_t address)
+        {
+            const std::uintptr_t base = sig::ImageBase();
+            return address && base && address >= base ? address - base : 0;
+        }
 
         enum class Proof : std::uint8_t { Unknown, Proven, Failed };
         Proof g_proof = Proof::Unknown;
@@ -51,7 +70,6 @@ namespace replay::catstate
         constexpr std::uint64_t kFreshMs = 2000;
         std::atomic<std::uint64_t> g_publishedAt{0};
         std::atomic<std::uint32_t> g_staticCount{0};
-        std::atomic<bool> g_fieldsAll{false};
 
         // The values at the playhead, by category index: two buffers, the
         // published one read by the detour, each guarded by its sequence
@@ -116,16 +134,6 @@ namespace replay::catstate
                 if (!s.on[index].load(std::memory_order_relaxed))
                     return false;
                 const float volume = s.volume[index].load(std::memory_order_relaxed);
-                const bool all = g_fieldsAll.load(std::memory_order_relaxed);
-                float rolloff = 1.0f, x54 = 1.0f;
-                std::uint32_t pitchLpf = 0, hpf = 0;
-                if (all)
-                {
-                    rolloff = s.rolloff[index].load(std::memory_order_relaxed);
-                    x54 = s.x54[index].load(std::memory_order_relaxed);
-                    pitchLpf = s.pitchLpf[index].load(std::memory_order_relaxed);
-                    hpf = s.hpf[index].load(std::memory_order_relaxed);
-                }
                 std::atomic_thread_fence(std::memory_order_acquire);
                 if (s.seq.load(std::memory_order_relaxed) != s1)
                     return false;
@@ -137,16 +145,7 @@ namespace replay::catstate
                     g_liveSeen[index].store(1, std::memory_order_relaxed);
                     NoteDelta(static_cast<std::uint32_t>(index), std::fabs(live - volume));
                 }
-                *target = volume;
-                if (all)
-                {
-                    *reinterpret_cast<volatile float*>(category + kCatRolloff) = rolloff;
-                    *reinterpret_cast<volatile float*>(category + kCatX54) = x54;
-                    *reinterpret_cast<volatile std::int16_t*>(category + kCatPitch) =
-                        static_cast<std::int16_t>(pitchLpf & 0xFFFFu);
-                    *reinterpret_cast<volatile std::uint16_t*>(category + kCatLpf) = static_cast<std::uint16_t>(pitchLpf >> 16);
-                    *reinterpret_cast<volatile std::uint16_t*>(category + kCatHpf) = static_cast<std::uint16_t>(hpf);
-                }
+                *target = volume; // the volume only (the other fields stay live)
                 out.index = index;
                 out.volume = volume;
                 return true;
@@ -161,14 +160,17 @@ namespace replay::catstate
         }
 
         // The resolved value the original wrote for an imposed category must
-        // be meta + imposed + parent (0x251C33F..0x251C380, same order of
-        // the float additions); otherwise the game side wrote +0x48 between
+        // be meta + imposed + parent (the resolver's additions, in the same
+        // order); otherwise the game side wrote +0x48 between
         // the detour's write and the resolver's read.
         void CheckResolved(U category, U useMeta, const Imposed& imposed)
         {
             __try
             {
-                const std::uintptr_t table = *reinterpret_cast<const volatile std::uintptr_t*>(g_base + kResolvedTableRva);
+                const std::uintptr_t tableAt = g_at.resolvedTable;
+                if (!tableAt)
+                    return;
+                const std::uintptr_t table = *reinterpret_cast<const volatile std::uintptr_t*>(tableAt);
                 if (!table)
                     return;
                 float expected = (useMeta & 0xFF) ? *reinterpret_cast<const volatile float*>(category + kCatMeta) : 0.0f;
@@ -216,25 +218,28 @@ namespace replay::catstate
 
         // ---------------------------------------------------------- proof
 
+        // The first site not found (the RVA its signature declares in
+        // failedRva), or null when all are: then the globals are kept.
         const char* CheckSites(std::uint32_t& failedRva)
         {
-            if (!g_base)
-                g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-            if (!g_base)
+            if (!sig::ImageBase())
             {
                 failedRva = 0;
                 return "module";
             }
             for (const Site& site : kSites)
             {
-                std::uint8_t code[sizeof(site.bytes)]{};
-                if (!mem::Copy(code, g_base + site.rva, site.size) || !SiteMatches(site, code) ||
-                    (site.ripAt >= 0 && SiteTarget(site) != site.target))
+                const std::uintptr_t reach = site.reach ? sig::Find(*site.reach) : 0;
+                if (!sig::Find(site.at) || (site.reach && !reach) || (site.same && reach != sig::Find(*site.same)))
                 {
-                    failedRva = site.rva;
+                    failedRva = site.at.rva;
                     return site.name;
                 }
             }
+            g_at.resolvedTable = sig::Find(kResolvedTable);
+            g_at.staticCount = sig::Find(kStaticCount);
+            g_at.categoryPool = sig::Find(kCategoryPool);
+            g_at.categoryMap = sig::Find(kCategoryMap);
             return nullptr;
         }
 
@@ -249,9 +254,10 @@ namespace replay::catstate
             {
                 g_proofLogged = true;
                 if (g_proof == Proof::Proven)
-                    *log << "CATEGORY_STATE,phase=proven,sites=" << kSiteCount << ",resolver=0x" << std::hex << kResolverRva
-                         << ",map=0x" << kCategoryMapRva << ",pool=0x" << kCategoryPoolRva << std::dec
-                         << ",record=" << (g_cfg.record ? 1 : 0) << ",replay=" << (g_cfg.replay ? 1 : 0)
+                    *log << "CATEGORY_STATE,phase=proven,sites=" << kSiteCount << ",resolver=0x" << std::hex
+                         << Rva(sig::Find(kResolver)) << ",map=0x" << Rva(g_at.categoryMap) << ",pool=0x"
+                         << Rva(g_at.categoryPool) << std::dec
+                         << ",replay=" << (g_cfg.replay ? 1 : 0)
                          << ",detour=" << (g_target ? 1 : 0) << '\n';
                 else
                     *log << "CATEGORY_STATE,phase=unproven,site=" << (g_failedSite ? g_failedSite : "?") << ",rva=0x" << std::hex
@@ -281,7 +287,7 @@ namespace replay::catstate
         bool ReadPool(PoolView& pool)
         {
             std::uintptr_t object = 0;
-            if (!mem::Read(g_base + kCategoryPoolRva, object) || !object)
+            if (!g_at.categoryPool || !mem::Read(g_at.categoryPool, object) || !object)
                 return false;
             return mem::Read(object + kPoolBase, pool.base) && mem::Read(object + kPoolStride, pool.stride) &&
                 mem::Read(object + kPoolCount, pool.count) && pool.base && pool.stride >= kCatFlags + 4 &&
@@ -315,9 +321,9 @@ namespace replay::catstate
             staticCount = 0;
             mapCount = 0;
             std::uintptr_t entries = 0;
-            if (!mem::Read(g_base + kStaticCountRva, staticCount) || !staticCount || staticCount > kMaxCategories ||
-                !mem::Read(g_base + kCategoryMapRva + kMapCount, mapCount) || !mapCount || mapCount > kMaxMapEntries ||
-                !mem::Read(g_base + kCategoryMapRva + kMapEntries, entries) || !entries)
+            if (!g_at.staticCount || !g_at.categoryMap || !mem::Read(g_at.staticCount, staticCount) || !staticCount ||
+                staticCount > kMaxCategories || !mem::Read(g_at.categoryMap + kMapCount, mapCount) || !mapCount ||
+                mapCount > kMaxMapEntries || !mem::Read(g_at.categoryMap + kMapEntries, entries) || !entries)
                 return false;
             PoolView pool;
             if (!ReadPool(pool))
@@ -484,7 +490,7 @@ namespace replay::catstate
                 return;
             PoolView pool;
             std::uintptr_t table = 0;
-            if (!ReadPool(pool) || !mem::Read(g_base + kResolvedTableRva, table) || !table)
+            if (!ReadPool(pool) || !g_at.resolvedTable || !mem::Read(g_at.resolvedTable, table) || !table)
                 return;
             const Snapshot& s = g_snap[g_published.load(std::memory_order_acquire) & 1];
             for (std::uint32_t index : g_cfg.watch)
@@ -540,7 +546,6 @@ namespace replay::catstate
     void Configure(const Config& config)
     {
         g_cfg = config;
-        g_fieldsAll.store(config.fieldsAll, std::memory_order_relaxed);
     }
 
     const Config& GetConfig() { return g_cfg; }
@@ -554,9 +559,8 @@ namespace replay::catstate
             error = "off";
             return false;
         }
-        g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        void* target = reinterpret_cast<std::uint8_t*>(g_base) + kResolverRva;
-        if (!mem::Matches(target, kResolverSignature, sizeof(kResolverSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kResolver));
+        if (!target)
         {
             error = "resolver_signature_mismatch";
             return false;
@@ -613,7 +617,7 @@ namespace replay::catstate
 
     void Record(Recording& clip, std::uint32_t timeMs, bool clockRunning, std::ostream& log)
     {
-        if (!g_cfg.record || !clockRunning)
+        if (!clockRunning)
             return;
         if (!Prove(&log))
             return;
@@ -744,7 +748,7 @@ namespace replay::catstate
         g_staticCount.store(staticCount, std::memory_order_relaxed);
         log << "CATEGORY_STATE,phase=play,event=begin,section=" << (track.Empty() ? "absent" : "CATS")
             << ",replay=" << (g_cfg.replay ? 1 : 0) << ",installed=" << (g_target ? 1 : 0) << ",proven=" << (proven ? 1 : 0)
-            << ",read=" << (read ? 1 : 0) << ",fields=" << (g_cfg.fieldsAll ? "all" : "volume")
+            << ",read=" << (read ? 1 : 0) << ",fields=volume"
             << ",recorded=" << g_index.series.size() << ",samples=" << track.samples.size() << ",imposed=" << g_entries.size()
             << ",keep_live=" << g_keptLive.size() << ",unmapped=" << g_unmapped << ",static=" << staticCount
             << ",rec_static=" << track.staticCount << ",index_mismatch=" << mismatches

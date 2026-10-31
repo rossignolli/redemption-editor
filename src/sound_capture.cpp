@@ -333,7 +333,7 @@ namespace replay::capture
             std::uint64_t* slots = Slots();
             for (std::size_t n = 0; n < kSlots; ++n)
                 replay::audio::StopPersistentSound(&slots[n]);
-            std::fill(g_waiting.begin(), g_waiting.end(), 0);
+            std::fill(g_waiting.begin(), g_waiting.end(), std::uint8_t{0});
         }
 
         void PlaceOnPuppet(std::uint64_t sound, Entity clone)

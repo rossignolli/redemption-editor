@@ -1,11 +1,11 @@
 #pragma once
-// The result of the movement volume 0x31815C4 (foot audio, limb, foot, value,
+// The result of the movement volume (foot audio, limb, foot, value,
 // out) of each recorded ped's and horse's step, recorded (section FMOV) and
 // given back to the puppet's step at the same clip time instead of the one the
 // puppet computes.
 //
 // The puppet's own result can differ by about 2 dB (the subterm, the limb term
-// 0x317B9D0 under +0x774 or the tunable 0xD1660BEE, is not identified). The
+// under +0x774 or the tunable 0xD1660BEE, is not identified). The
 // recorded result already holds every term, so MovementTermCorrection does not
 // add on top.
 //

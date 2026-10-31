@@ -34,22 +34,29 @@ namespace
     void TestCategorySites()
     {
         using namespace replay::catstate;
-        Check(sizeof(kResolverSignature) == 61 && kResolverSignature[57] == 0x0F && kResolverSignature[58] == 0x58 &&
-                  kResolverSignature[59] == 0x41 && kResolverSignature[60] == kCatVolume,
+        replay::sig::Pattern resolver;
+        Check(replay::sig::Parse(kResolver.pattern, resolver) && resolver.size == 61 && resolver.bytes[57] == 0x0F &&
+                  resolver.bytes[58] == 0x58 && resolver.bytes[59] == 0x41 && resolver.bytes[60] == kCatVolume,
             "the resolver's prologue ends with addss xmm0,[rcx+48h] (the controllers' volume read)");
-        Check(kResolverSignature[29] == (kCatParent & 0xFF) && kResolverSignature[30] == (kCatParent >> 8),
+        Check(resolver.bytes[29] == (kCatParent & 0xFF) && resolver.bytes[30] == (kCatParent >> 8),
             "the prologue reads the parent at +0xB0");
         bool targets = true;
         for (const Site& site : kSites)
-            if (site.ripAt >= 0 && SiteTarget(site) != site.target)
+            if (site.reach && site.reach->parent != &site.at)
                 targets = false;
         Check(targets, "every rip and call site reaches its target");
         std::size_t calls = 0;
         for (const Site& site : kSites)
-            calls += site.ripAt == 1 && site.target == kResolverRva ? 1 : 0;
+            calls += site.reach && site.same == &kResolver && site.reach->rva == kResolver.rva ? 1 : 0;
         Check(calls == 3, "the root, the dynamic hierarchies and the children call the resolver");
-        Check(kSites[1].bytes[4] == (kCatIndex & 0xFF) && kSites[1].bytes[5] == (kCatIndex >> 8),
+        replay::sig::Pattern store;
+        Check(replay::sig::Parse(kSites[1].at.pattern, store) && store.bytes[4] == (kCatIndex & 0xFF) &&
+                  store.bytes[5] == (kCatIndex >> 8),
             "the resolved value is stored at the category's own index (+0xB2)");
+        const std::string fields = kControllerFieldsStore.pattern;
+        Check(Has(fields, "11 43 54") && Has(fields, "11 4B 4C") && Has(fields, "89 83 88 00 00 00") &&
+                  Has(fields, "89 83 8A 00 00 00") && Has(fields, "89 83 8C 00 00 00"),
+            "the other fields written are where the controller manager stores them");
         Check(kCatBlockSize == 0x46 && kMapEntryStride == 16, "the block and the map entry");
     }
 
@@ -75,8 +82,6 @@ namespace
         b = a;
         b.volume = NAN;
         Check(!PlausibleValues(b), "a NaN volume is not plausible");
-        Check(ParseFieldsAll("all") && ParseFieldsAll("ALL") && !ParseFieldsAll("volume") && !ParseFieldsAll(nullptr),
-            "CategoryStateFields");
     }
 
     void TestRecorder()
@@ -213,12 +218,13 @@ namespace
         Check(Decode(v, 0) == ~Rol(Rol(v, 32), 1), "decode with a zero key");
         bool targets = true;
         for (const CodeSite& site : kSites)
-            if (site.ripAt >= 0 && SiteTarget(site) != site.target)
+            if (site.reach && (site.reach->parent != &site.at || site.at.parent != &kPoolStart))
                 targets = false;
         Check(targets, "the pool's cells are what the start reads");
-        Check(sizeof(kReadyToDeleteSignature) == 93 && kReadyToDeleteSignature[3] == kScenePatches &&
-                  kReadyToDeleteSignature[10] == (kSceneSlots2 & 0xFF) && kReadyToDeleteSignature[60] == (kSceneList >> 8) &&
-                  kReadyToDeleteSignature[66] == (kSceneListCount & 0xFF) && kReadyToDeleteSignature[92] == 0xC3,
+        replay::sig::Pattern ready;
+        Check(replay::sig::Parse(kReadyToDelete.pattern, ready) && ready.size == 93 && ready.bytes[3] == kScenePatches &&
+                  ready.bytes[10] == (kSceneSlots2 & 0xFF) && ready.bytes[60] == (kSceneList >> 8) &&
+                  ready.bytes[66] == (kSceneListCount & 0xFF) && ready.bytes[92] == 0xC3,
             "ready to delete reads +0x70, +0x170, +0x270 and +0x2F0");
     }
 
@@ -245,15 +251,20 @@ namespace
         std::memcpy(scene.data() + kSceneVars + 12, &value1, 4);
         float apply = 0.0f, missing = 0.0f;
         Check(VarOf(scene.data(), kApplyVar, apply) && apply == 0.75f && !VarOf(scene.data(), 0x22u, missing), "the variables");
+        // The drivers' references at their RVAs (an image at 0).
+        std::uintptr_t references[kDriverCount] = {};
+        for (std::size_t n = 0; n < kDriverCount; ++n)
+            references[n] = kDrivers[n].reference.rva;
+        Check(!DriverByReference(0, references), "a scene without a reference names no driver");
         PoolScene direct;
-        NameScene(direct, 0, 0x5BA5FE0);
+        NameScene(direct, 0, DriverByReference(0x5BA5FE0, references));
         Check(direct.name == Name::Direct && direct.hash == 0x576520E1u && direct.driver && std::string(direct.driver->name) == "speech_duck",
             "a direct scene is named by its driver's reference");
         PoolScene wrapper;
-        NameScene(wrapper, 0x24BFC688u, 0x5BA6038);
+        NameScene(wrapper, 0x24BFC688u, DriverByReference(0x5BA6038, references));
         Check(wrapper.name == Name::Wrapper && wrapper.hash == 0x24BFC688u, "+0x328 wins");
         PoolScene nameless;
-        NameScene(nameless, 0, 0x5BA5F30);
+        NameScene(nameless, 0, DriverByReference(0x5BA5F30, references));
         Check(nameless.name == Name::None && nameless.hash == 0, "0x5BA5F30 names nothing (the exclusive slot)");
         PoolScene ours = wrapper;
         ours.replayOwned = true;
@@ -292,12 +303,20 @@ namespace
         Check(kDriverCount == 13 && wrappers == 2 && refusable == 2, "13 drivers, the two player state scenes refusable");
         for (std::size_t i = 0; i < kDriverCount; ++i)
             for (std::size_t j = i + 1; j < kDriverCount; ++j)
-                Check(kDrivers[i].refRva != kDrivers[j].refRva && kDrivers[i].hash != kDrivers[j].hash, "unique references and hashes");
-        Check(DriverByReturn(0x2F29985) && DriverByReturn(0x2F29985)->hash == 0x24BFC688u, "0x2F29985 is the player state start");
-        Check(IsDirectCaller(0x2F2D2AE) && !IsDirectCaller(0x2F29985) && !IsDirectCaller(0x31C88EB), "direct callers");
-        for (const Tolerance& t : kTolerances)
-            Check(ToleranceTarget(t) == DriverByHash(t.hash)->refRva, "the tolerance reads the driver's reference");
-        Check(kTolerances[0].bytes[7] == 0x74 && kTolerances[1].bytes[10] == 0x74, "a je follows each test");
+                Check(kDrivers[i].reference.rva != kDrivers[j].reference.rva && kDrivers[i].hash != kDrivers[j].hash,
+                    "unique references and hashes");
+        const Driver* player = DriverByHash(0x24BFC688u);
+        const Driver* duck = DriverByHash(0x576520E1u);
+        Check(player && player->call.rva + 5 == 0x2F29985, "0x2F29985 is the player state start");
+        Check(duck && duck->via == Via::Direct && duck->call.rva + 5 == 0x2F2D2AE && player && player->via == Via::Wrapper,
+            "direct callers");
+        for (const Driver& d : kDrivers)
+            if (d.tolerance)
+                Check(d.toleranceRef->rva == d.reference.rva, "the tolerance reads the driver's reference");
+        replay::sig::Pattern test, test2;
+        Check(replay::sig::Parse(kPlayerStateTolerance.pattern, test) && test.bytes[7] == 0x74 &&
+                  replay::sig::Parse(kPlayerState2Tolerance.pattern, test2) && test2.bytes[10] == 0x74,
+            "a je follows each test");
     }
 
     // ---- the speech duck ----
@@ -307,15 +326,21 @@ namespace
         using namespace replay::speechduck;
         bool targets = true;
         for (const Site& site : kSites)
-            if (site.ripAt >= 0 && SiteTarget(site) != site.target)
+            if (site.reach && site.reach->parent != &site.at)
                 targets = false;
         Check(targets, "every duck site reaches its global");
-        Check(sizeof(kDriverSignature) == 72 && kDriverSignature[70] == 0x00 && kDriverSignature[66] == 0x0F &&
-                  kDriverSignature[67] == 0x85,
+        bool agree = true;
+        for (const Site& site : kSites)
+            if (site.same && site.reach->rva != site.same->rva + site.plus)
+                agree = false;
+        Check(agree, "the sites of one global agree");
+        replay::sig::Pattern driver;
+        Check(replay::sig::Parse(replay::enginesig::kDuckDriver.pattern, driver) && driver.size == 72 &&
+                  driver.bytes[66] == 0x0F && driver.bytes[67] == 0x85 && driver.wild[70],
             "the driver's prologue up to its first branch");
         const replay::mixscene::pool::Driver* duck = replay::mixscene::pool::DriverByHash(kDuckScene);
-        Check(duck && duck->refRva == kSceneRefRva, "the duck's driver keeps it in 0x5BA5FE0");
-        Check(replay::mixscene::pool::DriverByHash(kDuck2Scene)->refRva == kScene2RefRva, "the second duck in 0x5BA5FE8");
+        Check(duck && duck->reference.rva == kSceneRef.rva, "the duck's driver keeps it in 0x5BA5FE0");
+        Check(replay::mixscene::pool::DriverByHash(kDuck2Scene)->reference.rva == kScene2Ref.rva, "the second duck in 0x5BA5FE8");
     }
 
     void TestDuckPlan()
@@ -421,19 +446,6 @@ namespace
         Check(cut.flags == kTrackPoolScanned, "the cut keeps the flags");
         track.DropBefore(30000);
         Check(track.flags == kTrackPoolScanned, "the ring keeps the flags");
-        Track t2;
-        t2.instances = {a, b, duck, perm};
-        const std::vector<std::uint32_t> engineOpen = {0x24BFC688u, 0xA3657C2Cu};
-        const std::vector<std::uint32_t> owned = {0x24BFC688u};
-        const std::vector<std::uint32_t> never = {0x576520E1u};
-        std::vector<std::uint32_t> w = Wanted(t2, 1000, 16, kReplayDefault, engineOpen, {}, owned, never);
-        Check(w.size() == 1 && w[0] == 1, "owned: started whatever the kinds and the engine; the duck never; the permanent stays the engine's");
-        w = Wanted(t2, 30000, 16, kReplayDefault | kReplayCode, engineOpen, {}, owned, never);
-        Check(w.empty(), "between the recorded stop and start nothing (the engine's permanent is open)");
-        w = Wanted(t2, 30000, 16, kReplayDefault | kReplayCode, {}, {}, {}, never);
-        Check(w.size() == 1 && w[0] == 4, "without the engine's scene the code scene is replayed (MixSceneReplayCode)");
-        w = Wanted(t2, 40000, 16, kReplayDefault, engineOpen, {}, {}, never);
-        Check(w.empty(), "not owned: the engine's 0x24BFC688 wins as before");
         Live live;
         live.Start(0x1000, 0xA3657C2Cu, 0, 0, nullptr, 0);
         Check(live.Claim(0x1000, 0xA3657C2Cu, 0x2F00D71) != 0 && live.open[0x1000].caller == 0x2F00D71,

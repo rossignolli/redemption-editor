@@ -9,6 +9,8 @@
   <ItemGroup>
     <ClCompile Include="tools\clip_tool\clip_tool.cpp" />
     <ClCompile Include="src\camera_track.cpp" />
+    <ClCompile Include="src\camera_track_spline.cpp" />
+    <ClCompile Include="src\camera_track_markers.cpp" />
     <ClCompile Include="src\camera_shake.cpp" />
     <ClCompile Include="src\camera_shake_custom.cpp" />
     <ClCompile Include="src\camera_spline.cpp" />
@@ -22,12 +24,16 @@
     <ClCompile Include="src\pose_math.cpp" />
     <ClCompile Include="src\pose_skeleton_layout.cpp" />
     <ClCompile Include="src\pose_stream.cpp" />
+    <ClCompile Include="src\pose_deadband_smooth.cpp" />
     <ClCompile Include="src\pose_segments.cpp" />
     <ClCompile Include="src\pose_jerk.cpp" />
     <ClCompile Include="src\replay_transport.cpp" />
     <ClCompile Include="src\rope_track.cpp" />
     <ClCompile Include="src\bench_script.cpp" />
     <ClCompile Include="src\clip_file.cpp" />
+    <ClCompile Include="src\clip_file_events.cpp" />
+    <ClCompile Include="src\clip_file_world.cpp" />
+    <ClCompile Include="src\clip_file_sounds.cpp" />
     <ClCompile Include="src\clip_compress.cpp" />
     <ClCompile Include="external\zstd\zstd.c">
       <!-- The zstd 1.5.6 amalgamation (clip compression). Third
@@ -77,6 +83,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\camera_track.h" />
+    <ClInclude Include="src\camera_track_internal.h" />
     <ClInclude Include="src\camera_shake.h" />
     <ClInclude Include="src\camera_shake_custom.h" />
     <ClInclude Include="src\camera_spline.h" />
@@ -101,6 +108,9 @@
     <ClInclude Include="src\editor_protocol.h" />
     <ClInclude Include="src\playback_time.h" />
     <ClInclude Include="src\clip_file.h" />
+    <ClInclude Include="src\clip_file_internal.h" />
+    <ClInclude Include="src\clip_sites.h" />
+    <ClInclude Include="src\game_sig_site.h" />
     <ClInclude Include="src\clip_compress.h" />
     <ClInclude Include="src\clip_pack.h" />
     <ClInclude Include="src\recording_window.h" />

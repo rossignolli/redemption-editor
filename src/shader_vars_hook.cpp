@@ -1,5 +1,7 @@
 #include "shader_vars_hook.h"
 
+#include "engine_sigs.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "hook_batch.h"
 #include "module_lifetime.h"
@@ -18,76 +20,75 @@ namespace replay::shadervars::engine
 {
     namespace
     {
-        // ---- game build 1491.50 ---------------------------------------------
-        // 0xB2F0D0(effect rcx, ped rdx): the prologue up to mov rax,[rdx+0A8h].
-        constexpr std::uintptr_t kReaderRva = 0xB2F0D0;
-        constexpr std::uint8_t kReader[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
-            0x56, 0x41, 0x57, 0x48, 0x8D, 0xAC, 0x24, 0x00, 0xFD, 0xFF, 0xFF, 0x48, 0x81, 0xEC, 0x00, 0x04, 0x00, 0x00,
-            0x48, 0x8B, 0x82, 0xA8, 0x00, 0x00, 0x00};
-        static_assert(sizeof(kReader) >= 5, "the signature covers the detour's jump");
-        // 0xB2F115: mov rdi,[rax+48h] (the creature).
-        constexpr std::uintptr_t kReaderCreatureRva = 0xB2F115;
-        constexpr std::uint8_t kReaderCreature[] = {0x48, 0x8B, 0x78, 0x48};
-        // 0xB2F17A: mov rcx,rdi; call 0x87CBD0; mov rdi,rax (the component).
-        constexpr std::uintptr_t kReaderFindRva = 0xB2F17A;
-        constexpr std::uint8_t kReaderFind[] = {0x48, 0x8B, 0xCF, 0xE8, 0x4E, 0xDA, 0xD4, 0xFF, 0x48, 0x8B, 0xF8};
-        // 0xB2F265: movzx edx,[rcx+rsi+8]; mov rcx,[rdi+68h] (offset, buffer).
-        constexpr std::uintptr_t kReaderBufferRva = 0xB2F265;
-        constexpr std::uint8_t kReaderBuffer[] = {0x0F, 0xB7, 0x54, 0x31, 0x08, 0x48, 0x8B, 0x4F, 0x68};
-        // 0x87CBD0: the component of the type byte at 0x3C7F020.
-        constexpr std::uintptr_t kFindRva = 0x87CBD0;
-        constexpr std::uint8_t kFind[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x48, 0x8D, 0x0D, 0x40, 0x24, 0x40, 0x03, 0xE8, 0x57,
-            0xC7, 0xDD, 0x01, 0x0F, 0xB6, 0xD0, 0x8A, 0x44, 0x1A, 0x74, 0x3C, 0xFF, 0x74, 0x0C, 0x0F, 0xB6, 0xD0, 0x48,
-            0x8B, 0x03, 0x48, 0x8B, 0x04, 0xD0, 0xEB, 0x02, 0x33, 0xC0, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3};
-        constexpr std::uintptr_t kTypeByteRva = 0x3C7F020;
-        // 0x26507EC: the component's ctor (vtable 0x3625E88, type 9, frame data +0x28).
-        constexpr std::uintptr_t kCtorRva = 0x26507EC;
-        constexpr std::uint8_t kCtor[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x89, 0x51, 0x08, 0x48, 0x8D, 0x05, 0x87,
-            0x56, 0xFD, 0x00, 0x48, 0x89, 0x01, 0x48, 0x8D, 0x51, 0x28, 0xC6, 0x41, 0x10, 0x09};
-        constexpr std::uintptr_t kVtableRva = 0x3625E88;
-        // 0x2659AA0 (vtable slot 5): the tracks 0x11, 0x12 and 0x17 only.
-        constexpr std::uintptr_t kHasDofRva = 0x2659AA0;
-        constexpr std::uint8_t kHasDof[] = {
-            0x48, 0x83, 0xEC, 0x28, 0x8D, 0x42, 0xEF, 0x3C, 0x01, 0x76, 0x09, 0x80, 0xFA, 0x17, 0x74, 0x04};
-        // 0x295AFC4(node): the frame write node. Prologue up to the reads of
-        // the destination (+0x28), source (+0x30), map (+0x38), full-copy flag (+0x40).
-        constexpr std::uintptr_t kWriteNodeRva = 0x295AFC4;
-        constexpr std::uint8_t kWriteNode[] = {
-            0x4C, 0x8B, 0xDC, 0x49, 0x89, 0x5B, 0x10, 0x49, 0x89, 0x6B, 0x18, 0x49, 0x89, 0x73, 0x20, 0x57, 0x41, 0x54,
-            0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x71, 0x28, 0x48, 0x8B, 0x69, 0x30,
-            0x48, 0x8B, 0x79, 0x38, 0x44, 0x8A, 0x79, 0x40};
-        static_assert(sizeof(kWriteNode) >= 5, "the signature covers the detour's jump");
-        // 0x294F159: the component found, its frame (lea rdx,[rax+68h]) queued
-        // through 0x29520A8 (the node's destination is the component's buffer).
-        constexpr std::uintptr_t kQueueSiteRva = 0x294F159;
-        constexpr std::uint8_t kQueueSite[] = {
-            0x48, 0x8B, 0x4B, 0x20, 0xE8, 0x6E, 0xDA, 0xF2, 0xFD, 0x48, 0x85, 0xC0, 0x74, 0x1F, 0x4C, 0x8B, 0x43, 0x18,
-            0x48, 0x8D, 0x50, 0x68, 0x49, 0x81, 0xC0, 0xF8, 0x01, 0x00, 0x00, 0x40, 0x88, 0x74, 0x24, 0x20, 0x45, 0x33,
-            0xC9, 0x48, 0x8B, 0xCB, 0xE8, 0x22, 0x2F, 0x00, 0x00};
-        // 0x2952139 (in 0x29520A8): node +0x28 = [frame] (the buffer); 0x2952164:
-        // node +0x50 = the frame's u16 +0x34 (its bytes).
-        constexpr std::uintptr_t kQueueDestRva = 0x2952139;
-        constexpr std::uint8_t kQueueDest[] = {0x48, 0x8B, 0x02, 0x49, 0x89, 0x41, 0x28};
-        constexpr std::uintptr_t kQueueBytesRva = 0x2952164;
-        constexpr std::uint8_t kQueueBytes[] = {0x0F, 0xB7, 0x42, 0x34, 0x41, 0x89, 0x41, 0x50};
+        namespace sig = replay::sig;
+
+        // The ped shader effect's reader (effect rcx, ped rdx): the prologue up
+        // to mov rax,[rdx+0A8h].
+        const sig::Signature kShaderReader{"shader_reader",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 54 41 55 41 56 41 57 48 8D AC 24 00 FD FF FF 48 81 EC 00 04 00 "
+            "00 48 8B 82 A8 00 00 00",
+            0xB2F0D0};
+        // mov rdi,[rax+48h] (the creature).
+        const sig::Signature kShaderReaderCreature{"shader_reader_creature", kShaderReader, sig::Offset{0x45}, "48 8B 78 48",
+            0xB2F115};
+        // mov rcx,rdi; call (the component find); mov rdi,rax (the component).
+        const sig::Signature kShaderReaderFind{"shader_reader_find", kShaderReader, sig::Offset{0xAA},
+            "48 8B CF E8 ?? ?? ?? ?? 48 8B F8", 0xB2F17A};
+        // movzx edx,[rcx+rsi+8]; mov rcx,[rdi+68h] (offset, buffer).
+        const sig::Signature kShaderReaderBuffer{"shader_reader_buffer", kShaderReader, sig::Offset{0x195},
+            "0F B7 54 31 08 48 8B 4F 68", 0xB2F265};
+        // The component find: the component of the type byte it loads.
+        const sig::Signature kShaderFind{"shader_find", kShaderReaderFind, sig::Rel32{4, 8},
+            "40 53 48 83 EC 20 48 8B D9 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F B6 D0 8A 44 1A 74 3C FF 74 0C 0F B6 D0 48 8B "
+            "03 48 8B 04 D0 EB 02 33 C0 48 83 C4 20 5B C3", 0x87CBD0};
+        const sig::Signature kShaderTypeByte{"shader_type_byte", kShaderFind, sig::Rel32{0xC, 0x10}, "", 0x3C7F020};
+        // The component's ctor (its vtable, type 9, frame data +0x28).
+        const sig::Signature kShaderCtor{"shader_ctor",
+            "48 89 5C 24 08 57 48 83 EC 30 48 89 51 08 48 8D 05 ?? ?? ?? ?? 48 89 01 48 8D 51 28 C6 41 10 09", 0x26507EC};
+        const sig::Signature kShaderVtable{"shader_vtable", kShaderCtor, sig::Rel32{0x11, 0x15}, "", 0x3625E88};
+        // The vtable's slot 5: the tracks 0x11, 0x12 and 0x17 only.
+        const sig::Signature kShaderHasDof{"shader_has_dof", "48 83 EC 28 8D 42 EF 3C 01 76 09 80 FA 17 74 04", 0x2659AA0};
+        // The frame write node (node). Prologue up to the reads of the
+        // destination (+0x28), source (+0x30), map (+0x38), full-copy flag (+0x40).
+        const sig::Signature kShaderWriteNode{"shader_write_node",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 20 57 41 54 41 55 41 56 41 57 48 83 EC 20 48 8B 71 28 48 8B 69 "
+            "30 48 8B 79 38 44 8A 79 40",
+            0x295AFC4};
+        // The creature update job: the component found (the same find), its
+        // frame (lea rdx,[rax+68h]) queued through the queue function (the
+        // node's destination is the component's buffer).
+        const sig::Signature kShaderQueueJob{"shader_queue_job",
+            "44 89 44 24 18 48 89 54 24 10 53 55 56 57 41 54 41 55 41 56 41 57 B8 08 17 00 00", 0x294F068};
+        const sig::Signature kShaderQueueSite{"shader_queue_site", kShaderQueueJob, sig::Offset{0xF1},
+            "48 8B 4B 20 E8 ?? ?? ?? ?? 48 85 C0 74 1F 4C 8B 43 18 48 8D 50 68 49 81 C0 F8 01 00 00 40 88 74 24 20 45 33 "
+            "C9 48 8B CB E8 ?? ?? ?? ??",
+            0x294F159};
+        const sig::Signature kShaderQueueFind{"shader_queue_find", kShaderQueueSite, sig::Rel32{5, 9},
+            "40 53 48 83 EC 20 48 8B D9 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F B6 D0 8A 44 1A 74 3C FF 74 0C 0F B6 D0 48 8B "
+            "03 48 8B 04 D0 EB 02 33 C0 48 83 C4 20 5B C3", 0x87CBD0};
+        const sig::Signature kShaderQueue{"shader_queue", kShaderQueueSite, sig::Rel32{0x29, 0x2D},
+            "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 48 8B 41 28 48 8B D9", 0x29520A8};
+        // node +0x28 = [frame] (the buffer); node +0x50 = the frame's u16 +0x34
+        // (its bytes).
+        const sig::Signature kShaderQueueDest{"shader_queue_dest", kShaderQueue, sig::Offset{0x91}, "48 8B 02 49 89 41 28",
+            0x2952139};
+        const sig::Signature kShaderQueueBytes{"shader_queue_bytes", kShaderQueue, sig::Offset{0xBC},
+            "0F B7 42 34 41 89 41 50", 0x2952164};
         constexpr std::uintptr_t kNodeDestination = 0x28;
         constexpr std::uintptr_t kNodeBytes = 0x50;
 
-        // 0xB2D32A (the ped shader effect's update): the graphics component,
-        // slot +0x98 of the row ((ped+0x9C) & 0x1FFFF) - [0x39ECE40] of the
-        // table [0x39ECE48] (stride 0x148), and 0xB2D4DB: its sweat +0x488
-        // copied into the effect instance (+0xB4) every update.
-        constexpr std::uintptr_t kSweatLookupRva = 0xB2D32A;
-        constexpr std::uint8_t kSweatLookup[] = {
-            0x44, 0x8B, 0x86, 0x9C, 0x00, 0x00, 0x00, 0x4C, 0x8B, 0x0D, 0x10, 0xFB, 0xEB, 0x02, 0x8B, 0x3D, 0x02, 0xFB,
-            0xEB, 0x02, 0x45, 0x23, 0xC5, 0x44, 0x2B, 0xC7, 0x41, 0x8B, 0xC0, 0x48, 0x69, 0xC8, 0x48, 0x01, 0x00, 0x00,
-            0x4A, 0x8B, 0x84, 0x09, 0x98, 0x00, 0x00, 0x00};
-        constexpr std::uintptr_t kSweatCopyRva = 0xB2D4DB;
-        constexpr std::uint8_t kSweatCopy[] = {0x8B, 0x87, 0x88, 0x04, 0x00, 0x00, 0x89, 0x81, 0xB4, 0x00, 0x00, 0x00};
-        constexpr std::uintptr_t kGraphicsTableRva = 0x39ECE48, kGraphicsBaseRva = 0x39ECE40;
+        // The ped shader effect's update: the graphics component, slot +0x98 of
+        // the row ((ped+0x9C) & 0x1FFFF) - [base index] of the table (stride
+        // 0x148, engine_sigs.h), and its sweat +0x488 copied into the effect
+        // instance (+0xB4) every update.
+        const sig::Signature kShaderEffectUpdate{"shader_effect_update",
+            "48 8B C4 48 89 58 08 48 89 70 18 55 57 41 55 41 56 41 57 48 8B EC 48 83 EC 70", 0xB2D128};
+        const sig::Signature kShaderSweatLookup{"shader_sweat_lookup", kShaderEffectUpdate, sig::Offset{0x202},
+            "44 8B 86 9C 00 00 00 4C 8B 0D ?? ?? ?? ?? 8B 3D ?? ?? ?? ?? 45 23 C5 44 2B C7 41 8B C0 48 69 C8 48 01 00 00 "
+            "4A 8B 84 09 98 00 00 00",
+            0xB2D32A};
+        const sig::Signature kShaderSweatCopy{"shader_sweat_copy", kShaderEffectUpdate, sig::Offset{0x3B3},
+            "8B 87 88 04 00 00 89 81 B4 00 00 00", 0xB2D4DB};
         constexpr std::uintptr_t kGraphicsStride = 0x148, kGraphicsSlot = 0x98;
         constexpr std::uintptr_t kSweatOn = 0x484, kSweatValue = 0x488;
         bool g_sweatReady = false;
@@ -105,7 +106,8 @@ namespace replay::shadervars::engine
         constexpr std::uintptr_t kBufferFrameData = 0x70;
         constexpr std::uintptr_t kBufferBytes = 0x9C;
 
-        std::uintptr_t g_base = 0;
+        std::uintptr_t g_vtable = 0; // the component's (kShaderVtable)
+        enginesig::Pool g_graphics;  // the graphics component pool (sweat)
         bool g_checked = false;
         bool g_ready = false;
         std::string g_initError;
@@ -117,8 +119,8 @@ namespace replay::shadervars::engine
             return replay::mem::Read(address, out);
         }
 
-        // The component of a ped (the chain of 0xB2F0D0 and 0x87CBD0) and
-        // its buffer: guarded reads only.
+        // The component of a ped (the chain of the shader reader and the
+        // component find) and its buffer: guarded reads only.
         Read Chain(std::uintptr_t ped, std::uintptr_t& component, std::uintptr_t& buffer, std::uint16_t& bytes)
         {
             component = 0;
@@ -148,7 +150,7 @@ namespace replay::shadervars::engine
                 !Get(component + kBufferFrameData, frameData) || !Get(component + kBuffer, buffer) ||
                 !Get(component + kBufferBytes, bytes))
                 return Read::Fault;
-            if (vtable != g_base + kVtableRva || type != kShaderVarsType || frameData != component + kFrameData ||
+            if (vtable != g_vtable || type != kShaderVarsType || frameData != component + kFrameData ||
                 bytes > kMaxBufferBytes)
                 return Read::Layout;
             return Read::Ok;
@@ -234,7 +236,7 @@ namespace replay::shadervars::engine
         std::atomic<std::uint32_t> g_slotsMin{0xFFFF}, g_slotsMax{0};
         std::atomic<std::uintptr_t> g_watch[kMaxTargets] = {};
         std::atomic<std::uint32_t> g_watchEnd{0};
-        constexpr std::uintptr_t kEffectSlotCount = 0x88; // u16, 0xB2F0D0: cmp cx,[rbx+88h]
+        constexpr std::uintptr_t kEffectSlotCount = 0x88; // u16, the shader reader: cmp cx,[rbx+88h]
 
         void NoteEffect(void* effect)
         {
@@ -468,38 +470,41 @@ namespace replay::shadervars::engine
             return g_ready;
         }
         g_checked = true;
-        g_base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
         struct Check
         {
-            std::uintptr_t rva;
-            const std::uint8_t* bytes;
-            std::size_t size;
+            const sig::Signature* signature;
             const char* name;
         };
+        // A call before what it reaches: the first failure names the cause.
         const Check checks[] = {
-            {kReaderCreatureRva, kReaderCreature, sizeof(kReaderCreature), "reader_creature_signature_mismatch"},
-            {kReaderFindRva, kReaderFind, sizeof(kReaderFind), "reader_find_signature_mismatch"},
-            {kReaderBufferRva, kReaderBuffer, sizeof(kReaderBuffer), "reader_buffer_signature_mismatch"},
-            {kFindRva, kFind, sizeof(kFind), "find_signature_mismatch"},
-            {kCtorRva, kCtor, sizeof(kCtor), "ctor_signature_mismatch"},
-            {kHasDofRva, kHasDof, sizeof(kHasDof), "has_dof_signature_mismatch"},
-            {kQueueSiteRva, kQueueSite, sizeof(kQueueSite), "queue_site_signature_mismatch"},
-            {kQueueDestRva, kQueueDest, sizeof(kQueueDest), "queue_dest_signature_mismatch"},
-            {kQueueBytesRva, kQueueBytes, sizeof(kQueueBytes), "queue_bytes_signature_mismatch"},
+            {&kShaderReaderCreature, "reader_creature_signature_mismatch"},
+            {&kShaderReaderFind, "reader_find_signature_mismatch"},
+            {&kShaderReaderBuffer, "reader_buffer_signature_mismatch"},
+            {&kShaderFind, "find_signature_mismatch"},
+            {&kShaderTypeByte, "find_signature_mismatch"},
+            {&kShaderCtor, "ctor_signature_mismatch"},
+            {&kShaderVtable, "ctor_signature_mismatch"},
+            {&kShaderHasDof, "has_dof_signature_mismatch"},
+            {&kShaderQueueSite, "queue_site_signature_mismatch"},
+            {&kShaderQueueFind, "queue_site_signature_mismatch"},
+            {&kShaderQueue, "queue_site_signature_mismatch"},
+            {&kShaderQueueDest, "queue_dest_signature_mismatch"},
+            {&kShaderQueueBytes, "queue_bytes_signature_mismatch"},
         };
         for (const Check& check : checks)
         {
-            if (!replay::mem::Matches(reinterpret_cast<const void*>(g_base + check.rva), check.bytes, check.size))
+            if (!sig::Find(*check.signature))
             {
                 g_initError = check.name;
                 error = g_initError;
                 return false;
             }
         }
-        g_sweatReady = replay::mem::Matches(reinterpret_cast<const void*>(g_base + kSweatLookupRva), kSweatLookup, sizeof(kSweatLookup)) &&
-            replay::mem::Matches(reinterpret_cast<const void*>(g_base + kSweatCopyRva), kSweatCopy, sizeof(kSweatCopy));
-        // The type byte is set at the engine's start (0x265A448); 0 is "not yet".
-        if (!Get(g_base + kTypeByteRva, g_type) || g_type == 0 || g_type >= 0x80)
+        g_vtable = sig::Find(kShaderVtable);
+        g_graphics = {sig::Find(enginesig::kComponentBaseIndex), sig::Find(enginesig::kComponentTable)};
+        g_sweatReady = sig::Find(kShaderSweatLookup) && sig::Find(kShaderSweatCopy) && g_graphics.Found();
+        // The type byte is set at the engine's start; 0 is "not yet".
+        if (!Get(sig::Find(kShaderTypeByte), g_type) || g_type == 0 || g_type >= 0x80)
         {
             g_checked = false; // try again later
             g_initError = "type_byte_not_ready";
@@ -534,7 +539,7 @@ namespace replay::shadervars::engine
             return Read::NoEntity;
         std::uint32_t handle = 0, base = 0;
         std::uintptr_t table = 0, entry = 0;
-        if (!Get(ped + 0x9C, handle) || !Get(g_base + kGraphicsBaseRva, base) || !Get(g_base + kGraphicsTableRva, table) || !table)
+        if (!Get(ped + 0x9C, handle) || !Get(g_graphics.baseIndex, base) || !Get(g_graphics.table, table) || !table)
             return Read::Fault;
         const std::uint32_t row = (handle & 0x1FFFFu) - base;
         if ((handle & 0x1FFFFu) < base || row >= 0x10000u)
@@ -606,8 +611,8 @@ namespace replay::shadervars::engine
             return true;
         if (!Init(error))
             return false;
-        void* nodeTarget = reinterpret_cast<void*>(g_base + kWriteNodeRva);
-        if (!replay::mem::Matches(nodeTarget, kWriteNode, sizeof(kWriteNode)))
+        void* nodeTarget = reinterpret_cast<void*>(sig::Find(kShaderWriteNode));
+        if (!nodeTarget)
         {
             error = "write_node_signature_mismatch";
             return false;
@@ -625,8 +630,8 @@ namespace replay::shadervars::engine
         g_nodeTarget = nodeTarget;
         g_installed = true;
         // The observer of the shader effect's reader (evidence only).
-        void* readerTarget = reinterpret_cast<void*>(g_base + kReaderRva);
-        if (!replay::mem::Matches(readerTarget, kReader, sizeof(kReader)))
+        void* readerTarget = reinterpret_cast<void*>(sig::Find(kShaderReader));
+        if (!readerTarget)
             observerError = "reader_signature_mismatch";
         else if (Hook(readerTarget, reinterpret_cast<void*>(&ReaderDetour), &original, observerError))
         {

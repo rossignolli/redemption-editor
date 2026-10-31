@@ -86,7 +86,7 @@ namespace replay::theatre
     };
     void CollectRefusals(std::uint64_t& cursor, std::vector<RuleRefusal>& out);
 
-    // The state 3 handler's failure codes (0x2FC486C, TheatreHooks bit 8),
+    // The state 3 handler's failure codes (TheatreHooks bit 8),
     // recorded while SetSpeechObserve is on (the whole playback, the theater
     // owning the world or not: the mission lines).
     struct State3Failure
@@ -137,7 +137,7 @@ namespace replay::theatre
     CallResult RemoveAllVehicles(std::uint32_t& code);
     CallResult RemoveAllPeds(std::uint64_t playerPed, std::uint32_t& code);
     CallResult ResetStaticEmitters(std::uint32_t& code);
-    // [[0x4A35800]+0x10]: -1 when unreadable.
+    // [[PERSCHAR manager]+0x10]: -1 when unreadable.
     int PerscharHeld();
 
     // The speech manager's slots: used/total per class, and the ambient slots
@@ -156,8 +156,7 @@ namespace replay::theatre
     bool BankOfWaveSlot(std::uint64_t waveSlot, int& slotClass, std::uint32_t& bank);
 
     // Right after _PAUSE_SCRIPT_THREADS(TRUE), the threads ScriptHookRDR2
-    // started for the other ASIs get their pause byte back (unless
-    // `pauseScriptHook`). Checked once (signatures and the thread array site);
+    // started for the other ASIs get their pause byte back. Checked once (signatures and the thread array site);
     // `census` (may be null) receives every thread seen.
     struct ThreadSpare
     {
@@ -169,7 +168,7 @@ namespace replay::theatre
         std::uint32_t unpaused = 0;   // pause bytes put back to 0
         std::uint32_t writeFailed = 0;
     };
-    ThreadSpare SpareScriptHookThreads(bool pauseScriptHook, std::vector<ThreadView>* census);
+    ThreadSpare SpareScriptHookThreads(std::vector<ThreadView>* census);
 
     // The speech manager's ambient (speech_slots.h) slots (guarded reads, rung
     // 2): per slot the live reference (+0x10, 0 = free), the wave slot (+0x18),
@@ -197,11 +196,11 @@ namespace replay::theatre
         }
     };
     void ReadAmbientSlots(AmbientSlots& out);
-    // 0x2FB1E94(manager, speechEntity), signature checked once, SEH (rung 4).
+    // FreeAmbientSlotsOfOwner(manager, speechEntity), signature checked once, SEH (rung 4).
     CallResult ReleaseAmbientSlotsOf(std::uint64_t speechEntity, std::uint32_t& code);
 
     // ---- the animal banks (animal_bank.h) ------------------------------------
-    // The type picker detour 0x2F985B0, installed alone after every check of
+    // The type picker detour, installed alone after every check of
     // the records passed (signatures, sites, the name format); the report
     // gets "AnimalBankPick=ok;" or the reason. With no hold published it
     // only forwards.
@@ -240,7 +239,7 @@ namespace replay::theatre
         std::uint64_t keeps = 0;     // a rotation of a type holding its voice refused (0 returned)
         std::uint64_t notKept = 0;   // calls where a held type was missing its bank but the manager would not keep it
         std::uint64_t writeFailed = 0;
-        std::uint64_t otherManager = 0; // picker calls for another manager than 0x5BB9750 (only forwarded)
+        std::uint64_t otherManager = 0; // picker calls for another manager than the speech manager (only forwarded)
         std::uint32_t lastForcedType = 0;
         std::uint32_t lastForcedBank = 0;
     };

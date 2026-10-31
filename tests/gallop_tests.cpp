@@ -6,6 +6,8 @@
 // ped audio sounds keep their recorded length (the horse's braking slide)
 // and the animal vocalization retry's entry.
 #include "fx_observer.h"
+#include "shot_fx_audit_core.h"
+#include "weapon_fx_intent_core.h"
 #include "horse_audio_evidence.h"
 #include "mount_audio.h"
 #include "puppet_audio_rule.h"
@@ -38,23 +40,32 @@ namespace
         using namespace replay::mountaudio;
         Check(kSiteCount == 13, "thirteen ped audio callers");
         Check(kCounterSlots == kSiteCount + 1, "one counter more for the other callers");
-        // Every site is a return address in the ped audio (0x317A000 to
-        // 0x31A3000), listed once.
+        // Every site is a call in the ped audio (0x317A000 to 0x31A3000 on
+        // 1491.50), listed once.
+        const SiteReturns known = KnownSiteReturns();
         for (std::size_t index = 0; index < kSiteCount; ++index)
         {
-            Check(kSites[index] >= 0x317A000 && kSites[index] < 0x31A3000, "a site lies in the ped audio");
-            Check(SiteSlot(kSites[index]) == index, "a site has its own slot");
+            Check(known.rva[index] >= 0x317A000 && known.rva[index] < 0x31A3000, "a site lies in the ped audio");
+            Check(SiteSlot(known, known.rva[index]) == index, "a site has its own slot");
+            Check(kSites[index]->via == replay::sig::Via::Offset &&
+                    std::string(kSites[index]->pattern) == "E8 ?? ?? ?? ??",
+                "a site is a call inside its caller");
         }
         // The movement sounds (0x31941F9 + 5) and the footstep variant
         // (0x317C0EB + 5) are among them.
-        Check(IsAudioSite(0x31941FE), "the movement sound flag site");
-        Check(IsAudioSite(0x317C0F0), "the footstep variant site");
+        Check(IsAudioSite(known, 0x31941FE), "the movement sound flag site");
+        Check(IsAudioSite(known, 0x317C0F0), "the footstep variant site");
         // The three gameplay callers (call + 5) keep the engine's answer.
-        Check(!IsAudioSite(0x899B12) && SiteSlot(0x899B12) == kSiteCount, "gameplay caller 0x899B0D is other");
-        Check(!IsAudioSite(0xD9DC81), "gameplay caller 0xD9DC7C is other");
-        Check(!IsAudioSite(0x2191005), "gameplay caller 0x2191000 is other");
+        Check(!IsAudioSite(known, 0x899B12) && SiteSlot(known, 0x899B12) == kSiteCount,
+            "gameplay caller 0x899B0D is other");
+        Check(!IsAudioSite(known, 0xD9DC81), "gameplay caller 0xD9DC7C is other");
+        Check(!IsAudioSite(known, 0x2191005), "gameplay caller 0x2191000 is other");
         // The call address itself is not a return site.
-        Check(!IsAudioSite(0x31941F9), "a call address is not its return address");
+        Check(!IsAudioSite(known, 0x31941F9), "a call address is not its return address");
+        // A site the game does not have (0) matches nothing, not even 0.
+        SiteReturns missing = known;
+        missing.rva[0] = 0;
+        Check(!IsAudioSite(missing, 0) && !IsAudioSite(missing, known.rva[0]), "a missing site matches nothing");
     }
 
     void TestPlayerMounts()
@@ -112,11 +123,12 @@ namespace
 
     void TestReplayEffectSites()
     {
-        // The sites must not be any other site the replay plays or filters.
-        Check(replay::fx::kFootVfxSite == 0x145320F, "the foot vfx one-shot site");
-        Check(replay::fx::kCameraAmbientFxSite == 0x1469DC1, "the camera ambient registered site");
-        Check(replay::fx::kFootVfxSite != replay::fx::kMuzzleFlashSite &&
-                replay::fx::kFootVfxSite != replay::fx::kBulletImpactSite,
+        // The sites must not be any other site the replay plays or filters (the
+        // return of each call, as the known exe records it).
+        const std::uint32_t foot = replay::fx::kFxFootVfxCall.rva + 5;
+        Check(foot == 0x145320F, "the foot vfx one-shot site");
+        Check(replay::fx::kFxCameraAmbientCall.rva + 5 == 0x1469DC1, "the camera ambient registered site");
+        Check(foot != replay::weaponfx::kWeaponMuzzleCall.rva + 5 && foot != replay::shotfx::kShotImpactCall.rva + 5,
             "the weapon sites are not the foot site");
     }
 
@@ -345,18 +357,30 @@ namespace
     void TestAnimalVocalEntry()
     {
         using namespace replay::speech;
-        Check(kAnimalSpeechVtableRva == 0x37FE430 && kAnimalVocalHashSlot == 0x288 && kAnimalVocalHashRva == 0x2FB2B4C,
-            "animal vocal entry constants (build 1491.50)");
-        Check(kAnimalSpeechVtableRva + kAnimalVocalHashSlot == 0x37FE6B8,
-            "the hash slot is the only .rdata qword holding 0x2FB2B4C");
-        Check(CheckAnimalVocalEntry(0x37FE430, 0x2FB2B4C) == AnimalVocalEntry::Ok, "the animal speech entity is accepted");
-        Check(CheckAnimalVocalEntry(0x37FE428, 0x2FB2B4C) == AnimalVocalEntry::NotAnimalSpeech,
+        Check(kAnimalSpeechVtable.rva == 0x37FE430 && kAnimalVocalHashSlot == 0x288 && kAnimalVocal.rva == 0x2FB2B4C,
+            "animal vocal entry (build 1491.50)");
+        Check(kAnimalSpeechVtable.rva + kAnimalVocalHashSlot == 0x37FE6B8,
+            "the hash slot is the only .rdata qword holding the vocal entry");
+        Check(kAnimalSpeechVtable.parent == &kAnimalSpeechCtor && kAnimalSpeechVtable.via == replay::sig::Via::Rel32 &&
+                  !*kAnimalSpeechVtable.pattern,
+            "the vtable is the constructor's lea operand");
+        // Addresses as a game at base 0x140000000 has them.
+        const std::uint64_t base = 0x140000000ull;
+        const std::uint64_t vtable = base + 0x37FE430, vocal = base + 0x2FB2B4C;
+        Check(CheckAnimalVocalEntry(vtable, vocal, vtable, vocal) == AnimalVocalEntry::Ok,
+            "the animal speech entity is accepted");
+        Check(CheckAnimalVocalEntry(base + 0x37FE428, vocal, vtable, vocal) == AnimalVocalEntry::NotAnimalSpeech,
             "the old vtable (a 0x38-byte object) is not an animal speech entity");
-        Check(CheckAnimalVocalEntry(0x37FD5F8, 0x11CC10) == AnimalVocalEntry::NotAnimalSpeech,
+        Check(CheckAnimalVocalEntry(base + 0x37FD5F8, base + 0x11CC10, vtable, vocal) ==
+                AnimalVocalEntry::NotAnimalSpeech,
             "the base (human) speech entity is refused");
-        Check(CheckAnimalVocalEntry(0x37FE430, 0x2FB2B70) == AnimalVocalEntry::SlotOther,
+        Check(CheckAnimalVocalEntry(vtable, base + 0x2FB2B70, vtable, vocal) == AnimalVocalEntry::SlotOther,
             "the name entry (slot +0x290) is not the hash entry");
-        Check(CheckAnimalVocalEntry(~0ull, ~0ull) == AnimalVocalEntry::NotAnimalSpeech, "an unreadable vtable is refused");
+        Check(CheckAnimalVocalEntry(~0ull, ~0ull, vtable, vocal) == AnimalVocalEntry::NotAnimalSpeech,
+            "an unreadable vtable is refused");
+        Check(CheckAnimalVocalEntry(0, 0, 0, 0) == AnimalVocalEntry::NotAnimalSpeech &&
+                  CheckAnimalVocalEntry(vtable, 0, vtable, 0) == AnimalVocalEntry::SlotOther,
+            "an entry the game does not have refuses");
     }
 }
 

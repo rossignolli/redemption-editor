@@ -1,0 +1,7 @@
+; The Vulkan layer's entry points (host/vk/vk_layer.cpp). ReShadeLogMessage and
+; RedemptionEditorHostVersion are exported by __declspec(dllexport) in host/host_log.cpp.
+LIBRARY RedemptionEditorHost
+EXPORTS
+    vkNegotiateLoaderLayerInterfaceVersion = HostVkNegotiateLoaderLayerInterfaceVersion
+    vkGetInstanceProcAddr = HostVkGetInstanceProcAddr
+    vkGetDeviceProcAddr = HostVkGetDeviceProcAddr

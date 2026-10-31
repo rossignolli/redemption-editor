@@ -8,7 +8,7 @@
 // playback re-adds it after a jump, or the recording takes it as initial
 // state, the copy must look as old as it is then: the pool is recreated at
 // the size of the moment and without its fade. Fields of the settings
-// (0x125CCF4 and the clamp 0x125F9EC): +0x44 life, +0x48 fade in, +0x4C fade
+// (the pool add, the decal add's clamp): +0x44 life, +0x48 fade in, +0x4C fade
 // out, +0x50 current/final growth (min 0.001), +0x54 slot +0x2C (growth time
 // or rate, hypothesis: seconds), +0x60 = 1.0. Units of +0x44 and +0x54 are a
 // hypothesis (seconds, like the engine's timers); POSE_V2_POOL_SAMPLE logs
@@ -82,7 +82,7 @@ namespace replay::decal
     }
 
     // Bounded retry of a refused regrow. The core refuses when its request ring
-    // is full (0x2C2EF60: pending count [mgr+0xD75D8] >= 0x400); the decal
+    // is full (the ring take: pending count [mgr+0xD75D8] >= 0x400); the decal
     // already in place stays as it was, so a refused regrow is tried again after
     // a delay, at most kRegrowMaxRefusals times, then the chain stops regrowing
     // until its event changes.

@@ -158,7 +158,13 @@ namespace replay::prof
     double Percentile(const std::vector<double>& sortedUs, double fraction);
 }
 
-// Zone scope for a function body: registered once per site.
-#define REPLAY_PROFILE_ZONE(nameLiteral)                                                 \
-    static const ::replay::prof::ZoneId replayProfileZoneId_ = ::replay::prof::Register(nameLiteral); \
-    ::replay::prof::Scope replayProfileScope_(replayProfileZoneId_)
+// Zone scope for a function body: registered once per site. The names carry
+// the line so nested zones do not shadow each other (C4456).
+#define REPLAY_PROFILE_CAT2(a, b) a##b
+#define REPLAY_PROFILE_CAT(a, b) REPLAY_PROFILE_CAT2(a, b)
+#define REPLAY_PROFILE_ZONE(nameLiteral) REPLAY_PROFILE_ZONE_AT(nameLiteral, __LINE__)
+#define REPLAY_PROFILE_ZONE_AT(nameLiteral, line)                                         \
+    static const ::replay::prof::ZoneId REPLAY_PROFILE_CAT(replayProfileZoneId_, line) =   \
+        ::replay::prof::Register(nameLiteral);                                           \
+    ::replay::prof::Scope REPLAY_PROFILE_CAT(replayProfileScope_, line)(                  \
+        REPLAY_PROFILE_CAT(replayProfileZoneId_, line))

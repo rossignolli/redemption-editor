@@ -5,9 +5,11 @@
 // A line is the triple the engine resolved in the speech core (voice +0x110,
 // partial context +0x114, variation +0x118 of the line data) plus the voice
 // object it used (line +0x1E8: type byte [obj+0], partial name hash
-// [obj+8]). Build 1491.50: the line data is written only at line creation
-// (0x2FA92C0), so the same identity recorded and played means the same
-// phrase on the same voice.
+// [obj+8]). The line data is written only at line creation (the line data
+// init), so the same identity recorded and played means the same phrase on
+// the same voice.
+
+#include "game_sig_core.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -17,6 +19,8 @@
 
 namespace replay::speech
 {
+    namespace sig = replay::sig;
+
     struct Identity
     {
         std::uint32_t voice = 0;          // final hash
@@ -61,8 +65,8 @@ namespace replay::speech
     }
 
     // Mod-side key of a line: joaat("%X_%02d", voice ^ finalize(ctx),
-    // variation), the text the subtitle step (0x2F9E444) builds before its
-    // table remap. Only compared with itself (record against playback).
+    // variation), the text the subtitle step builds before its table remap.
+    // Only compared with itself (record against playback).
     inline std::uint32_t Label(std::uint32_t voice, std::uint32_t contextPartial, std::int32_t variation)
     {
         char text[32]{};
@@ -134,14 +138,14 @@ namespace replay::speech
 
     // An animal line the replay made through the direct entry that the engine
     // killed while loading: state 1 -> 2, then stopped one frame later with
-    // reason 4 by the state-2 update (0x2FB6298 -> 0x2FBCCD4(line, 4) at
-    // 0x2FB6440: no speech slot, or the prepare of the line data refused), while
-    // the same line plays live through the animal's own vocalization path (the
-    // AI step 0x2F9FB46, asked by the animation's speech tag). Such a line is
-    // asked again once through that path (PLAY_ANIMAL_VOCALIZATION: speech entity
-    // slot +0x290, 0x2FB2B4C -> Say wrapper 0x2F9FC84) with the context the
-    // recording asked for. Only a line that never started, was stopped with that
-    // reason, soon after the request, and not retried yet.
+    // reason 4 by the state-2 update (the line stop: no speech slot, or the
+    // prepare of the line data refused), while the same line plays live
+    // through the animal's own vocalization path (the AI step, asked by the
+    // animation's speech tag). Such a line is asked again once through that
+    // path (PLAY_ANIMAL_VOCALIZATION: the speech entity's slot +0x290, the
+    // animal vocal entry, then the Say wrapper) with the context the recording
+    // asked for. Only a line that never started, was stopped with that reason,
+    // soon after the request, and not retried yet.
     constexpr std::uint32_t kAnimalRetryStopReason = 4;
     constexpr std::uint64_t kAnimalRetryWindowMs = 400;
     inline bool RetryAnimalLine(bool animal, bool started, bool retried, bool stopped, std::uint32_t stopReason,
@@ -151,33 +155,48 @@ namespace replay::speech
             ageMs <= kAnimalRetryWindowMs;
     }
 
-    // The entry of that retry (build 1491.50): the animal speech entity's
-    // constructor 0x2F90FCC calls the base speech constructor 0x2F910F8 (vtable
-    // 0x37FD5F8, the line list at +0x78/+0x80) and then writes the vtable
-    // 0x37FE430 (also written by 0x2F92F8E); 0x37FE428 is the vtable of a
-    // 0x38-byte object (0x2FA0528), not the animal one. In 0x37FE430, slot +0x290
-    // is 0x2FB2B70, the native's entry: it hashes the name (0x25FAAE8) and
-    // jumps to slot +0x288, 0x2FB2B4C, which takes the context hash itself.
-    // The only .rdata qword holding 0x2FB2B4C is 0x37FE6B8 = 0x37FE430 + 0x288.
-    constexpr std::uint32_t kAnimalSpeechVtableRva = 0x37FE430;
+    // The entry of that retry: the animal speech entity's constructor calls
+    // the base speech constructor (the line list at +0x78/+0x80) and then
+    // writes the animal speech vtable (also written by a second constructor;
+    // the vtable just before it is a 0x38-byte object's, not the animal one).
+    // In that vtable slot +0x290 is the native's entry: it hashes the name
+    // and jumps to slot +0x288, the animal vocal entry, which takes the
+    // context hash itself (writes it into params +0x150 and reads +0x18D,
+    // its first bytes). The only .rdata qword holding the vocal entry is that
+    // slot.
+    inline const sig::Signature kAnimalSpeechCtor{"speech_animal_ctor",
+        "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 83 A3 D0 00 00 00 00 48 8D 05 ?? ?? ?? ??", 0x2F90FCC};
+    inline const sig::Signature kAnimalSpeechVtable{"speech_animal_vtable", kAnimalSpeechCtor, sig::Rel32{0x19, 0x1D},
+        "", 0x37FE430};
+    // The person speech entity's vtable, written by its constructor (the
+    // census sizes a ped's speech entity by it, sound_census.cpp).
+    inline const sig::Signature kPersonSpeechCtor{"speech_person_ctor",
+        "40 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 8D 8B D8 00 00 00 48 89 03", 0x2F91040};
+    inline const sig::Signature kPersonSpeechVtable{"speech_person_vtable", kPersonSpeechCtor, sig::Rel32{0x11, 0x15},
+        "", 0x37FD948};
+    inline const sig::Signature kAnimalVocal{"speech_animal_vocal",
+        "33 C0 41 89 90 50 01 00 00 41 38 80 8D 01 00 00 49 8B D0 0F 95 C0 41 89 80 30 01 00 00 E9 ?? ?? ?? ??",
+        0x2FB2B4C};
     constexpr std::uint32_t kAnimalVocalHashSlot = 0x288;
-    constexpr std::uint32_t kAnimalVocalHashRva = 0x2FB2B4C;
     enum class AnimalVocalEntry : std::uint8_t
     {
         Ok,
         NotAnimalSpeech, // the speech entity's vtable is not the animal one
         SlotOther,       // the hash slot is not the expected function
     };
-    inline AnimalVocalEntry CheckAnimalVocalEntry(std::uint64_t vtableRva, std::uint64_t hashSlotRva)
+    // `vtable` and `hashSlot` as read from the speech entity; `animalVtable`
+    // and `vocal` where the game has them (0: not found, nothing passes).
+    inline AnimalVocalEntry CheckAnimalVocalEntry(std::uint64_t vtable, std::uint64_t hashSlot,
+        std::uint64_t animalVtable, std::uint64_t vocal)
     {
-        if (vtableRva != kAnimalSpeechVtableRva)
+        if (!animalVtable || vtable != animalVtable)
             return AnimalVocalEntry::NotAnimalSpeech;
-        return hashSlotRva == kAnimalVocalHashRva ? AnimalVocalEntry::Ok : AnimalVocalEntry::SlotOther;
+        return vocal && hashSlot == vocal ? AnimalVocalEntry::Ok : AnimalVocalEntry::SlotOther;
     }
 
     // A line the replay created (native, direct) that never became audible.
     // The audible start is the only write of state 5 in the speech module
-    // (0x2FB9DE9 inside 0x2FB99E8, the start detour; build 1491.50), so a
+    // (inside the line's audible start, the start detour), so a
     // line is heard when the detour saw its start, or when the poll reads
     // it in state 5. It is silent when it left the ped's line list without
     // that (the engine killed it while loading: stop reason 4 in state 2,
@@ -322,15 +341,64 @@ namespace replay::speech
         }
     };
 
-    // Engine path that created the line, from the core's return address.
-    inline const char* PathName(std::uint32_t caller)
+    // The engine paths into the speech core: the AI Say step, the direct
+    // entry and the direct entry with a context; each calls the core once
+    // (the core has no other caller). The direct entries have twins that call
+    // the AI step instead, so each is reached from a caller of its own.
+    inline const sig::Signature kAiSayStep{"speech_ai_say_step",
+        "40 53 48 83 EC 20 48 8B DA 41 C6 80 9D 01 00 00 01", 0x2F9FB30};
+    inline const sig::Signature kAiCoreCall{"speech_ai_core_call", kAiSayStep, sig::Offset{0x11},
+        "E8 ?? ?? ?? ??", 0x2F9FB41};
+    inline const sig::Signature kConversationCaller{"speech_conversation_caller",
+        "48 89 5C 24 10 57 48 81 EC D0 01 00 00 48 8B 41 60", 0x2FA05E4};
+    inline const sig::Signature kDirectEntry{"speech_direct_entry", kConversationCaller, sig::Rel32{0xF9, 0xFD},
+        "48 89 5C 24 08 57 48 81 EC 10 02 00 00 48 8B DA 48 8B F9 49 8B D0 48 8D 4C 24 20 E8 ?? ?? ?? ?? 4C 8D 44 24 "
+        "20 48 8B D3 48 8B CF E8 ?? ?? ?? ?? 48 8D 4C 24 20 8B D8 E8 ?? ?? ?? ?? 8B C3 48 8B 9C 24 20 02 00 00 48 81 "
+        "C4 10 02 00 00 5F C3", 0x2FA1280};
+    inline const sig::Signature kDirectCoreCall{"speech_direct_core_call", kDirectEntry, sig::Offset{0x2B},
+        "E8 ?? ?? ?? ??", 0x2FA12AB};
+    inline const sig::Signature kDirectCtxCaller{"speech_direct_ctx_caller",
+        "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 54 41 55 41 56 41 57 48 83 EC 60 4C 8B 79 08", 0x2F9FE3C};
+    inline const sig::Signature kDirectCtxEntry{"speech_direct_ctx_entry", kDirectCtxCaller, sig::Rel32{0x161, 0x165},
+        "48 89 5C 24 08 48 89 74 24 10 57 48 81 EC 10 02 00 00 8B DA 48 8B F9 49 8B D1 48 8D 4C 24 20 49 8B F0 E8 ?? "
+        "?? ?? ?? 4C 8D 44 24 20 89 9C 24 70 01 00 00 48 8B D6 48 8B CF E8 ?? ?? ?? ?? 48 8D 4C 24 20 8B D8 E8 ?? ?? "
+        "?? ?? 4C 8D 9C 24 10 02 00 00 8B C3 49 8B 5B 10 49 8B 73 18 49 8B E3", 0x2FA12D0};
+    inline const sig::Signature kDirectCtxCoreCall{"speech_direct_ctx_core_call", kDirectCtxEntry, sig::Offset{0x39},
+        "E8 ?? ?? ?? ??", 0x2FA1309};
+
+    // The core's return addresses (call + 5) as RVAs, the caller a recorded
+    // line keeps; 0 for a path not found (nothing matches it).
+    struct CorePaths
     {
-        switch (caller)
-        {
-        case 0x2F9FB46: return "ai";
-        case 0x2FA12B0: return "direct";
-        case 0x2FA130E: return "direct_ctx";
-        default: return "other";
-        }
+        std::uint32_t ai = 0;
+        std::uint32_t direct = 0;
+        std::uint32_t directCtx = 0;
+    };
+
+    // The return RVA of a 5-byte call at `site` (0 when not found).
+    inline std::uint32_t ReturnRva(std::uintptr_t site, std::uintptr_t imageBase)
+    {
+        return site > imageBase ? static_cast<std::uint32_t>(site + 5 - imageBase) : 0;
+    }
+
+    // The paths as the 1491.50 exe has them, for the offline tools (no game
+    // to resolve them in).
+    inline CorePaths KnownCorePaths()
+    {
+        return CorePaths{kAiCoreCall.rva + 5, kDirectCoreCall.rva + 5, kDirectCtxCoreCall.rva + 5};
+    }
+
+    // Engine path that created the line, from the core's return address.
+    inline const char* PathName(std::uint32_t caller, const CorePaths& paths)
+    {
+        if (!caller)
+            return "other";
+        if (caller == paths.ai)
+            return "ai";
+        if (caller == paths.direct)
+            return "direct";
+        if (caller == paths.directCtx)
+            return "direct_ctx";
+        return "other";
     }
 }

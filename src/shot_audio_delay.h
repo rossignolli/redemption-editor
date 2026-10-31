@@ -3,28 +3,14 @@
 // How long after the fire event the gunshot really starts, per shooter, in
 // the recording (the engine's own delay, the reference) and in the replay.
 //
-// The chain followed here, all of it on the engine's own objects:
-//
-//   fire event --(fire queue 0x2EE8D9C, consumer 0x2F0DB9C)--> gunshot sound
-//   created on the weapon's audio (weapon +0x100; the census sees the
-//   creator, row.audio and row.sound) --(the audio thread prepares it, the
-//   wave bank loaded or not)--> play state "playing".
-//
-// Build 1491.50: the top-level sound's play state is the two top bits of
-// byte +0xF2: the requested-settings processor 0x2533EF0 reads it
-// (0x2533F72: movzx esi,[rbx+0F2h]; shr esi,6) and switches on it; the
-// prepare 0x2587B08 writes 1 (0x2587BB5), the play 0x258791C writes 2
-// (0x2587976, beside the start time at +0x8C) after the prepare answered 1
-// (0x2534188), and 0x25878E4 writes 3. Read as 0 dormant, 1 preparing,
-// 2 playing, 3 waiting to be deleted.
-//
-// The gunshot's init params carry no predelay (+0xEC) and no start offset
-// (+0xE8): the play function 0x2EFA7E0 builds them at [rbp] (ctor 0x487E34
-// at 0x2EFAB2C) and then writes +0xA4, +0xA8, +0xB0, +0xC8, +0xD0, +0xE0
-// (environment group), +0x104, +0x138 and +0x13A, never +0xE8 or +0xEC, and
-// recorded gunshot packets list neither among the non-default dwords. So the
-// engine does not delay a distant gunshot by distance at its creation; the
-// travel time printed (distance / 343 m/s) is a reference only.
+// The chain: fire event, then the gunshot sound created on the weapon's audio
+// (weapon +0x100, seen by the census), then the audio thread prepares it, then
+// its play state reads "playing". The play state is the two top bits of byte
+// +0xF2 of the top-level sound: 0 dormant, 1 preparing, 2 playing, 3 waiting
+// to be deleted. The engine sets no predelay or start offset on a gunshot, so
+// the printed travel time (distance / 343 m/s) is a reference only.
+// Evidence: offline dump.
+// Research: docs/research/audio-listener.md
 //
 // Pure: the matching of creates to fires, the start samples, the tallies and
 // the log text (unit tested in tests/scenery_speech_tests.cpp). The engine side
@@ -49,25 +35,31 @@ namespace replay::shotdelay
     constexpr std::size_t kMaxOpen = 256;              // fires followed at once (older ones close as unmatched)
     // Clip reference (the SGEN packets of a clip, no live measure): the
     // first weapon packet created by the gunshot's play function (its SGEN
-    // caller in kFirePlayBegin..kFirePlayEnd) from kRefBeforeMs before the
-    // shot's recorded tick to kRefAfterMs after it. Other named weapon
-    // callers are left out: 0x3125951 can come 100 to 130 ms after each shot
-    // and 0x310F629 even before the shooter's first shot, so a missing
-    // fire packet would otherwise read as a delay.
+    // caller in FirePlay) from kRefBeforeMs before the shot's recorded tick
+    // to kRefAfterMs after it. Other named weapon callers are left out: one
+    // can come 100 to 130 ms after each shot and another even before the
+    // shooter's first shot, so a missing fire packet would otherwise read as
+    // a delay.
     constexpr std::uint32_t kRefBeforeMs = 200;
     constexpr std::uint32_t kRefAfterMs = 500;
-    // The gunshot's play function (build 1491.50 .pdata extent): 0x2EFA7E0
-    // (called by the fire event's processing 0x2F0B6B8) creates the fire
-    // sound at 0x2EFAEAA (return 0x2EFAEAF, the gunshots' SGEN caller). A
-    // create with a frame in it is the fire sound for sure; one
-    // without (another weapon sound on the same audio) is counted apart.
-    constexpr std::uint32_t kFirePlayBegin = 0x2EFA7E0u;
-    constexpr std::uint32_t kFirePlayEnd = 0x2EFB1F0u;
-
-    inline bool InFirePlay(const std::uint32_t* callers, std::size_t count)
+    // The gunshot's play function (called by the fire event's processing)
+    // creates the fire sound (its return is the gunshots' SGEN caller). A
+    // create with a frame in it is the fire sound for sure; one without
+    // (another weapon sound on the same audio) is counted apart. Its extent
+    // as RVAs, end excluded: the start by signature, the end from its unwind
+    // entry (audio::FirePlayExtent); empty when not found.
+    struct FirePlay
     {
+        std::uint32_t begin = 0;
+        std::uint32_t end = 0;
+    };
+
+    inline bool InFirePlay(const std::uint32_t* callers, std::size_t count, const FirePlay& fire)
+    {
+        if (!fire.begin)
+            return false;
         for (std::size_t n = 0; n < count; ++n)
-            if (callers[n] >= kFirePlayBegin && callers[n] < kFirePlayEnd)
+            if (callers[n] >= fire.begin && callers[n] < fire.end)
                 return true;
         return false;
     }

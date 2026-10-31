@@ -5,52 +5,32 @@
 // the finalizer never runs on it, so the clip holds the skeleton as it was
 // built, and the replay would draw it T-posed.
 //
-// 1. Never animated, from the clip alone (TrackSignature): the pose stream
-//    keeps, after a chunk's keyframe, only the channels that moved past the
-//    encoder's epsilon (pose_stream.h). A track whose frames after the first
-//    carry no pose entry at all (no delta entry, no relative keyframe entry,
-//    no second full keyframe) never changed pose over the record. With at
-//    least kMinFrames frames over kMinSpanMs it is "never animated". The
-//    world matrix may still move (a frozen ped carried by script); it does
-//    not count. A still body is not always a T-pose (a corpse whose ragdoll
-//    went to sleep before the recording is just as still), so the hide also
-//    asks for the bind pose (2).
-// 2. The bind pose, from the engine: the pose finalizer 0x266C294 takes the
-//    model's own rows where the animation left a lane unwritten. Its loop
-//    (build 1491.50):
-//      0x266C2BC mov r10,[rcx]         the pose buffer: locals, then objects
-//      0x266C2B1 mov r14d,[rcx+0D0h]   groups of the skeleton (rcx)
-//      0x266C2E9 mov eax,[rcx+108h]    bones of the skeleton
-//      0x266C2B8 lea rsi,[rcx+10h]     one skeleton data pointer per group
-//      0x266C334 mov rax,[rsi]         the group's skeleton data
-//      0x266C343 mov rbx,[rax+28h]     its bone records
-//      0x266C347 movzx edi,word [rax+5Eh]  its bone count
-//      0x266C350 movups [rbx], [rbx+10h], [rbx+20h]: rotation, translation
-//                and scale of the bone (paired with the rotation, translation
-//                and scale lanes of the source, pcmpeqd against all ones)
-//      0x266C630 add r13,50h           next bone record (0x50 bytes)
-//      0x266C67C add rsi,8             next group; locals advance by its bones
-//    ReadBindRotations walks the same chain through a guarded read. A pose
-//    compared with it bone by bone (rotation only: translations are the
-//    model's proportions) is the bind pose when at most a handful of bones
-//    turned past kPosedRad (IsBindPose).
-// 3. The T-pose watch (TPoseWatch): what the puppet draws, its skeleton's
-//    locals read back from the engine buffer, compared with that bind pose
-//    every kCheckEveryMs while it is shown. kConfirmChecks bind checks in a
-//    row open an episode (one POSE_V2_TPOSE line, the QA kind "tpose"); a
-//    posed check closes it. Every T-pose cause shows there (a track recorded
-//    in the bind pose, a rebuilt skeleton nobody writes, a lost override).
-// 4. The watch only logs. What the engine leaves in an off screen body's buffer
-//    is not what the viewer sees, and a seek or a pause rewrites every pose;
-//    so the watch (WatchGate) does not judge while the replay prepares or the
-//    screen is not faded in (the clip load wait), for TPoseSettleMs after a
-//    pause, a resume, a scrub or a jump of the playhead, nor a body the engine
-//    does not draw (TPoseOnScreenOnly, IS_ENTITY_ON_SCREEN). A skipped check
-//    restarts the body's run.
+// 1. Never animated, from the clip alone (TrackSignature): after the first
+//    frame the track carries no pose entry at all (no delta, no relative or
+//    second full keyframe; pose_stream.h) over at least kMinFrames frames and
+//    kMinSpanMs. World matrix motion does not count. A still body is not
+//    always a T-pose (a sleeping ragdoll is just as still), so the hide also
+//    asks for (2).
+// 2. The bind pose, from the engine: the model's own rows the pose finalizer
+//    (kPoseFinalizer) falls back to, read through a guarded walk of the same
+//    chain (ReadBindRotations). A pose is the bind pose when at most a handful
+//    of bones turned past kPosedRad, rotation only (IsBindPose).
+// 3. The T-pose watch (TPoseWatch): the drawn skeleton's locals compared with
+//    the bind pose every kCheckEveryMs; kConfirmChecks bind checks in a row
+//    open an episode (one POSE_V2_TPOSE line, QA kind "tpose"), a posed check
+//    closes it.
+// 4. The watch only logs, and does not judge while the replay prepares or the
+//    screen is not faded in, for TPoseSettleMs after a pause, resume, scrub or
+//    jump, nor a body not drawn (TPoseOnScreenOnly). A skipped check restarts
+//    the body's run (WatchGate).
+//
+// Evidence: offline dump (finalizer loop).
+// Research: docs/research/pose-bind-and-finalizer.md
 //
 // Pure: no engine access (the reads go through a callable); unit tested in
 // tests/scenery_speech_tests.cpp.
 
+#include "game_sig_core.h"
 #include "pose_math.h"
 #include "pose_stream.h"
 
@@ -184,43 +164,37 @@ namespace replay::tpose
     constexpr std::uint32_t kMaxGroups = static_cast<std::uint32_t>((kSkeletonGroupCountOffset - kSkeletonGroupDataOffset) / 8);
     constexpr std::uint32_t kMaxBones = 4096; // pose_stream LayoutUsable
 
-    // The code of the finalizer that proves the layout above (build 1491.50).
-    constexpr std::uintptr_t kFinalizerBindLoadRva = 0x266C334;
-    constexpr std::uint8_t kFinalizerBindLoadSignature[] = {
-        0x48, 0x8B, 0x06,             // mov rax,[rsi]
-        0x66, 0x0F, 0x6F, 0xC6,       // movdqa xmm0,xmm6
-        0x66, 0x0F, 0x6F, 0xD6,       // movdqa xmm2,xmm6
-        0x66, 0x0F, 0x6F, 0xDE,       // movdqa xmm3,xmm6
-        0x48, 0x8B, 0x58, 0x28,       // mov rbx,[rax+28h]
-        0x0F, 0xB7, 0x78, 0x5E,       // movzx edi,word ptr [rax+5Eh]
-    };
-    constexpr std::uintptr_t kFinalizerBindStrideRva = 0x266C630;
-    constexpr std::uint8_t kFinalizerBindStrideSignature[] = {
-        0x49, 0x83, 0xC5, 0x50, // add r13,50h
-    };
-    constexpr std::uintptr_t kFinalizerGroupStepRva = 0x266C67C;
-    constexpr std::uint8_t kFinalizerGroupStepSignature[] = {
-        0x48, 0x83, 0xC6, 0x08, // add rsi,8
-        0x41, 0x3B, 0xD6,       // cmp edx,r14d
-    };
-    constexpr std::uintptr_t kFinalizerLocalsRva = 0x266C2BC;
-    constexpr std::uint8_t kFinalizerLocalsSignature[] = {
-        0x4C, 0x8B, 0x11, // mov r10,[rcx]
-    };
-    constexpr std::uintptr_t kFinalizerBonesRva = 0x266C2E9;
-    constexpr std::uint8_t kFinalizerBonesSignature[] = {
-        0x8B, 0x81, 0x08, 0x01, 0x00, 0x00, // mov eax,[rcx+108h]
-    };
+    // The pose finalizer (skeleton rcx, source, indices): the detour of
+    // pose_capture.cpp. Its prologue ends with the read of the group count
+    // (+0xD0).
+    inline const sig::Signature kPoseFinalizer{"pose_finalizer",
+        "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 41 54 41 55 41 56 41 57 48 81 EC E0 00 00 00 44 8B B1 D0 00 00 00",
+        0x266C294};
+    // The code of the finalizer that proves the layout above.
+    // mov rax,[rsi]; movdqa xmm0,xmm6; movdqa xmm2,xmm6; movdqa xmm3,xmm6;
+    // mov rbx,[rax+28h]; movzx edi,word ptr [rax+5Eh]
+    inline const sig::Signature kFinalizerBindLoad{"tpose_finalizer_bind_load", kPoseFinalizer, sig::Offset{0xA0},
+        "48 8B 06 66 0F 6F C6 66 0F 6F D6 66 0F 6F DE 48 8B 58 28 0F B7 78 5E", 0x266C334};
+    // add r13,50h
+    inline const sig::Signature kFinalizerBindStride{"tpose_finalizer_bind_stride", kPoseFinalizer, sig::Offset{0x39C},
+        "49 83 C5 50", 0x266C630};
+    // add rsi,8; cmp edx,r14d
+    inline const sig::Signature kFinalizerGroupStep{"tpose_finalizer_group_step", kPoseFinalizer, sig::Offset{0x3E8},
+        "48 83 C6 08 41 3B D6", 0x266C67C};
+    // mov r10,[rcx]
+    inline const sig::Signature kFinalizerLocals{"tpose_finalizer_locals", kPoseFinalizer, sig::Offset{0x28}, "4C 8B 11",
+        0x266C2BC};
+    // mov eax,[rcx+108h]
+    inline const sig::Signature kFinalizerBones{"tpose_finalizer_bones", kPoseFinalizer, sig::Offset{0x55},
+        "8B 81 08 01 00 00", 0x266C2E9};
 
-    // `matches(rva, bytes, size)` -> bool: the code at the module's rva.
-    template <typename Matches>
-    inline bool BindLayoutProven(Matches&& matches)
+    // `found(site)` -> bool: the signature resolved in this game
+    // (replay::sig::Find(site) != 0).
+    template <typename Found>
+    inline bool BindLayoutProven(Found&& found)
     {
-        return matches(kFinalizerBindLoadRva, kFinalizerBindLoadSignature, sizeof(kFinalizerBindLoadSignature)) &&
-            matches(kFinalizerBindStrideRva, kFinalizerBindStrideSignature, sizeof(kFinalizerBindStrideSignature)) &&
-            matches(kFinalizerGroupStepRva, kFinalizerGroupStepSignature, sizeof(kFinalizerGroupStepSignature)) &&
-            matches(kFinalizerBonesRva, kFinalizerBonesSignature, sizeof(kFinalizerBonesSignature)) &&
-            matches(kFinalizerLocalsRva, kFinalizerLocalsSignature, sizeof(kFinalizerLocalsSignature));
+        return found(kFinalizerBindLoad) && found(kFinalizerBindStride) && found(kFinalizerGroupStep) &&
+            found(kFinalizerBones) && found(kFinalizerLocals);
     }
 
     // The bind rotation of every bone of `skeleton`, in the order of its pose

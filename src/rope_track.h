@@ -26,7 +26,7 @@ namespace replay::ropes
     // recording's byte budget bounds them (replay_buffer.h ApproxBytes counts
     // RopeRecordsBytes) and the buffer's ring frees the ropes it left
     // (DropRopeRecordsBefore). What is bounded is the ropes alive at once: the
-    // engine's rope manager holds 128 (0xC26100: cmp [mgr+0xC], 0x80), so a
+    // engine's rope manager holds 128 (cmp [mgr+0xC], 0x80), so a
     // new rope is refused only with that many records live (RopeRecordFits).
     constexpr std::size_t kEngineRopePoolCapacity = 128;
     // The read limit of a clip (a damaged count fails the read). The old

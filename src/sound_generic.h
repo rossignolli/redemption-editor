@@ -16,16 +16,6 @@
 //
 // Ini keys (section [RedemptionEditor]):
 //   SoundGeneric=1            1: record, and play the packets in the replay
-//   SoundGenericUpdateHz=20   samples per second per sound and per setting
-//   SoundGenericMaxMBPerMin=8 clip bytes the track may add per minute; past
-//                             it the adjust rate drops, then the adjusts,
-//                             then the creates and ends (Governor)
-//   SoundGenericPlay=1        0: the packets are counted, nothing plays
-//   SoundGenericPreloadMs=500 a sound that waited for a load in the recording
-//                             is created and prepared this early (0: off)
-//   SoundGenericPreloadDelayMs=100 the wait that marks such a sound
-//   SoundGenericHoldMs=150    the wait after a packet's time for the puppet
-//                             to make the sound itself (then it is not played)
 //   SoundGenericSlots=64      sounds the player holds at once (8 to 256)
 //   SoundGenericTake=         family:taker;... (sound_owner_table.h): who
 //                             plays a family: generic, specific or puppet
@@ -34,10 +24,11 @@
 //                             replay entity plays from the clip (exceptions:
 //                             speech, steps, melee, shots, explosions);
 //                             legacy: the older per-track rules
-//   SoundGenericWeaponOffShot=1 a packet on a weapon object's audio that no
-//                             weapon code asked for and that is away from
-//                             every recorded shot of that weapon (a script
-//                             sound on the object, e.g. a campfire's sizzle)
+// A packet on a weapon object's audio that no weapon code asked for and that
+// is away from every recorded shot of that weapon (a script sound on the
+// object, e.g. a campfire's sizzle) is the generic player's. The sampling
+// rate, the budget, the preload and the hold are sound_generic_core.h
+// Config's defaults (20 Hz, 8 MB a minute, 500 and 100 ms, 150 ms).
 //                             is played by this player; 0: every weapon
 //                             audio packet is left to the shot track
 //   SoundGenericVehicleBlock=1 a puppet vehicle's or train car's own create of
@@ -68,9 +59,6 @@ namespace replay::soundgeneric
 
     // The ini keys (read once).
     void Configure(const std::string& iniPath);
-    // SoundGenericOriginSkip (1): a position adjust at the map origin is not applied
-    // (the player's own sound requests while mounted).
-    void SetOriginSkip(bool on);
     bool Enabled();
     Config Configured();
     // The rings (before the hooks are enabled). False with the reason when

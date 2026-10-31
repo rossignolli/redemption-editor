@@ -5,39 +5,15 @@
 // a list of handles.
 //
 // Why: ScriptHookRDR2's worldGetAllPeds/Vehicles/Objects give every listed
-// entity a script handle (an fwScriptGuid) and stop listing while that pool
-// has 256 free slots or fewer (`cmp free, 0x100` in the export). In a town
-// they return 0 most of the time and the recorder goes blind.
-//
-// Layout (build 1491.50, static analysis, signature-checked by Check):
-// - rage::fwBasePool (ctor 0x2B052B4, GetAt 0x2B09388, Delete 0x2B079E0):
-//   +0x08 storage, +0x10 flag bytes (one per slot: bit 0x80 free, the low
-//   7 bits the slot's generation), +0x18 slot count (int), +0x1C entry size
-//   (int), +0x20/+0x24 free list ends, +0x28 used count (low 30 bits). The
-//   entity is the entry itself: storage + index * entry size. A pool
-//   reference is (index << 8) | flag byte.
-// - The pool pointers are stored encrypted: a flag byte at G-8 (0: no
-//   pool), the value at G, a 64-bit key at G+8. Every reader decodes
-//   pool = ~rol(rol(value ^ k, (k & 31) + b), 32), k = rol(ror(key, a), 32).
-//   Peds ("Peds", entry 0x380, CPed allocations of 0x380 at 0xBFE2FA):
-//   G = 0x4A11F70, a = 2, b = 3. Vehicles ("CVehicle", entry = the largest
-//   vehicle class, allocations 0x10E0 to 0x1B80): G = 0x500D850, a = 1,
-//   b = 4. Objects ("Object", entry 0xCD0, allocations 0x7A0 to 0xCD0):
-//   G = 0x4643280, a = 2, b = 2. Script handles ("fwScriptGuid", entry
-//   0x10: +0x08 the entity): G = 0x59B3FE8, a = 2, b = 3. The engine's own
-//   pool switch 0x1D55D8 (type 1 vehicle, 2 ped, 3 object) holds the three
-//   entity decoders; that function is the signature.
-// - Entity +0x30: type byte (3 vehicle, 4 ped, 5 object: IS_ENTITY_A_*
-//   0xF9A458..). Entity +0x70: position, x y z floats plus two int16 at
-//   +0x7C/+0x7E that add 32 m steps to x and y (GET_ENTITY_COORDS through
-//   0xFA4D2C, constant 0x330F370 = {32, 32, 0, 0}).
-// - Entity to script handle: 0xEE5C3C (`jmp 0x2B07598`), the path the
-//   natives take: returns the entity's handle, allocating one only when it
-//   has none. Handle = (script guid slot << 8) | its flag byte.
+// entity a script handle and stop listing while that pool has 256 free slots
+// or fewer, so in a town the recorder would go blind.
 //
 // The walk reads memory only (guarded). A handle is made only for the
 // entities a caller keeps (the nearest ones, the ones recorded), so the
 // listing does not fill the script handle pool.
+//
+// Evidence: offline dump of build 1491.50, signature-checked by Check.
+// Research: docs/research/entities-pools.md
 
 #include <algorithm>
 #include <cstddef>
@@ -144,7 +120,7 @@ namespace replay::pools
         unsigned shiftBase = 0;
     };
 
-    // The engine's reader (0x1D5653.. for objects, the others alike).
+    // The engine's reader (the pool switch's object case, the others alike).
     inline std::uint64_t DecodePointer(std::uint64_t value, std::uint64_t key, Cipher cipher)
     {
         const std::uint64_t k = Rol(Ror(key, cipher.keyRotate), 32);
@@ -152,8 +128,7 @@ namespace replay::pools
         return ~Rol(Rol(value ^ k, shift), 32);
     }
 
-    // The engine's writer (the pool creators 0xC0992C, 0x15A354F,
-    // 0x81BC50): the inverse, for the tests.
+    // The engine's writer (the pool creators): the inverse, for the tests.
     inline std::uint64_t EncodePointer(std::uint64_t pool, std::uint64_t key, Cipher cipher)
     {
         const std::uint64_t k = Rol(Ror(key, cipher.keyRotate), 32);
@@ -171,7 +146,7 @@ namespace replay::pools
         float z = 0.0f;
     };
 
-    // Entity +0x70..+0x7F (the reader at 0xFA4D2C).
+    // Entity +0x70..+0x7F (GET_ENTITY_COORDS' reader).
     inline Position DecodePosition(const std::uint8_t* bytes)
     {
         float xyz[3]{};
@@ -367,10 +342,8 @@ namespace replay::pools
     // handle path, the position reader, the type predicates, GetAt and
     // Delete) and decodes the pools. Later calls return the first result.
     bool Check(std::string& error);
-    // Check passed and the ini switch (EntityPoolReader, default 1) is on.
+    // Check passed (else the ScriptHook listings).
     bool Available();
-    void SetEnabled(bool enabled); // the ini switch
-    bool Enabled();
 
     struct PoolState
     {

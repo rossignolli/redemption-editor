@@ -1,5 +1,6 @@
 #include "anim_lod_hook.h"
 
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "hook_batch.h"
 #include "module_lifetime.h"
@@ -16,18 +17,12 @@ namespace replay::animlod
 {
     namespace
     {
-        // Build 1491.50: 0x2BD410C(director, lod, visible). The prologue calls
-        // 0x98AEB8 (GetComponent<Creature>), then tail-jumps to 0x2BD413C
-        // (.pdata 0x2BD410C..0x2BD4139).
-        constexpr std::uintptr_t kSetLodRva = 0x2BD410C;
-        constexpr std::uint8_t kSetLodSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, // mov [rsp+8], rbx
-            0x57,                         // push rdi
-            0x48, 0x83, 0xEC, 0x20,       // sub rsp, 20h
-            0x41, 0x8A, 0xD8,             // mov bl, r8b
-            0x40, 0x8A, 0xFA,             // mov dil, dl
-            0xE8, 0x97, 0x6D, 0xDB, 0xFD, // call 0x98AEB8 (rel32, module relative)
-        };
+        // The LOD setter (director, lod, visible): its prologue calls
+        // GetComponent<Creature>, then it tail-jumps to the part that stores
+        // the LOD.
+        const replay::sig::Signature kSetLod{"anim_set_lod",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 8A FA E8 ?? ?? ?? ?? 48 8B C8 44 8A C3",
+            0x2BD410C};
 
         using SetLodFn = void(__fastcall*)(void*, std::uint8_t, std::uint8_t);
 
@@ -89,9 +84,8 @@ namespace replay::animlod
     {
         if (g_installed)
             return true;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        void* target = base + kSetLodRva;
-        if (!replay::mem::Matches(target, kSetLodSignature, sizeof(kSetLodSignature)))
+        void* target = reinterpret_cast<void*>(replay::sig::Find(kSetLod));
+        if (!target)
         {
             error = "anim_set_lod_signature_mismatch";
             return false;
@@ -127,14 +121,17 @@ namespace replay::animlod
     {
         g_forcedEnd.store(0, std::memory_order_release);
         if (g_installed && g_target)
-        {
             MH_DisableHook(g_target);
+        for (int wait = 0; wait < 200 && g_inFlight.load(std::memory_order_seq_cst) > 0; ++wait)
+            Sleep(1);
+        // Removed after the wait (MH_RemoveHook frees the trampoline a call in
+        // flight may still run); one still in flight keeps it, disabled.
+        if (g_installed && g_target && g_inFlight.load(std::memory_order_seq_cst) == 0)
+        {
             MH_RemoveHook(g_target);
             g_installed = false;
             g_target = nullptr;
         }
-        for (int wait = 0; wait < 200 && g_inFlight.load(std::memory_order_seq_cst) > 0; ++wait)
-            Sleep(1);
         g_original.store(nullptr, std::memory_order_release);
     }
 

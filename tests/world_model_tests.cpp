@@ -1,8 +1,8 @@
 // The world model's pure parts (world_model.h, capture_capacity.h): the clear
 // and reload decisions from the session's state, the newest save as the
 // engine's sort picks it, the load operation's layout and the bytes the reset
-// writes, the signatures and field sites against the offline dump's addresses,
-// and the ini parsing.
+// writes, the reload path's signatures (the globals hang off the code that
+// reads them, the fields written are in checked bytes), and the ini parsing.
 #include "capture_capacity.h"
 #include "log_policy.h"
 #include "world_model.h"
@@ -32,10 +32,6 @@ namespace
         Check(ModeFromIni("off") == Mode::Off && ModeFromIni("") == Mode::Off && ModeFromIni(nullptr) == Mode::Off &&
                 ModeFromIni("gtav") == Mode::Off && ModeFromIni("0") == Mode::Off && ModeFromIni("gt") == Mode::Off,
             "ini: anything else is off (the default)");
-        Check(ReloadPathFromIni("queue") == ReloadPath::Queue && ReloadPathFromIni("") == ReloadPath::Queue &&
-                ReloadPathFromIni(nullptr) == ReloadPath::Queue && ReloadPathFromIni("slot") == ReloadPath::Slot &&
-                ReloadPathFromIni("Slot") == ReloadPath::Slot,
-            "ini: WorldReloadPath queue by default, slot is plan B");
         Check(kDefaultClearFlags == 0x14209, "clear: projectiles, vehicles, objects, peds and fires (research 03)");
         Check(SanitizeClearFlags(0x2442122u | 0x80000u) == 0x2442122u && SanitizeClearFlags(kDefaultClearFlags) == kDefaultClearFlags,
             "clear: the broadcast bit never reaches the native");
@@ -91,7 +87,8 @@ namespace
         const std::int32_t date[6] = {};
         const Slot other = SlotFromBytes(header, 5, date);
         Check(other.used && !other.magic, "slots: a header that is not SRDR3 is used but not valid");
-        Check(kSlotCount == 17 && kHeaderStride == 0x134 && kSlotStride == 0x48 && kSlotDateOffset == 0x2C,
+        Check(kSlotCount == 17 && kHeaderStride == 0x134 && kSlotStride == 0x48 && kSlotDateOffset == 0x2C &&
+                  kSlotDates.rva == 0x49F7670 + kSlotDateOffset,
             "slots: 17 headers of 0x134 bytes, 17 entries of 0x48 with the date at +0x2C");
     }
 
@@ -100,14 +97,16 @@ namespace
         // The object as the exe on disk has it, with the module at the
         // dump's base.
         const std::uint64_t base = 0x7FF71E410000ull;
+        const std::uint64_t vtable = base + kLoadOpVtable.rva;
         std::uint8_t op[kLoadOpSize] = {0x60, 0x23, 0x83, 0x21, 0xF7, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x00};
         OpView view = ParseOp(op);
-        Check(view.vtable == base + kLoadOpVtableRva && view.type == 0x17 && view.status == 0 && view.state == 0 &&
+        Check(view.vtable == vtable && view.type == 0x17 && view.status == 0 && view.state == 0 &&
                 view.slot == -1 && view.spare == -1 && view.loadArg == 1,
             "op: the static object parses as the dump shows it");
-        Check(CheckOp(view, base) == OpCheck::Ok, "op: vtable and type match");
-        Check(CheckOp(view, base + 0x1000) == OpCheck::WrongVtable, "op: another vtable is refused");
+        Check(CheckOp(view, vtable) == OpCheck::Ok, "op: vtable and type match");
+        Check(CheckOp(view, vtable + 0x1000) == OpCheck::WrongVtable, "op: another vtable is refused");
+        Check(CheckOp(view, 0) == OpCheck::WrongVtable, "op: no vtable found is refused");
 
         // A finished run: state 4, slots set, status 0. The reset writes
         // +0x10..+0x1C only.
@@ -132,32 +131,32 @@ namespace
 
         std::int32_t queued = kStatusQueued;
         std::memcpy(op + kOpStatus, &queued, 4);
-        Check(CheckOp(ParseOp(op), base) == OpCheck::Queued, "op: status 1 is already in the queue");
+        Check(CheckOp(ParseOp(op), vtable) == OpCheck::Queued, "op: status 1 is already in the queue");
         std::int32_t otherType = 0x18;
         std::memcpy(op + kOpType, &otherType, 4);
-        Check(CheckOp(ParseOp(op), base) == OpCheck::WrongType, "op: type 0x18 (the mission replay snapshot) is refused");
+        Check(CheckOp(ParseOp(op), vtable) == OpCheck::WrongType, "op: type 0x18 (the mission replay snapshot) is refused");
     }
 
-    void TestSites()
+    // The reload path's signatures: the globals hang off the code that reads
+    // them, and the fields the reset writes are in checked bytes.
+    void TestSignatures()
     {
-        Check(SiteTarget(kHeaderSite) == kHeaderRva && SiteTarget(kHeaderSite) == kHeaderSite.target, "site: the newest-slot sort reads the headers at 0x49BD388");
-        Check(SiteTarget(kSlotDateSite) == 0x49F769C && SiteTarget(kSlotDateSite) == kSlotDateSite.target, "site: the date getter reads 0x49F7670+0x2C");
-        Check(SiteTarget(kQueueCountSite) == kQueueCountRva, "site: the push compares the queue count at 0x49F1E88 with 24");
-        Check(kQueueCountSite.bytes[6] == kQueueCapacity, "site: the push's imm8 is the queue capacity (24)");
-        Check(SiteTarget(kOpVtableSite) == kLoadOpVtableRva, "site: the ctor stores the vtable 0x3422360");
-        Check(SiteTarget(kMenuBusySite) == kMenuLoadOpStatusRva && kMenuBusySite.bytes[6] == kStatusQueued,
-            "site: LoadFromSlot compares the menu operation's status with 1");
-        Check(kMenuBusySite.rva == kLoadFromSlotSignature.rva + 6 &&
-                std::memcmp(kMenuBusySite.bytes, kLoadFromSlotSignature.bytes + 6, 7) == 0,
-            "site: the menu site is inside LoadFromSlot's checked prologue");
-        Check(kQueueCountSite.rva == kPushSignature.rva + 0x12, "site: the queue site follows the push's prologue");
-        std::uint8_t code[16];
-        std::memcpy(code, kPushSignature.bytes, 16);
-        Check(SignatureMatches(kPushSignature, code, sizeof(code)), "signature: the same bytes match");
-        code[3] ^= 0xFF;
-        Check(!SignatureMatches(kPushSignature, code, sizeof(code)) && !SignatureMatches(kPushSignature, code, 8) &&
-                !SignatureMatches(kPushSignature, nullptr, 16),
-            "signature: a changed byte, a short read or no bytes is refused");
+        Check(kQueueCount.parent == &kPush && kQueueCount.pattern[0] == 0, "sig: the queue count is the push's cmp target");
+        Check(std::string(kPush.pattern).find("83 3D ?? ?? ?? ?? 18") != std::string::npos,
+            "sig: the push compares the queue count with the capacity (24)");
+        Check(kMenuOpStatus.parent == &kLoadFromSlot &&
+                  std::string(kLoadFromSlot.pattern).find("83 3D ?? ?? ?? ?? 01") != std::string::npos,
+            "sig: LoadFromSlot compares the menu operation's status with 1");
+        Check(kLoadOpVtable.parent == &kLoadOpCtor && kLoadOp.parent == &kLoadOpVtable && kLoadOp.via == replay::sig::Via::Instance,
+            "sig: the vtable from the ctor, the object found by its vtable");
+        Check(std::string(kLoadOp.pattern).find("?? ?? ?? ?? 17 00 00 00") != std::string::npos,
+            "sig: the object found is the one of type 0x17 (not the mission replay snapshot's 0x18)");
+        const std::string ctor = kLoadOpCtor.pattern;
+        Check(ctor.find("89 41 14 89 41 18") != std::string::npos && ctor.find("C7 41 0C 17 00 00 00") != std::string::npos &&
+                  ctor.find("C6 41 1C 01") != std::string::npos,
+            "sig: the ctor's bytes hold +0x14, +0x18, the type 0x17 at +0x0C and the byte +0x1C the reset writes");
+        Check(kProcessState.parent == &kProcess && std::string(kProcessState.pattern).rfind("8B 49 10", 0) == 0,
+            "sig: Process switches on the state at +0x10, the last field the reset writes");
     }
 
     void TestEnter()
@@ -209,7 +208,7 @@ namespace
         Check(DecideEnter(step2) == EnterVerdict::Clear, "enter: WorldModelStep=2 clears without the reload path (reload by hand)");
         step2.newestSlot = -1;
         Check(DecideEnter(step2) == EnterVerdict::RefuseNoSave, "enter: WorldModelStep=2 still needs a save to go back to");
-        Check(StepFromIni(0) == 1 && StepFromIni(2) == 2 && StepFromIni(9) == 3 && kStepReload == 3, "ini: WorldModelStep 1..3");
+        Check(kStepPool == 1 && kStepClear == 2 && kStepReload == 3, "steps 1..3");
         Check(std::strcmp(EnterVerdictName(EnterVerdict::RefuseMission), "refuse_mission") == 0 &&
                 std::strcmp(EnterVerdictName(EnterVerdict::Clear), "clear") == 0,
             "enter: verdict names for the log");
@@ -293,7 +292,7 @@ int RunWorldModelTests()
     TestCapacityWithModel();
     TestSlots();
     TestOpLayout();
-    TestSites();
+    TestSignatures();
     TestEnter();
     TestExit();
     TestPush();

@@ -9,54 +9,30 @@
 // melee, shot, explosion, collision, entity sound, sound request, the census
 // capture), or the generic player (the SGEN packets). Never two.
 //
-// A packet is given a family, in this order:
-// 1. a specific track of the clip carries the same sound (same owner, same
-//    sound, within kCoverToleranceMs: the Cover index built from the clip's
-//    own tracks), so the family is that track's;
-// 2. the sound set names it (the wet hoof layer set);
-// 3. the family caller (the first return address outside the audio
-//    entity's wrappers, CreatePacket::caller) falls in a function of a known
-//    system (kCallerRanges: build 1491.50 function extents read from the
-//    image's .pdata, of the entries and helpers the mod's own detours and
-//    evidence logs already name);
-// 4. the audio entity's base (the weapon's audio: a shot);
-// 5. the owner class (no owner: world; else owned).
+// A packet gets a family from, in this order: a specific track of the clip
+// carrying the same sound (Cover, within kCoverToleranceMs), the sound set,
+// the family caller (kCallerFunctions), the audio entity's base, the owner
+// class. Each family has a default taker and an ini override
+// (SoundGenericTake=family:taker;..., takers puppet, specific, generic).
 //
-// Each family has a default taker and an ini override
-// (SoundGenericTake=family:taker;family:taker, takers puppet, specific,
-// generic). A family that already has a specific track keeps it; a family
-// the puppet's own engine update makes (the movement foley) is the puppet's;
-// the rest goes to the generic player. The generic player still yields at
-// run time to a sound the puppet (or the live world, or another track) makes
-// by itself around the packet's time (the anti-double rule of the capture,
-// sound_generic_player_core.h), which is the "puppet" taker decided per
-// sound instead of per family.
+// SoundGenericMode=packets (the default): a replay entity sounds only what its
+// recording carries. The puppets' own engine sounds are refused at the
+// creation ports, so every SGEN packet with a recorded owner is the generic
+// player's (PacketIndex), except speech, footsteps and wet hoof steps, melee,
+// gunshots and explosions, whose tracks replay the recorded event through the
+// engine (their packets would double them).
 //
-// SoundGenericMode=packets (the default; legacy keeps the table above): a
-// replay entity sounds only what its recording carries, as a replay editor
-// usually works. The engine's own sounds of the replay's puppets are refused
-// at the creation ports (audio_observer.cpp: the persistent cores S05/S06 and
-// the deferred request S04 join the create-and-play refusal of S03), so every
-// SGEN packet with a recorded owner is the generic player's, with its
-// recorded adjusts, stops and release, and the tracks that replay a sound by
-// its ref (ESND, SNDS, CSND, GSND) leave a row to the generic player when a
-// packet carries it (PacketIndex below). The exceptions keep their track
-// (DefaultTaker with packets): speech (the recorder skips the line's sounds,
-// the speech track asks the line again), the footstep and wet hoof steps (the
-// footstep track replays the recorded foot event through the engine's own
-// step: material, wetness, audio LOD), and melee, gunshot and explosion
-// (their tracks replay the recorded event, whose sounds the engine makes
-// inside the replay's call along with the effects; their packets would
-// double them).
-//
-// A sound is its set and entry (SoundKey), not its set alone: a horse's
-// surface sets are shared by the hoof steps (entries 5 and 6), a skid's
-// grains (entry 0x0E) and its body (entry 0x2B). The step exception covers
-// only the packets the step track remakes (FootWindows: near a recorded foot
-// event of that owner); the rest of the foot system (slide, drag, braking)
-// goes to the generic player.
+// A sound is its set and entry (SoundKey), not its set alone: sets are shared
+// across entries (a horse's surface sets serve hoof steps, skid grains and the
+// skid body). The step exception covers only packets near a recorded foot
+// event of that owner (FootWindows).
+// Research: docs/research/audio-generic-sounds.md
 
-#include "sound_check_core.h" // OwnerClass, AudioBase, kNoOwner, RefLow
+#include "engine_sigs.h"
+#include "foot_event_core.h"   // the ped movement audio update
+#include "mount_audio.h"       // its step queue
+#include "sound_check_core.h"  // OwnerClass, AudioBase, kNoOwner, RefLow
+#include "speech_conversation.h" // the line's sound creation
 
 #include <algorithm>
 #include <cstddef>
@@ -68,6 +44,16 @@
 
 namespace replay::soundowner
 {
+    using enginesig::kAudioFootHelperA;
+    using enginesig::kAudioFootHelperB;
+    using enginesig::kAudioMeleeBody;
+    using enginesig::kAudioMeleeImpact;
+    using enginesig::kAudioPersistentCreate;
+    using enginesig::kAudioStepCreate;
+    using enginesig::kAudioStepLayers;
+    using enginesig::kAudioStepOther;
+    using enginesig::kAudioStepSound;
+
     enum class Family : std::uint8_t
     {
         World = 0,       // no recorded owner
@@ -185,44 +171,103 @@ namespace replay::soundowner
 
     // ------------------------------------------------------------ callers
 
-    // Function extents (build 1491.50, the image's .pdata) of the entries and
-    // helpers that reach the create wrappers from a known system. The family
-    // caller of a packet is a return address inside the function that
-    // called the wrapper, so [begin, end) of that function is the test. The
-    // shot, explosion and animation event entries reach the wrappers through
-    // paths the offline walk did not close (virtual calls); those families
-    // come from the clip's tracks (Cover), the audio base (the weapon's) and,
-    // at run time, from the anti-double rule.
+    // The entries and helpers that reach the create wrappers from a known
+    // system, one function each. The family caller of a packet is a return
+    // address inside the function that called the wrapper, so the function's
+    // extent is the test: in the running game from its signature to the end
+    // of its unwind entry (.pdata, audio::OwnerCallerRanges), on the 1491.50
+    // exe (the offline tools) to the end of its last instructions (the tails,
+    // KnownCallerRanges). The shot, explosion and animation event entries
+    // reach the wrappers through paths the offline walk did not close
+    // (virtual calls); those families come from the clip's tracks (Cover),
+    // the audio base (the weapon's) and, at run time, from the anti-double
+    // rule.
     struct CallerRange
     {
-        std::uint32_t begin;
-        std::uint32_t end;
+        std::uint32_t begin = 0;
+        std::uint32_t end = 0;
+        Family family = Family::World;
+    };
+    inline constexpr std::size_t kCallerRangeCount = 12;
+    struct CallerRanges
+    {
+        CallerRange range[kCallerRangeCount];
+    };
+
+    // The functions are in engine_sigs.h (other modules hook or name them;
+    // the collision entry is a twin's bytes: from the collision code's call
+    // of it).
+    // Their last instructions: where each ends on the 1491.50 exe.
+    inline const sig::Signature kOwnerCollisionEntryTail{"owner_collision_entry_tail", kAudioPersistentCreate,
+        sig::Offset{0x69}, "49 8B E3 5F C3", 0x2589051};
+    inline const sig::Signature kOwnerLineSoundTail{"owner_line_sound_tail", speech::conversation::kLayerSound,
+        sig::Offset{0x301}, "48 8B 5C 24 40 48 8B 6C 24 48 48 8B 74 24 50 48 8B 7C 24 58 48 83 C4 30 41 5E C3",
+        0x2FA1089};
+    inline const sig::Signature kOwnerMeleeHitTail{"owner_melee_hit_tail", kAudioMeleeImpact, sig::Offset{0x1C},
+        "48 81 C1 50 07 00 00 48 8B 5C 24 30 48 83 C4 20 5F E9 ?? ?? ?? ??", 0x318A2A8};
+    inline const sig::Signature kOwnerMeleeBodyTail{"owner_melee_body_tail", kAudioMeleeBody, sig::Offset{0x3B5},
+        "49 8B E3 41 5F 41 5E 41 5D 41 5C 5F 5E 5B 5D C3", 0x318EFFD};
+    inline const sig::Signature kOwnerStepLayersTail{"owner_step_layers_tail", kAudioStepLayers, sig::Offset{0x20E},
+        "49 8B E3 41 5F 41 5E 5D C3", 0x318D0C2};
+    inline const sig::Signature kOwnerStepTail{"owner_step_tail", kAudioStepSound, sig::Offset{0xB5A},
+        "49 8B E3 41 5F 41 5E 41 5D 41 5C 5F 5E 5D C3", 0x318E086};
+    inline const sig::Signature kOwnerStepMainTail{"owner_step_main_tail", kAudioStepCreate, sig::Offset{0x15D},
+        "49 8B E3 41 5F 41 5E 5D C3", 0x318E845};
+    inline const sig::Signature kOwnerFootHelperATail{"owner_foot_helper_a_tail", kAudioFootHelperA, sig::Offset{0x1C1},
+        "49 8B E3 41 5E 5F 5D C3", 0x318EB85};
+    inline const sig::Signature kOwnerStepOtherTail{"owner_step_other_tail", kAudioStepOther, sig::Offset{0x51},
+        "48 8B 5C 24 40 48 83 C4 30 5F C3", 0x318FC55};
+    inline const sig::Signature kOwnerFootHelperBTail{"owner_foot_helper_b_tail", kAudioFootHelperB, sig::Offset{0x364},
+        "49 8B E3 41 5F 41 5E 41 5D 41 5C 5F 5E 5B 5D C3", 0x318C4B4};
+    inline const sig::Signature kOwnerMovementTail{"owner_movement_tail", footevent::kMovementUpdate,
+        sig::Offset{0x199}, "48 83 C4 50 5F C3", 0x3193EAD};
+    inline const sig::Signature kOwnerStepQueueTail{"owner_step_queue_tail", mountaudio::kCaller07, sig::Offset{0x3A2},
+        "49 8B E3 41 5F 41 5E 41 5D 5F 5D C3", 0x31942C2};
+
+    struct CallerFunction
+    {
+        const sig::Signature* start;
+        const sig::Signature* tail;
         Family family;
     };
-
-    constexpr CallerRange kCallerRanges[] = {
-        {0x02588FE8u, 0x02589056u, Family::Collision}, // the collision entry (audio_observer.h: calls the by-ref core itself)
-        {0x02FA0D88u, 0x02FA10A4u, Family::Speech},    // the line's sound creation
-        {0x0318A28Cu, 0x0318A2BEu, Family::Melee},     // the melee hit entry T08 (0x318A2A1 inside)
-        {0x0318EC48u, 0x0318F00Du, Family::Melee},     // the body impact entry T09 (0x318EEB1 inside)
-        {0x0318CEB4u, 0x0318D0CBu, Family::Footstep},  // the step layers (foot_material.h: the wet layer, 0x318D0A0 inside)
-        {0x0318D52Cu, 0x0318E095u, Family::Footstep},  // the step (horse_audio_evidence.h: 0x318DAFE, 0x318DED9, 0x318DBE8 inside)
-        {0x0318E6E8u, 0x0318E84Eu, Family::Footstep},  // the ped step's main sound (0x318E828 inside)
-        {0x0318E9C4u, 0x0318EB8Du, Family::Footstep},  // a foot audio helper (replay_events.cpp IsPoseV2FootstepHelperCaller)
-        {0x0318FC04u, 0x0318FC60u, Family::Footstep},  // another sound of the step
-        {0x0318C150u, 0x0318C4C4u, Family::Footstep},  // a foot audio helper (IsPoseV2FootstepHelperCaller)
-        {0x03193D14u, 0x03193EB3u, Family::Movement},  // the ped movement audio update (audio_observer.cpp kMovementUpdateRva)
-        {0x03193F20u, 0x031942CEu, Family::Movement},  // its step queue
+    inline const CallerFunction kCallerFunctions[kCallerRangeCount] = {
+        {&kAudioPersistentCreate, &kOwnerCollisionEntryTail, Family::Collision}, // calls the by-ref core itself
+        {&speech::conversation::kLayerSound, &kOwnerLineSoundTail, Family::Speech}, // the line's sound creation
+        {&kAudioMeleeImpact, &kOwnerMeleeHitTail, Family::Melee},                 // the melee hit entry T08
+        {&kAudioMeleeBody, &kOwnerMeleeBodyTail, Family::Melee},               // the body impact entry T09
+        {&kAudioStepLayers, &kOwnerStepLayersTail, Family::Footstep},          // the step layers (the wet layer)
+        {&kAudioStepSound, &kOwnerStepTail, Family::Footstep},                      // the step (three recorded callers)
+        {&kAudioStepCreate, &kOwnerStepMainTail, Family::Footstep},              // the ped step's main sound
+        {&kAudioFootHelperA, &kOwnerFootHelperATail, Family::Footstep},        // a foot audio helper
+        {&kAudioStepOther, &kOwnerStepOtherTail, Family::Footstep},            // another sound of the step
+        {&kAudioFootHelperB, &kOwnerFootHelperBTail, Family::Footstep},        // a foot audio helper
+        {&footevent::kMovementUpdate, &kOwnerMovementTail, Family::Movement},  // the ped movement audio update
+        {&mountaudio::kCaller07, &kOwnerStepQueueTail, Family::Movement},      // its step queue
     };
-    constexpr std::size_t kCallerRangeCount = sizeof(kCallerRanges) / sizeof(kCallerRanges[0]);
 
-    inline bool FamilyOfCaller(std::uint32_t caller, Family& out)
+    // The 1491.50 exe's ranges: what the offline tools read that build's
+    // clips with.
+    inline CallerRanges KnownCallerRanges()
+    {
+        CallerRanges ranges;
+        for (std::size_t n = 0; n < kCallerRangeCount; ++n)
+        {
+            const CallerFunction& f = kCallerFunctions[n];
+            sig::Pattern tail;
+            const std::uint32_t end =
+                sig::Parse(f.tail->pattern, tail) ? f.tail->rva + static_cast<std::uint32_t>(tail.size) : 0u;
+            ranges.range[n] = {f.start->rva, end, f.family};
+        }
+        return ranges;
+    }
+
+    inline bool FamilyOfCaller(std::uint32_t caller, const CallerRanges& ranges, Family& out)
     {
         if (!caller)
             return false;
-        for (const CallerRange& range : kCallerRanges)
+        for (const CallerRange& range : ranges.range)
         {
-            if (caller >= range.begin && caller < range.end)
+            if (range.begin && caller >= range.begin && caller < range.end)
             {
                 out = range.family;
                 return true;
@@ -500,8 +545,8 @@ namespace replay::soundowner
     // complete that call: the generic player plays a packet the call did not make
     // again (sound_generic_player_core.h, SoundPlan::complement). Persons only
     // (the player and the peds): the hoof steps of horses and animals keep their
-    // track alone. Example: the person's step layer 0x318CEB4 (return 0x318D0A0,
-    // called by 0x318D3DE) makes set 0x1d9db9 in the recording that the replayed
+    // track alone. Example: the person's step layer (the return of its create,
+    // called by the main step) makes set 0x1d9db9 in the recording that the replayed
     // step call does not make again.
     inline bool ComplementFamily(Family family, census::OwnerClass cls)
     {
@@ -653,7 +698,7 @@ namespace replay::soundowner
         // Whether the clip has any packet of this owner, and any packet of this owner
         // in the sound's set (any entry, any time). A replayed step runs the puppet's
         // own step code, which can take a branch the live entity did not (e.g. set
-        // 0x0d167c at 0x318DED9); the set the owner never made is refused.
+        // 0x0d167c in the step); the set the owner never made is refused.
         bool OwnerHasPackets(std::uint32_t owner) const
         {
             if (!m_sorted || owner == census::kNoOwner)
@@ -804,7 +849,17 @@ namespace replay::soundowner
         // (soundgeneric::InAudioEntityWrappers of the caller): no named game code
         // asked for the sound.
         bool callerInWrappers = false;
+        // The caller is in a known system's function (NameCaller): its family.
+        bool callerNamed = false;
+        Family callerFamily = Family::World;
     };
+
+    // The caller's family by the game's ranges (audio::OwnerCallerRanges, or
+    // KnownCallerRanges offline).
+    inline void NameCaller(PacketKey& key, const CallerRanges& ranges)
+    {
+        key.callerNamed = FamilyOfCaller(key.caller, ranges, key.callerFamily);
+    }
 
     // A weapon audio packet the shot track does not remake (ShotWindows above): no
     // named caller and no recorded shot of that weapon near it. False without the
@@ -824,8 +879,8 @@ namespace replay::soundowner
             return family;
         if (static_cast<std::uint32_t>(census::RefLow(key.stableId)) == kWetHoofSet)
             return Family::HorseStep;
-        if (FamilyOfCaller(key.caller, family))
-            return family;
+        if (key.callerNamed)
+            return key.callerFamily;
         if (key.audioKnown && key.audioBase == census::AudioBase::WeaponAudio &&
             !OffShot(key, shots))
             return Family::Gunshot;

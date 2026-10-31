@@ -10,24 +10,11 @@
 // An outfit equip sets those for story characters; a generic ped (outfit 0)
 // keeps the random face of the puppet.
 //
-// Expressions are read from the engine's structure, not asked one by one
-// (build 1491.50, the getter _GET_CHAR_EXPRESSION 0xFB3F24 -> 0xFCD7CC ->
-// 0xB44250):
-//   creature  = [entry & ~1 + 0x28], entry = qword [table + (idx - base) * 16],
-//               idx = [ped + 0x9C] & 0x1FFFF (0x2BDDE1C, table 0x3CD4388,
-//               base 0x3CD4380)
-//   container = [creature + 0x18 + sel * 8], sel the first byte of
-//               creature + 0x104 + bufferIndex * 4 + 0..3 that is not 0x14
-//               (0xB32AD8, bufferIndex the byte at 0x3CE2BF0)
-//   frame     = container + 0x58 (0x2BC96C4): [frame] the value buffer,
-//               [frame + 8] the frame data: [data] the DOF table, dword
-//               [data + 0x2C] its count (0x26580BC), 6 bytes a DOF:
-//               +0 u16 value offset, +2 u16 id, +4 u8 track, sorted by
-//               (track << 16 | id); expressions are track 0x40 (0x2BC96C4);
-//               a value dword 0xFFFFFFFF is "not set" (0x265FDBC).
-// Every id of track 0x40 is one _GET_CHAR_EXPRESSION / _SET_CHAR_EXPRESSION
-// index (the setter 0xFBBCF8 -> 0xB59744 queues the (u16 id, float) pair on
-// the dressing object [[ped + 0x28] + 0x750] + 0xB20).
+// Expressions are read from the engine's expression frame (the DOFs of track
+// 0x40, a value 0xFFFFFFFF is "not set"), not asked one by one; every id is one
+// _GET_CHAR_EXPRESSION / _SET_CHAR_EXPRESSION index. Evidence: offline dump of
+// 1491.50.
+// Research: docs/research/peds-puppets.md
 //
 // Pure data: no engine or native access, unit tested in tests/appearance_tests.cpp.
 
@@ -83,13 +70,13 @@ namespace replay::metaped
     // _UPDATE_SHOP_ITEM_WEARABLE_STATE(ped, item, state, 0, isMp, 1); then
     // _SET_ACTIVE_META_PED_COMPONENTS_UPDATED and _UPDATE_PED_VARIATION; isMp false
     // in story mode). The engine's shop item apply runs the same layer routine as
-    // _SET_META_PED_TAG plus more (build 1491.50: the entry apply 0xB56A28 ->
-    // 0xB5DE10 calls the tag core 0xB59050 and 0xB502BC, 0xB51918, 0xB5A698); a
+    // _SET_META_PED_TAG plus more (build 1491.50: the entry apply calls the
+    // tag core and three more functions); a
     // puppet dressed by tags alone has every layer (feet under the boots, skin
     // through the trousers). Read with _GET_SHOP_ITEM_COMPONENT_AT_INDEX per
     // component index (resolveSelection false: the cached entries; the engine maps
-    // a component index to the shop item entry of the dressing object, 0xB440C8 ->
-    // 0xB45C00, list at +0xB58, count +0xB60).
+    // a component index to the shop item entry of the dressing object,
+    // list at +0xB58, count +0xB60).
     struct ShopItem
     {
         std::uint32_t item = 0;  // the shop item hash

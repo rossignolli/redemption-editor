@@ -3,14 +3,15 @@
 // The engine side of the sky track (sky_track.h). Rung 2 only: guarded
 // reads of the cloud accumulators and of their fmod periods, at addresses
 // taken from the game's own code after a signature check (build 1491.50):
-//   0x5DE0A0  _SET_CLOUD_NOISE setter:    movaps [0x4078F60], xmm0
-//   0x5DE08C  _SET_CLOUD_POSITION setter: movaps [0x3F29D10], xmm0
-//   0x5DE074  _SET_CLOUD_LAYER setter:    lea rdx, [0x4054160] (16 bytes a layer, 2 layers)
-//   0x5DDFD8  0x085C5B61A0114F32 setter:  fmod(x, [0x330C7A8] = 1.0) -> [0x4054180]
-//   0x5DE0AC  0x1FF8731BE1DFC0C0 setter:  fmod(x, max(1, [0x5A86EA0] - [0x5A86E94])) -> [0x3F28FB0]
-//   0x5F8640  the sky update: movss xmm6, [0x39AA79C] (position period),
-//             movss xmm6, [0x39AA77C] (noise period), lea rcx, [0x40651E0]
-//             (the offset with no setter, read for the log only).
+//   _SET_CLOUD_NOISE setter:    movaps [the noise accumulator], xmm0
+//   _SET_CLOUD_POSITION setter: movaps [the position accumulator], xmm0
+//   _SET_CLOUD_LAYER setter:    lea rdx, [the layer accumulators] (16 bytes a layer, 2 layers)
+//   0x085C5B61A0114F32 setter:  fmod(x, [a constant] = 1.0) -> [the drift accumulator]
+//   0x1FF8731BE1DFC0C0 setter:  fmod(x, max(1, [the max] - [the min])) -> [the region accumulator]
+//   the sky update:             movss xmm6, [the position period],
+//                               movss xmm6, [the noise period], lea rcx,
+//                               [the unpinned offset] (the offset with no
+//                               setter, read for the log only).
 // A mismatch disables the track (logged once); nothing is guessed. The
 // writes are the natives above, on the script thread (script.cpp).
 

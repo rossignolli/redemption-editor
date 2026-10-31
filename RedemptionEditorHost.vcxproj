@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <!-- The host: the editor without ReShade (its own Vulkan and D3D12 overlay). -->
+  <ItemGroup>
+    <ClCompile Include="host\host_main.cpp" />
+    <ClCompile Include="host\host_runtime.cpp" />
+    <ClCompile Include="host\host_core_loader.cpp" />
+    <ClCompile Include="host\host_log.cpp" />
+    <ClCompile Include="host\host_imgui_renderer.cpp" />
+    <ClCompile Include="host\vk\vk_layer.cpp" />
+    <ClCompile Include="host\host_input.cpp">
+      <PreprocessorDefinitions>REDEMPTION_HOST_LOG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>external\reshade\deps\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="host\host_input_imgui.cpp" />
+  </ItemGroup>
+  <!-- D3D12 backend (lane host-dx12): DXGI/D3D12 hooks, host::Backend over ReShade's D3D12 api objects, ImGui DX12. -->
+  <ItemGroup>
+    <ClCompile Include="host\d3d12\d3d12_backend.cpp">
+      <AdditionalIncludeDirectories>host\d3d12;host\third_party\directx-headers\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="host\d3d12\d3d12_hooks.cpp">
+      <AdditionalIncludeDirectories>host\d3d12;host\third_party\directx-headers\include;external\reshade\deps\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemGroup>
+  <!-- ReShade's D3D12 implementation (external/reshade/source/d3d12, BSD-3-Clause, Copyright (C) 2021 Patrick Mours),
+       compiled unchanged; host\d3d12\shims stands in for the ReShade headers the host does not have. -->
+  <ItemGroup>
+    <ClCompile Include="external\reshade\source\d3d12\d3d12_impl_command_list.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>host\d3d12\shims;host\third_party\directx-headers\include;external\reshade\source\d3d12;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\source\d3d12\d3d12_impl_command_list_immediate.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>host\d3d12\shims;host\third_party\directx-headers\include;external\reshade\source\d3d12;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\source\d3d12\d3d12_impl_command_queue.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>host\d3d12\shims;host\third_party\directx-headers\include;external\reshade\source\d3d12;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\source\d3d12\d3d12_impl_device.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>host\d3d12\shims;host\third_party\directx-headers\include;external\reshade\source\d3d12;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\source\d3d12\d3d12_impl_type_convert.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>host\d3d12\shims;host\third_party\directx-headers\include;external\reshade\source\d3d12;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\imgui\backends\imgui_impl_dx12.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>host\third_party\directx-headers\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemGroup>
+  <!-- Third party sources: their warnings are not ours. ReShade's Vulkan implementation of
+       reshade::api (BSD-3-Clause) is compiled from the submodule as is; its dll_log.hpp is
+       host\shims\dll_log.hpp. -->
+  <ItemGroup>
+    <ClCompile Include="external\reshade\source\vulkan\vulkan_impl_device.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <!-- As ReShade.vcxproj: the Vulkan Memory Allocator's implementation lives in this file. -->
+      <PreprocessorDefinitions>VMA_IMPLEMENTATION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="external\reshade\source\vulkan\vulkan_impl_command_list.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\source\vulkan\vulkan_impl_command_list_immediate.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\source\vulkan\vulkan_impl_command_queue.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\source\vulkan\vulkan_impl_type_convert.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="host\third_party\glad\src\vulkan.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="host\host_imgui_table.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\buffer.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>external\reshade\deps\minhook\include;external\reshade\deps\minhook\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde32.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>external\reshade\deps\minhook\include;external\reshade\deps\minhook\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hde\hde64.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>external\reshade\deps\minhook\include;external\reshade\deps\minhook\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\hook.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>external\reshade\deps\minhook\include;external\reshade\deps\minhook\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\minhook\src\trampoline.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>external\reshade\deps\minhook\include;external\reshade\deps\minhook\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\imgui\imgui.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\imgui\imgui_draw.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\imgui\imgui_tables.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="external\reshade\deps\imgui\imgui_widgets.cpp">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="host\host_backend.h" />
+    <ClInclude Include="host\host_core_loader.h" />
+    <ClInclude Include="host\host_imgui_renderer.h" />
+    <ClInclude Include="host\host_input.h" />
+    <ClInclude Include="host\input_rules.h" />
+    <ClInclude Include="host\host_log.h" />
+    <ClInclude Include="host\host_owner.h" />
+    <ClInclude Include="host\host_runtime.h" />
+    <ClInclude Include="host\shims\dll_log.hpp" />
+    <ClInclude Include="host\d3d12\d3d12_backend.h" />
+    <ClInclude Include="host\d3d12\d3d12_hooks.h" />
+    <ClInclude Include="host\d3d12\d3d12_asi_install.h" />
+    <ClInclude Include="host\d3d12\shims\dll_log.hpp" />
+    <ClInclude Include="host\d3d12\shims\dll_resources.hpp" />
+    <ClInclude Include="host\d3d12\shims\hook_manager.hpp" />
+    <ClInclude Include="host\d3d12\shims\utf8\unchecked.h" />
+    <ClInclude Include="host\vk\imgui_spirv.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="host\RedemptionEditorHost.json" />
+    <None Include="host\RedemptionEditorHost.def" />
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{3F8A5C21-6D4E-4B7A-9E12-7C5D0A1B2E43}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>RedemptionEditorHost</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Import Project="$(MSBuildThisFileDirectory)RedemptionEditor.props" />
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <RedemptionVersionBinary>4</RedemptionVersionBinary>
+    <TargetName>RedemptionEditorHost</TargetName>
+    <OutDir>bin\$(Configuration)\host\</OutDir>
+    <IntDir>tmp\$(ProjectName)\$(Configuration)\</IntDir>
+    <!-- Third party headers: warnings off (RedemptionEditor.props ExternalWarningLevel). -->
+    <ExternalIncludePath>$(MSBuildThisFileDirectory)external\reshade\include;$(MSBuildThisFileDirectory)external\reshade\deps\imgui;$(MSBuildThisFileDirectory)external\reshade\source;$(MSBuildThisFileDirectory)host\third_party\glad\include;$(MSBuildThisFileDirectory)host\third_party\vma;$(MSBuildThisFileDirectory)host\third_party\directx-headers\include;$(ExternalIncludePath)</ExternalIncludePath>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <Optimization>MaxSpeed</Optimization>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;ImTextureID=ImU64;IMGUI_DISABLE_INCLUDE_IMCONFIG_H;RESHADE_API_LIBRARY_EXPORT;_CRT_SECURE_NO_WARNINGS;NDEBUG;VK_USE_PLATFORM_WIN32_KHR;VMA_STATIC_VULKAN_FUNCTIONS=0;VMA_DYNAMIC_VULKAN_FUNCTIONS=0;VMA_STATS_STRING_ENABLED=0;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- RESHADE_API_LIBRARY_EXPORT: the ImGui here is the real one (reshade_overlay.hpp forwards to the table without it). -->
+      <!-- host\shims comes before external\reshade\source: its dll_log.hpp stands in for ReShade's. -->
+      <AdditionalIncludeDirectories>host\shims;host;host\vk;src;external\reshade\include;external\reshade\deps\imgui;external\reshade\source;external\reshade\source\vulkan;host\third_party\glad\include;host\third_party\vma;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <ImportLibrary>$(IntDir)$(TargetName).lib</ImportLibrary>
+      <!-- imgui_impl_dx12 links d3dcompiler (D3DCompile of its two shaders): loaded only when a D3D12 swapchain draws ImGui.
+           dxgi.dll only for ImGui's multi-viewport windows (never enabled): delay loaded, so the host never imports dxgi.dll
+           by name (a ReShade dxgi.dll in the game folder must be loaded by the game, when the game wants it).
+           dxguid: IID constants (static data, no DLL). -->
+      <DelayLoadDLLs>d3dcompiler_47.dll;dxgi.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <AdditionalDependencies>delayimp.lib;dxgi.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ModuleDefinitionFile>host\RedemptionEditorHost.def</ModuleDefinitionFile>
+      <!-- Only the PDB's file name in the DLL, as the ASI and the core: no build machine path in the release. -->
+      <AdditionalOptions>/PDBALTPATH:%25_PDB%25 %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "$(MSBuildThisFileDirectory)host\RedemptionEditorHost.json" "$(OutDir)RedemptionEditorHost.json"</Command>
+      <Message>Copying the layer manifest next to RedemptionEditorHost.dll</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <!-- /p:RedemptionDev=true is the developer build (REDEMPTION_DEV). -->
+  <ItemDefinitionGroup Condition="'$(RedemptionDev)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>REDEMPTION_DEV;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

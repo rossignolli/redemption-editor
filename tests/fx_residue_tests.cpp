@@ -112,9 +112,6 @@ namespace
         Check(op::ShouldPoseWeapon(true, 12, 3, 4) && !op::ShouldPoseWeapon(true, 12, 4, 4), "the places given are the limit");
         Check(!op::ShouldPoseWeapon(true, 1, 0, 4), "a rigid weapon (one bone) has nothing to pose");
         Check(op::ShouldPoseWeapon(true, 12, 8, 50), "no cap of 8");
-        // The places of the bodies and of the props do not change: the old rule
-        // still refuses a real weapon (it goes through ShouldPoseWeapon only).
-        Check(!op::ShouldPose(true, 12, 10, 0, 4, 56, 10, 64), "ShouldPose still refuses a real weapon");
     }
 
     // A and D: the per-shot audit and the two new findings.
@@ -232,26 +229,30 @@ namespace
 
         wf::Track track;
         Check(track.Add(muzzle) && track.Add(shell), "requests: add");
-        const std::uint32_t site = wf::kMuzzleEffectSite;
-        Check(wf::CoversMuzzleEvent(track, {site, 10480, muzzle.weapon}), "the muzzle effect on the weapon 9 ms later is replaced");
-        Check(wf::CoversMuzzleEvent(track, {site, 10420, muzzle.shooter}), "on the shooter within 60 ms too");
-        Check(!wf::CoversMuzzleEvent(track, {site, 10600, muzzle.weapon}), "129 ms later it is another shot's");
-        Check(!wf::CoversMuzzleEvent(track, {site, 10480, 0x00070001u}), "another entity's effect stays");
-        Check(!wf::CoversMuzzleEvent(track, {0x144D33A, 10480, muzzle.weapon}), "an impact is not a muzzle effect");
+        // The sites as the known exe records them (the return of each call).
+        const std::uint32_t site = wf::kWeaponMuzzleCall.rva + 5;
+        const std::uint32_t shellSite = wf::kWeaponShellCall.rva + 5;
+        Check(wf::CoversMuzzleEvent(track, {site, 10480, muzzle.weapon}, site),
+            "the muzzle effect on the weapon 9 ms later is replaced");
+        Check(wf::CoversMuzzleEvent(track, {site, 10420, muzzle.shooter}, site), "on the shooter within 60 ms too");
+        Check(!wf::CoversMuzzleEvent(track, {site, 10600, muzzle.weapon}, site), "129 ms later it is another shot's");
+        Check(!wf::CoversMuzzleEvent(track, {site, 10480, 0x00070001u}, site), "another entity's effect stays");
+        Check(!wf::CoversMuzzleEvent(track, {0x144D33A, 10480, muzzle.weapon}, site), "an impact is not a muzzle effect");
         wf::Track unplayable;
         bad = muzzle;
         bad.bone = -1;
         unplayable.Add(bad);
-        Check(!wf::CoversMuzzleEvent(unplayable, {site, 10471, muzzle.weapon}), "a request not played drops nothing");
-        Check(wf::CoversShellTrack(track, {wf::kShellRegisteredSite, 9000, 12000, muzzle.weapon}),
+        Check(!wf::CoversMuzzleEvent(unplayable, {site, 10471, muzzle.weapon}, site), "a request not played drops nothing");
+        Check(wf::CoversShellTrack(track, {shellSite, 9000, 12000, muzzle.weapon}, shellSite),
             "the shell track alive over the request is replaced");
-        Check(wf::CoversShellTrack(track, {wf::kShellRegisteredSite, 10530, 12000, muzzle.weapon}),
+        Check(wf::CoversShellTrack(track, {shellSite, 10530, 12000, muzzle.weapon}, shellSite),
             "a track that starts 50 ms after the request is its");
-        Check(!wf::CoversShellTrack(track, {wf::kShellRegisteredSite, 10600, 12000, muzzle.weapon}),
+        Check(!wf::CoversShellTrack(track, {shellSite, 10600, 12000, muzzle.weapon}, shellSite),
             "a track that starts 120 ms after is not");
-        Check(!wf::CoversShellTrack(track, {wf::kShellRegisteredSite, 1000, 10400, muzzle.weapon}),
+        Check(!wf::CoversShellTrack(track, {shellSite, 1000, 10400, muzzle.weapon}, shellSite),
             "a track that ended 80 ms before is not");
-        Check(!wf::CoversShellTrack(track, {0x146798C, 9000, 12000, muzzle.weapon}), "another site is not the shell");
+        Check(!wf::CoversShellTrack(track, {0x146798C, 9000, 12000, muzzle.weapon}, shellSite),
+            "another site is not the shell");
 
         wf::CallInput in;
         in.shooter = 0x7FF612340000ull;

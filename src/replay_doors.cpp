@@ -209,7 +209,7 @@ namespace replay::doors
         log << "POSE_V2_PLAYBACK_DOORS,begin=" << g_totals.atStart << ",unresolved=" << g_unresolved
             << ",tracks=" << clip.doors.size() << ",played=" << g_totals.tracks << ",moving=" << g_totals.moving
             << ",held_single=" << g_totals.heldSingle << ",rebind_ms=" << g_config.rebindMs
-            << ",keep_ratio=" << (g_config.keepOpenRatio && closedTheatre ? 1 : 0) << '\n';
+            << ",keep_ratio=" << (closedTheatre ? 1 : 0) << '\n';
     }
 
     std::uint32_t MissingNear(const Recording& clip, float x, float y, float z, float radiusM)
@@ -256,7 +256,7 @@ namespace replay::doors
                     // object is made again, so the door comes back as the replay last
                     // played it.
                     bool ratio = false;
-                    if (g_config.keepOpenRatio && g_closedTheatre && played.registered && played.hasRatio)
+                    if (g_closedTheatre && played.registered && played.hasRatio)
                     {
                         OBJECT::DOOR_SYSTEM_SET_OPEN_RATIO(static_cast<Hash>(hash), played.lastRatio, FALSE);
                         ++g_totals.ratioWrites;
@@ -310,10 +310,10 @@ namespace replay::doors
             }
             ENTITY::FREEZE_ENTITY_POSITION(played.handle, TRUE);
             ENTITY::SET_ENTITY_ROTATION(played.handle, rot[0], rot[1], rot[2], 2, TRUE);
-            if (g_config.keepOpenRatio && g_closedTheatre && played.registered)
+            if (g_closedTheatre && played.registered)
             {
                 // The engine's ratio of the door object as placed (with an object,
-                // computed from it, 0x810A88): kept for a loss.
+                // computed from it): kept for a loss.
                 played.lastRatio = OBJECT::DOOR_SYSTEM_GET_OPEN_RATIO(static_cast<Hash>(clip.doors[played.track].hash));
                 played.hasRatio = std::isfinite(played.lastRatio);
             }

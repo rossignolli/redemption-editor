@@ -22,6 +22,11 @@
 //   ReplayClipTool weapon-look <clip.rpclip> [id]   (each weapon's components by name and its look track, wear and engine component list per state)
 //   ReplayClipTool never-animated <clip.rpclip>... [--ref slot:instance]   (bodies recorded without a pose change)
 //   ReplayClipTool frozen-poses <clip.rpclip> [--max-pct 2] [--max-peds 0] [--max-dist 40]   (walking peds whose pose repeats)
+//   ReplayClipTool pose-rate <clip.rpclip> [--window-ms 3000] [--id slot:instance]...   (stair stepped, low rate animation per ped)
+//   ReplayClipTool pose-dump <clip.rpclip> <out.bin> [slot:instance]... [--resample-ms 16] [--smooth]   (raw pose frames for offline analysis)
+//   ReplayClipTool pose-codec <clip.rpclip> <slot:instance> [--from ms] [--to ms] [--sigma 2]   (the codec's own frame to frame motion, and its fixes)
+//   ReplayClipTool pose-smooth <clip.rpclip>   (the load's deadband smoothing pass, timed)
+//   ReplayClipTool pose-fidelity <clip.rpclip> [--sigma 2]   (pose codec settings: bytes, zstd, encode time, motion)
 //
 // set-camera replaces the camera markers (see SetCamera for the format);
 // with --out the clip is written there and the input is left alone.
@@ -52,6 +57,7 @@
 #include "clip_compress.h"
 #include "clip_file.h"
 #include "clip_pack.h"        // pack-verify, pack-load
+#include "clip_sites.h"       // sites
 #include "entity_transform.h"
 #include "pose_jerk.h"
 #include "recording_window.h"
@@ -70,9 +76,13 @@
 #include "mix_scene_pool_core.h"  // mix
 #include "speech_duck_core.h"     // mix
 #include "shot_fx_audit_core.h"   // shots
+#include "weapon_fx_intent_core.h" // shots (the muzzle site)
 #include "weapon_bones_core.h"    // weapon-bones
 #include "fx_motion_rule.h"       // events (derived call gaps)
 #include "frozen_pose_check.h"    // frozen-poses
+#include "pose_rate_check.h"      // pose-rate
+#include "pose_deadband_smooth.h"  // pose-codec
+#include "model_names.h"          // pose-rate
 #include "muscle_watch.h"         // muscle-rows
 #include "shader_vars_core.h"      // shader-vars
 
@@ -88,6 +98,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -1418,6 +1429,151 @@ namespace
     {
         std::ifstream file(path, std::ios::binary | std::ios::ate);
         return file ? static_cast<std::uint64_t>(file.tellg()) : 0;
+    }
+
+    // resave <in> <out>: the clip read (any format) and written plain by this
+    // build, its META kept when the source is not packed: a clip of an older
+    // format comes out in this one (site ids, clip_sites.h).
+    int Resave(const std::wstring& inPath, const std::wstring& outPath)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        clipfile::SetBuildIdentity(0, 0);
+        if (!clipfile::Load(inPath, kBase, kSize, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        std::vector<std::uint8_t> raw;
+        std::uint32_t timestamp = 0;
+        std::uint64_t imageSize = 0;
+        std::string plainError;
+        const bool identity = ReadPlainClip(inPath, raw, plainError) && ReadBuildIdentity(raw, timestamp, imageSize);
+        clipfile::SetBuildIdentity(timestamp, imageSize);
+        const bool saved = clipfile::Save(recording, poses, track, durationMs, kBase, kSize, outPath, error);
+        clipfile::SetBuildIdentity(0, 0);
+        if (!saved)
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 3;
+        }
+        std::printf("CLIP_TOOL,resave=ok,identity=%s,timestamp=0x%08x,image_size=0x%llx\n", identity ? "kept" : "none", timestamp,
+            static_cast<unsigned long long>(imageSize));
+        return 0;
+    }
+
+    // sites <clip>: the game addresses the clip names by site id
+    // (clip_sites.h), per field: how many, how many a signature names and
+    // which, the rest raw RVAs (valid on the clip's build only); then the clip
+    // written in this format and read back, its bytes compared.
+    int Sites(const std::wstring& clipPath)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, kBase, kSize, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        std::map<std::uint32_t, const char*> names;
+        const auto name = [&](const replay::sig::Signature* s) {
+            if (s)
+                names[replay::sig::NameHash(s->name)] = s->name;
+        };
+        for (const replay::clipsites::Span& span : replay::clipsites::kSpans)
+            name(span.sig);
+        for (const replay::soundowner::CallerFunction& f : replay::soundowner::kCallerFunctions)
+            name(f.start);
+        for (const replay::census::ImageAudioSignatures& s : replay::census::kImageAudioSignatures)
+        {
+            name(s.object);
+            name(s.vtable);
+        }
+        const replay::sig::SiteMap& known = replay::clipsites::KnownSiteMap();
+        struct Field
+        {
+            std::size_t values = 0, nonzero = 0, named = 0;
+            std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t> ids; // (name, offset) -> count
+            std::set<std::uint32_t> raw;
+        };
+        std::map<std::string, Field> fields;
+        const auto note = [&](const char* field, std::uint64_t rva) {
+            Field& f = fields[field];
+            ++f.values;
+            if (!rva)
+                return;
+            ++f.nonzero;
+            const replay::sig::SiteId id = known.SiteOf(rva > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<std::uint32_t>(rva));
+            if (id.name)
+            {
+                ++f.named;
+                ++f.ids[{id.name, id.offset}];
+            }
+            else
+                f.raw.insert(id.offset);
+        };
+        for (const entity::FxEvent& e : recording.fx.Events())
+            note("fx.callerSite", e.callerSite);
+        for (const entity::RegisteredFxTrack& t : recording.registeredFx)
+            note("registeredFx.callerSite", t.callerSite);
+        for (const entity::DecalEvent& e : recording.decals.Events())
+            note("decals.callerReturn", e.callerReturn);
+        for (const entity::BloodEvent& e : recording.blood.Events())
+            note("blood.caller", e.caller);
+        for (const entity::SoundEvent& e : recording.sounds.Events())
+            note("sounds.globalAudio", e.globalAudio ? e.globalAudio - kBase : 0);
+        for (const replay::EntitySound& s : recording.entitySounds)
+        {
+            note("entitySounds.audioRva", s.audioRva);
+            note("entitySounds.caller", s.caller);
+        }
+        for (const replay::census::GeneralSound& s : recording.generalSounds)
+        {
+            note("generalSounds.vtable", s.vtableRva);
+            if (s.base == replay::census::AudioBase::Image)
+                note("generalSounds.image", static_cast<std::uint32_t>(s.offset));
+        }
+        for (const replay::soundgeneric::CreatePacket& p : recording.soundGeneric.creates)
+        {
+            note("soundGeneric.caller", p.caller);
+            note("soundGeneric.vtable", p.audioKnown ? p.vtableRva : 0u);
+            if (p.audioKnown && p.audioBase == replay::census::AudioBase::Image)
+                note("soundGeneric.image", static_cast<std::uint32_t>(p.audioOffset));
+        }
+        for (const auto& [field, f] : fields)
+        {
+            std::printf("SITES_FIELD,field=%s,values=%zu,nonzero=%zu,named=%zu,raw=%zu,raw_distinct=%zu,named_distinct=%zu\n",
+                field.c_str(), f.values, f.nonzero, f.named, f.nonzero - f.named, f.raw.size(), f.ids.size());
+            for (const auto& [id, count] : f.ids)
+            {
+                const auto found = names.find(id.first);
+                std::printf("SITES_NAME,field=%s,name=%s,offset=0x%x,count=%zu\n", field.c_str(),
+                    found == names.end() ? "?" : found->second, id.second, count);
+            }
+        }
+        // This format and back: the same clip, byte for byte.
+        std::vector<std::uint8_t> first;
+        std::vector<std::uint8_t> second;
+        Recording again;
+        std::vector<pose::PoseRecordExport> againPoses;
+        camera::Track againTrack;
+        std::uint64_t againMs = 0;
+        const bool ok = clipfile::Encode(recording, poses, track, durationMs, kBase, kSize, first, error) &&
+            clipfile::Decode(first.data(), first.size(), kBase, kSize, again, againPoses, againTrack, againMs, error) &&
+            clipfile::Encode(again, againPoses, againTrack, againMs, kBase, kSize, second, error);
+        std::printf("SITES_ROUNDTRIP,ok=%d,error=%s,bytes=%zu,equal=%d\n", ok ? 1 : 0, ok ? "none" : error.c_str(), first.size(),
+            ok && first == second ? 1 : 0);
+        return ok && first == second ? 0 : 1;
     }
 
     int Trim(const std::wstring& inPath, const std::wstring& outPath, bool last, std::uint32_t a, std::uint32_t b)
@@ -3481,8 +3637,9 @@ namespace
                 static_cast<unsigned>(sound.field), sound.vtableRva, sound.params.size(), census::PathText(sound.path).c_str());
         // The static audio entities the clip names without a vtable (SNDS
         // globalAudio, ESND audioRva): playback plays them only when they are
-        // census::kImageAudio (audio::TrustedImageAudio). unknown > 0: sounds
-        // this build refuses.
+        // the census's image audio objects (audio::TrustedImageAudio; here the
+        // 1491.50 exe's, census::KnownImageAudioTable). unknown > 0: sounds
+        // that build refuses.
         std::map<std::pair<std::string, std::uint64_t>, std::uint32_t> named;
         for (const entity::SoundEvent& sound : recording.sounds.Events())
             if (sound.globalAudio)
@@ -3491,10 +3648,11 @@ namespace
             if (!sound.audioOnEntity)
                 ++named[{"esnd", sound.audioRva}];
         std::uint32_t unknown = 0;
+        const census::ImageAudioTable images = census::KnownImageAudioTable();
         for (const auto& [key, count] : named)
         {
             std::uint32_t vtable = 0;
-            const bool known = census::KnownImageAudio(key.second, vtable);
+            const bool known = census::KnownImageAudio(key.second, vtable, images);
             unknown += known ? 0 : count;
             std::printf("IMAGE_AUDIO,section=%s,rva=0x%llx,count=%u,known=%d,vtable=0x%x\n", key.first.c_str(),
                 static_cast<unsigned long long>(key.second), count, known ? 1 : 0, vtable);
@@ -3510,7 +3668,7 @@ namespace
     // BeginPlayback), the ends and the adjust count; optional owner and
     // time window filters. The offline view of "who owned this sound".
     // ParamsDiff: the dwords of a params copy that differ from what the
-    // constructor 0x487E34 leaves, past the position and the init variables.
+    // params constructor leaves, past the position and the init variables.
     std::string ValuesText(const soundgeneric::InitParams& values);
     std::string ParamsDiff(const std::uint8_t* p, std::size_t size)
     {
@@ -3671,12 +3829,10 @@ namespace
         for (const rendertarget::Event& e : track.events)
         {
             const rendertarget::State state = rendertarget::StateAt(track, e.timeMs);
-            const bool draws = e.kind == rendertarget::kAppOpen && rendertarget::AppDrawsTarget(track, e.hash, e.timeMs);
             std::printf("RTGT_EVENT,t=%u,kind=%s,name=%s,hash=0x%08x,entry=0x%08x,flag=%u,accepted=%u,initial=%u,"
-                        "targets=%zu,links=%zu,apps=%zu%s\n",
+                        "targets=%zu,links=%zu,apps=%zu\n",
                 e.timeMs, rendertarget::KindName(e.kind), e.name[0] ? e.name : "-", e.hash, e.entry, e.flag, e.accepted,
-                e.initial, state.targets.size(), state.links.size(), state.apps.size(),
-                e.kind == rendertarget::kAppOpen ? (draws ? ",draws_target=1" : ",draws_target=0") : "");
+                e.initial, state.targets.size(), state.links.size(), state.apps.size());
         }
         return 0;
     }
@@ -3732,6 +3888,10 @@ namespace
             track.adjusts.size(), track.ends.size(), cover.Size(), filter.empty() ? "none" : filter.c_str(), fromMs, toMs);
         std::uint32_t perFamily[soundowner::kFamilyCount] = {};
         std::uint32_t listed = 0;
+        // The audio entity's code and the known systems' functions on the
+        // 1491.50 exe (the clips' build).
+        const soundgeneric::WrapperCode wrapperCode = soundgeneric::KnownWrapperCode();
+        const soundowner::CallerRanges callerRanges = soundowner::KnownCallerRanges();
         for (const soundgeneric::CreatePacket& c : track.creates)
         {
             if (c.timeMs < fromMs || c.timeMs > toMs)
@@ -3746,7 +3906,8 @@ namespace
             key.timeMs = c.timeMs;
             key.audioKnown = c.audioKnown;
             key.audioBase = c.audioBase;
-            key.callerInWrappers = soundgeneric::InAudioEntityWrappers(c.caller);
+            key.callerInWrappers = soundgeneric::InAudioEntityWrappers(c.caller, wrapperCode);
+            soundowner::NameCaller(key, callerRanges);
             const soundowner::Family family = soundowner::FamilyOf(key, cover, &shots);
             ++perFamily[static_cast<std::uint8_t>(family)];
             ++listed;
@@ -3986,14 +4147,18 @@ namespace
         bool weaponEvents = false;
         std::vector<std::uint32_t> bodyTimes;
         std::map<std::uint32_t, std::uint32_t> bySite;
+        // The sites as the known exe records them (the return of each call).
+        const std::uint32_t muzzleSite = replay::weaponfx::kWeaponMuzzleCall.rva + 5;
+        const std::uint32_t impactSite = replay::shotfx::kShotImpactCall.rva + 5;
+        const std::uint32_t bodySite = replay::shotfx::kShotBodyCall.rva + 5;
         for (const entity::FxEvent& fx : recording.fx.Events())
         {
-            if (fx.callerSite == replay::shotfx::kMuzzleSite)
+            if (fx.callerSite == muzzleSite)
                 weaponEvents = true;
-            if (fx.callerSite == replay::shotfx::kBodySite)
+            if (fx.callerSite == bodySite)
                 bodyTimes.push_back(fx.timeMs);
-            if (fx.callerSite == replay::shotfx::kMuzzleSite || fx.callerSite == replay::shotfx::kImpactSite ||
-                fx.callerSite == replay::shotfx::kBodySite || fx.callerSite == 0x146098D || fx.callerSite == 0x1467AEC)
+            if (fx.callerSite == muzzleSite || fx.callerSite == impactSite || fx.callerSite == bodySite ||
+                fx.callerSite == 0x146098D || fx.callerSite == 0x1467AEC)
                 ++bySite[fx.callerSite];
         }
         std::vector<replay::shotfx::Shot> shots;
@@ -4445,7 +4610,8 @@ namespace
                     line->timeMs, line->coreMs,
                     static_cast<int>(line->timeMs) - static_cast<int>(line->coreMs),
                     line->timedByStart ? "start" : "core", line->voiceHash, speech::Finalize(line->contextPartialHash),
-                    line->variation, speech::Finalize(line->requestedContextPartialHash), speech::PathName(line->path),
+                    line->variation, speech::Finalize(line->requestedContextPartialHash),
+                    speech::PathName(line->path, speech::KnownCorePaths()),
                     line->stopMs, line->stopReason, line->endMs, line->startedBeforeMs, flag ? ",suspect=long_wait" : "");
             }
             total += lines.size();
@@ -4981,6 +5147,771 @@ namespace
 
 namespace
 {
+    // pose-dump: every recorded pose frame of the given peds, decoded at its
+    // own time (no resampling), to a flat binary file for offline analysis
+    // (rate, repeats, per bone steps). Per frame: u32 record, u32 owner,
+    // u32 timeMs, u32 active (the record is the one its entity plays),
+    // u32 bones, f32 world[16], bones x (quat xyzw, translation xyz) local,
+    // the same in object space.
+    int PoseDump(const std::wstring& clipPath, const std::wstring& outPath, const std::vector<std::uint32_t>& owners,
+        std::uint32_t resampleMs, bool smoothed)
+    {
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track cameraTrack;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, 0x140000000ull, 0x10000000ull, recording, poses, cameraTrack, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        for (const PedVisibility& row : recording.pedVisibility)
+        {
+            std::printf("POSE_DUMP_PVIS,id=%s,visible=%d,flips=%zu", Id(row.id).c_str(), row.visible ? 1 : 0, row.flipsMs.size());
+            for (const auto f : row.flipsMs)
+                std::printf(" %llu", static_cast<unsigned long long>(f));
+            std::printf("\n");
+        }
+        if (smoothed)
+        {
+            pose::smooth::RecordsSummary summary;
+            pose::smooth::SmoothRecords(poses, summary);
+            std::printf("POSE_DUMP_SMOOTH,records=%u,smoothed=%u,failed=%u\n", summary.records, summary.smoothed, summary.failed);
+        }
+        FILE* out = nullptr;
+        if (_wfopen_s(&out, outPath.c_str(), L"wb") != 0)
+            out = nullptr;
+        if (!out)
+            return 3;
+        pose::PoseSample sample;
+        for (const pose::PoseRecordExport& record : poses)
+        {
+            const bool segmentRecord = (record.recordId & entity::PoseSegmentTrack::kRecordBit) != 0;
+            const entity::ReplayId owner =
+                segmentRecord ? recording.segments.OwnerOf(record.recordId) : entity::ReplayId::FromPacked(record.recordId);
+            if (!owners.empty() && std::find(owners.begin(), owners.end(), owner.Packed()) == owners.end())
+                continue;
+            pose::PoseTrack track;
+            std::string importError;
+            if (!track.Import(record.track, importError))
+            {
+                std::fprintf(stderr, "record %08X: %s\n", record.recordId, importError.c_str());
+                continue;
+            }
+            for (std::size_t li = 0; li < record.track.layouts.size(); ++li)
+            {
+                const pose::SkeletonLayout& layout = record.track.layouts[li];
+                std::uint32_t ambiguous = 0;
+                for (const std::uint8_t a : layout.ambiguous)
+                    ambiguous += a ? 1u : 0u;
+                std::printf("POSE_LAYOUT,record=%08X,layout=%zu,bones=%u,unresolved=%zu,ambiguous=%u,parents=", record.recordId, li,
+                    layout.boneCount, layout.unresolvedBones.size(), ambiguous);
+                for (std::uint32_t b = 0; b < layout.boneCount && b < layout.parent.size(); ++b)
+                    std::printf("%s%d", b ? " " : "", layout.parent[b]);
+                std::printf("\n");
+            }
+            std::size_t chunkIndex = 0;
+            for (const pose::TrackChunkExport& chunk : record.track.chunks)
+            {
+                if (!chunk.frameTimes.empty())
+                    std::printf("POSE_CHUNK,record=%08X,chunk=%zu,layout=%u,from=%u\n", record.recordId, chunkIndex,
+                        chunk.layout, chunk.frameTimes.front());
+                ++chunkIndex;
+            }
+            std::uint32_t frames = 0;
+            std::uint32_t first = 0, last = 0;
+            std::vector<std::uint32_t> times;
+            for (const pose::TrackChunkExport& chunk : record.track.chunks)
+                times.insert(times.end(), chunk.frameTimes.begin(), chunk.frameTimes.end());
+            if (resampleMs && !times.empty())
+            {
+                const std::uint32_t from = times.front(), to = times.back();
+                times.clear();
+                for (std::uint32_t t = from; t <= to; t += resampleMs)
+                    times.push_back(t);
+            }
+            {
+                for (const std::uint32_t t : times)
+                {
+                    if (!track.Sample(t, sample) || (!resampleMs && sample.frameTimeA != t))
+                        continue;
+                    const entity::PoseSegment* segment = recording.segments.At(owner, t);
+                    const std::uint32_t active = (segment ? segment->recordId : owner.Packed()) == record.recordId ? 1u : 0u;
+                    const std::uint32_t blend = static_cast<std::uint32_t>(sample.t * 1000.0f + 0.5f);
+                    const std::uint32_t bones = static_cast<std::uint32_t>(std::min(sample.locals.size(), sample.objects.size()));
+                    const std::uint32_t head[5] = {record.recordId, owner.Packed(), t, active | (blend << 1), bones};
+                    std::fwrite(head, sizeof(head), 1, out);
+                    float world[16];
+                    std::memcpy(world, sample.worldA, sizeof(world));
+                    pose::WorldTransform wa{}, wb{};
+                    if (resampleMs && pose::DecodeWorldMatrix(sample.worldA, wa) && pose::DecodeWorldMatrix(sample.worldB, wb))
+                    {
+                        // The blended origin (playback places the puppet there): cell offset of A kept.
+                        const pose::WorldTransform w = pose::InterpolateWorld(wa, wb, sample.t);
+                        world[12] += w.position.x - wa.position.x;
+                        world[13] += w.position.y - wa.position.y;
+                        world[14] += w.position.z - wa.position.z;
+                    }
+                    std::fwrite(world, sizeof(float), 16, out);
+                    for (const std::vector<pose::BoneQts>* set : {&sample.locals, &sample.objects})
+                        for (std::uint32_t b = 0; b < bones; ++b)
+                        {
+                            const pose::BoneQts& q = (*set)[b];
+                            const float v[7] = {q.rotation.x, q.rotation.y, q.rotation.z, q.rotation.w, q.translation[0],
+                                q.translation[1], q.translation[2]};
+                            std::fwrite(v, sizeof(v), 1, out);
+                        }
+                    if (!frames)
+                        first = t;
+                    last = t;
+                    ++frames;
+                }
+            }
+            std::printf("POSE_DUMP,record=%08X,owner=%s,bones=%u,chunks=%zu,frames=%u,from=%u,to=%u\n", record.recordId,
+                Id(owner).c_str(), record.boneCount, record.track.chunks.size(), frames, first, last);
+        }
+        std::fclose(out);
+        return 0;
+    }
+}
+
+namespace
+{
+    // pose-rate: was each ped's animation recorded at the capture rate, or
+    // stair stepped (pose_rate_check.h)? Every pose track frame of every ped
+    // record that its entity plays, decoded at its own time, in windows of
+    // --window-ms: one POSE_RATE line per ped and window (the held share of
+    // the moving bone triples, the one frame flips, the world speed), then a
+    // POSE_RATE_PED line per ped and a POSE_RATE total. Exit 4 when a window
+    // is stair stepped.
+    int PoseRate(const std::wstring& clipPath, std::uint32_t windowMs, const std::vector<std::uint32_t>& owners)
+    {
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track cameraTrack;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, 0x140000000ull, 0x10000000ull, recording, poses, cameraTrack, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        std::map<std::uint32_t, const entity::CreatePacket*> created;
+        for (const entity::CreatePacket& create : recording.created)
+            created[create.id.Packed()] = &create;
+        pose::PoseSample sample;
+        poserate::Counts total;
+        std::size_t stairWindows = 0;
+        for (const pose::PoseRecordExport& record : poses)
+        {
+            const bool segmentRecord = (record.recordId & entity::PoseSegmentTrack::kRecordBit) != 0;
+            const entity::ReplayId owner =
+                segmentRecord ? recording.segments.OwnerOf(record.recordId) : entity::ReplayId::FromPacked(record.recordId);
+            auto found = created.find(owner.Packed());
+            if (found == created.end() || found->second->kind != entity::EntityKind::Ped)
+                continue;
+            if (!owners.empty() && std::find(owners.begin(), owners.end(), owner.Packed()) == owners.end())
+                continue;
+            pose::PoseTrack track;
+            std::string importError;
+            if (!track.Import(record.track, importError))
+            {
+                std::fprintf(stderr, "record %08X: %s\n", record.recordId, importError.c_str());
+                continue;
+            }
+            const char* name = models::NameOf(found->second->modelHash);
+            const std::string label = name ? name : Hex(found->second->modelHash);
+            // The last two frames played (locals, time, origin); a frame
+            // that is not this record's to play ends the run.
+            std::vector<pose::BoneQts> a, b;
+            std::uint32_t timeA = 0, timeB = 0;
+            std::size_t run = 0;
+            pose::Vec3 lastOrigin{};
+            std::uint32_t lastOriginMs = 0;
+            bool hasOrigin = false;
+            poserate::Counts ped, window;
+            double windowPath = 0.0;
+            std::uint32_t windowStart = 0;
+            bool windowOpen = false;
+            const auto flush = [&](std::uint32_t endMs) {
+                if (!windowOpen)
+                    return;
+                const float seconds = static_cast<float>(endMs - windowStart) / 1000.0f;
+                std::printf("POSE_RATE,id=%s,model=%s,from_ms=%u,to_ms=%u,triples=%llu,moving=%llu,held_pct=%.1f,"
+                            "flips=%llu,flip_frames=%llu,speed_mps=%.2f,verdict=%s\n",
+                    Id(owner).c_str(), label.c_str(), windowStart, endMs, static_cast<unsigned long long>(window.triples),
+                    static_cast<unsigned long long>(window.moving), window.HeldPercent(),
+                    static_cast<unsigned long long>(window.flips), static_cast<unsigned long long>(window.flipFrames),
+                    seconds > 0.0f ? windowPath / seconds : 0.0, window.Stairs() ? "stairs" : "ok");
+                if (window.Stairs())
+                    ++stairWindows;
+                ped.Add(window);
+                window = poserate::Counts{};
+                windowPath = 0.0;
+                windowOpen = false;
+            };
+            for (const pose::TrackChunkExport& chunk : record.track.chunks)
+            {
+                for (const std::uint32_t t : chunk.frameTimes)
+                {
+                    const entity::PoseSegment* segment = recording.segments.At(owner, t);
+                    const std::uint32_t active = segment ? segment->recordId : owner.Packed();
+                    pose::WorldTransform world{};
+                    if (active != record.recordId || !track.Sample(t, sample) || sample.frameTimeA != t ||
+                        !SampleWorld(sample, world))
+                    {
+                        run = 0;
+                        hasOrigin = false;
+                        continue;
+                    }
+                    if (!windowOpen || t >= windowStart + windowMs)
+                    {
+                        flush(windowOpen ? windowStart + windowMs : t);
+                        windowStart = windowMs ? t - t % windowMs : t;
+                        windowOpen = true;
+                    }
+                    if (hasOrigin && t > lastOriginMs && t - lastOriginMs <= poserate::kMaxStepMs)
+                    {
+                        const float dx = world.position.x - lastOrigin.x;
+                        const float dy = world.position.y - lastOrigin.y;
+                        const float dz = world.position.z - lastOrigin.z;
+                        windowPath += std::sqrt(dx * dx + dy * dy + dz * dz);
+                    }
+                    lastOrigin = world.position;
+                    lastOriginMs = t;
+                    hasOrigin = true;
+                    if (run >= 2 && a.size() == sample.locals.size() && b.size() == sample.locals.size())
+                        poserate::MeasureTriple(a.data(), b.data(), sample.locals.data(), sample.locals.size(), timeA, timeB, t,
+                            window);
+                    a.swap(b);
+                    timeA = timeB;
+                    b = sample.locals;
+                    timeB = t;
+                    ++run;
+                }
+            }
+            flush(windowOpen ? std::min<std::uint32_t>(windowStart + windowMs, static_cast<std::uint32_t>(durationMs))
+                             : 0);
+            std::printf("POSE_RATE_PED,id=%s,model=%s,moving=%llu,held_pct=%.1f,flips=%llu,flip_frames=%llu,verdict=%s\n",
+                Id(owner).c_str(), label.c_str(), static_cast<unsigned long long>(ped.moving), ped.HeldPercent(),
+                static_cast<unsigned long long>(ped.flips), static_cast<unsigned long long>(ped.flipFrames),
+                ped.Stairs() ? "stairs" : "ok");
+            total.Add(ped);
+        }
+        const std::wstring nameWide = clipPath.substr(clipPath.find_last_of(L"\\/") + 1);
+        std::printf("POSE_RATE,clip=%s,moving=%llu,held_pct=%.1f,flips=%llu,stair_windows=%zu,stair_pct=%.0f,verdict=%s\n",
+            Narrow(nameWide).c_str(), static_cast<unsigned long long>(total.moving), total.HeldPercent(),
+            static_cast<unsigned long long>(total.flips), stairWindows, poserate::kStairPct, stairWindows ? "stairs" : "ok");
+        return stairWindows ? 4 : 0;
+    }
+}
+
+namespace
+{
+    // pose-codec: how much of a ped's frame to frame motion is the pose
+    // codec's own (deadband and quantization). The record's frames are
+    // decoded, low passed (a Gaussian over sigmaFrames, the "truth": a
+    // smooth animation), composed to object space, encoded again with the
+    // record's codec settings (or the variant asked) and decoded. Per bone
+    // and frame: e = decoded - truth (object space position); the shimmer is
+    // |e(f+1) - e(f)|, what the codec adds to one frame's step. The same
+    // measure on the recorded data itself uses its own low pass as truth.
+    // Lines: POSE_CODEC with the percentiles in mm over the bones of the
+    // face and hands region (object z over the pelvis) and over every bone.
+    struct ShimmerStats
+    {
+        std::vector<float> all;
+        std::vector<float> upper;
+        float Pct(std::vector<float>& v, float q) const
+        {
+            if (v.empty())
+                return 0.0f;
+            const std::size_t k = std::min(v.size() - 1, static_cast<std::size_t>(q * static_cast<float>(v.size())));
+            std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(k), v.end());
+            return v[k];
+        }
+    };
+
+    void LowPass(const std::vector<std::vector<pose::BoneQts>>& in, float sigma, std::vector<std::vector<pose::BoneQts>>& out)
+    {
+        const int radius = std::max(1, static_cast<int>(std::ceil(3.0f * sigma)));
+        std::vector<float> kernel(static_cast<std::size_t>(2 * radius + 1));
+        for (int k = -radius; k <= radius; ++k)
+            kernel[static_cast<std::size_t>(k + radius)] = std::exp(-0.5f * static_cast<float>(k * k) / (sigma * sigma));
+        const int frames = static_cast<int>(in.size());
+        out = in;
+        for (int f = 0; f < frames; ++f)
+        {
+            const std::size_t bones = in[static_cast<std::size_t>(f)].size();
+            for (std::size_t b = 0; b < bones; ++b)
+            {
+                const pose::BoneQts& center = in[static_cast<std::size_t>(f)][b];
+                float q[4] = {}, t[3] = {}, w = 0.0f;
+                for (int k = -radius; k <= radius; ++k)
+                {
+                    const int g = std::clamp(f + k, 0, frames - 1);
+                    const pose::BoneQts& v = in[static_cast<std::size_t>(g)][b];
+                    const float kw = kernel[static_cast<std::size_t>(k + radius)];
+                    const float dot = v.rotation.x * center.rotation.x + v.rotation.y * center.rotation.y +
+                        v.rotation.z * center.rotation.z + v.rotation.w * center.rotation.w;
+                    const float sign = dot < 0.0f ? -1.0f : 1.0f;
+                    q[0] += kw * sign * v.rotation.x;
+                    q[1] += kw * sign * v.rotation.y;
+                    q[2] += kw * sign * v.rotation.z;
+                    q[3] += kw * sign * v.rotation.w;
+                    for (int a = 0; a < 3; ++a)
+                        t[a] += kw * v.translation[a];
+                    w += kw;
+                }
+                pose::BoneQts& o = out[static_cast<std::size_t>(f)][b];
+                o.rotation = pose::Normalize(pose::Quat{q[0], q[1], q[2], q[3]});
+                for (int a = 0; a < 3; ++a)
+                    o.translation[a] = t[a] / w;
+            }
+        }
+    }
+
+    // Object space positions of every bone, per frame.
+    // `unresolved`: per frame, the object space transform of each of the
+    // layout's unresolved bones (the recorded ones; empty when it has none).
+    void Objects(const pose::SkeletonLayout& layout, const std::vector<std::vector<pose::BoneQts>>& locals,
+        std::vector<std::vector<pose::BoneQts>>& objects, const std::vector<std::vector<pose::BoneQts>>* unresolved = nullptr)
+    {
+        objects.resize(locals.size());
+        std::vector<pose::BoneQts> none(layout.unresolvedBones.size());
+        for (std::size_t f = 0; f < locals.size(); ++f)
+        {
+            objects[f].resize(layout.boneCount);
+            const pose::BoneQts* fixed = layout.unresolvedBones.empty() ? nullptr
+                : unresolved && f < unresolved->size() && (*unresolved)[f].size() == layout.unresolvedBones.size()
+                ? (*unresolved)[f].data()
+                : none.data();
+            pose::ComposeObjects(layout, locals[f].data(), fixed, objects[f].data());
+        }
+    }
+
+    std::vector<pose::BoneQts> UnresolvedOf(const pose::SkeletonLayout& layout, const std::vector<pose::BoneQts>& objects)
+    {
+        std::vector<pose::BoneQts> out;
+        for (const std::uint32_t bone : layout.unresolvedBones)
+            out.push_back(bone < objects.size() ? objects[bone] : pose::BoneQts{});
+        return out;
+    }
+
+    void Shimmer(const std::vector<std::vector<pose::BoneQts>>& decoded, const std::vector<std::vector<pose::BoneQts>>& truth,
+        const std::vector<std::uint32_t>& times, const std::vector<std::uint8_t>& upper, ShimmerStats& stats)
+    {
+        for (std::size_t f = 1; f < decoded.size(); ++f)
+        {
+            if (times[f] - times[f - 1] > poserate::kMaxStepMs)
+                continue;
+            for (std::size_t b = 0; b < decoded[f].size() && b < truth[f].size(); ++b)
+            {
+                float d2 = 0.0f;
+                for (int a = 0; a < 3; ++a)
+                {
+                    const float e1 = decoded[f][b].translation[a] - truth[f][b].translation[a];
+                    const float e0 = decoded[f - 1][b].translation[a] - truth[f - 1][b].translation[a];
+                    d2 += (e1 - e0) * (e1 - e0);
+                }
+                const float mm = std::sqrt(d2) * 1000.0f;
+                stats.all.push_back(mm);
+                if (upper[b])
+                    stats.upper.push_back(mm);
+            }
+        }
+    }
+
+    void PrintShimmer(const char* what, ShimmerStats& s, std::size_t bytes)
+    {
+        std::printf("POSE_CODEC,%s,bytes=%zu,all_p50_mm=%.3f,all_p90_mm=%.3f,all_p99_mm=%.3f,upper_p50_mm=%.3f,upper_p90_mm=%.3f,"
+                    "upper_p99_mm=%.3f\n",
+            what, bytes, s.Pct(s.all, 0.5f), s.Pct(s.all, 0.9f), s.Pct(s.all, 0.99f), s.Pct(s.upper, 0.5f),
+            s.Pct(s.upper, 0.9f), s.Pct(s.upper, 0.99f));
+    }
+
+    int PoseCodec(const std::wstring& clipPath, std::uint32_t owner, std::uint32_t fromMs, std::uint32_t toMs, float sigma)
+    {
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track cameraTrack;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, 0x140000000ull, 0x10000000ull, recording, poses, cameraTrack, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        for (const pose::PoseRecordExport& record : poses)
+        {
+            if (record.recordId != owner || record.track.layouts.empty())
+                continue;
+            pose::PoseTrack track;
+            std::string importError;
+            if (!track.Import(record.track, importError))
+                return 3;
+            const pose::SkeletonLayout& layout = record.track.layouts.front();
+            pose::PoseSample sample;
+            std::vector<std::vector<pose::BoneQts>> locals, objects, unresolvedFrames;
+            std::vector<std::uint32_t> times;
+            for (const pose::TrackChunkExport& chunk : record.track.chunks)
+            {
+                if (chunk.layout != 0)
+                    continue;
+                for (const std::uint32_t t : chunk.frameTimes)
+                {
+                    if (t < fromMs || t > toMs || !track.Sample(t, sample) || sample.frameTimeA != t ||
+                        sample.locals.size() != layout.boneCount)
+                        continue;
+                    locals.push_back(sample.locals);
+                    objects.push_back(sample.objects);
+                    times.push_back(t);
+                    unresolvedFrames.push_back(UnresolvedOf(layout, sample.objects));
+                }
+            }
+            if (locals.size() < 10)
+                return 3;
+            // The upper region: bones whose object z is over the pelvis
+            // (bone 0) by 0.3 m in the first frame (chest, arms, hands, head, face).
+            std::vector<std::uint8_t> upper(layout.boneCount, 0);
+            std::size_t upperCount = 0;
+            for (std::uint32_t b = 0; b < layout.boneCount; ++b)
+                if (objects[0][b].translation[2] - objects[0][0].translation[2] > 0.3f)
+                {
+                    upper[b] = 1;
+                    ++upperCount;
+                }
+            std::printf("POSE_CODEC_INPUT,record=%08X,frames=%zu,bones=%u,upper=%zu,eps_rad=%.4f,eps_m=%.4f,sigma=%.1f\n",
+                record.recordId, locals.size(), layout.boneCount, upperCount, record.track.config.rotationEpsilon,
+                record.track.config.translationEpsilon, sigma);
+
+            // The recorded data against its own low pass.
+            std::vector<std::vector<pose::BoneQts>> smoothLocals, truthObjects;
+            LowPass(locals, sigma, smoothLocals);
+            Objects(layout, smoothLocals, truthObjects, &unresolvedFrames);
+            {
+                ShimmerStats s;
+                Shimmer(objects, truthObjects, times, upper, s);
+                PrintShimmer("source=recorded", s, record.track.chunks.size());
+            }
+            // The truth through the codec, as recorded and with variants.
+            struct Variant
+            {
+                const char* name;
+                float rotationEpsilon;
+                float translationEpsilon;
+                bool all64;
+            };
+            const Variant variants[] = {
+                {"source=truth_codec_recorded", record.track.config.rotationEpsilon, record.track.config.translationEpsilon, false},
+                {"source=truth_codec_rot64", record.track.config.rotationEpsilon, record.track.config.translationEpsilon, true},
+                {"source=truth_codec_eps0.0005", 0.0005f, record.track.config.translationEpsilon, false},
+                {"source=truth_codec_eps0.0005_t0.0002", 0.0005f, 0.0002f, false},
+                {"source=truth_codec_eps0.0005_rot64", 0.0005f, 0.0002f, true},
+                {"source=truth_codec_eps0.001_rot64", 0.001f, 0.0002f, true},
+                {"source=truth_codec_eps0.0002_rot64", 0.0002f, 0.0001f, true},
+            };
+            for (const Variant& v : variants)
+            {
+                pose::SkeletonLayout variantLayout = layout;
+                if (v.all64)
+                    std::fill(variantLayout.highPrecision.begin(), variantLayout.highPrecision.end(), std::uint8_t{1});
+                pose::StreamConfig config = record.track.config;
+                config.rotationEpsilon = v.rotationEpsilon;
+                config.translationEpsilon = v.translationEpsilon;
+                config.byteBudget = std::size_t{1} << 31;
+                pose::PoseTrack encoded;
+                encoded.Begin(variantLayout, config);
+                for (std::size_t f = 0; f < smoothLocals.size(); ++f)
+                {
+                    pose::FrameInput input;
+                    input.timeMs = times[f];
+                    float world[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+                    input.world = world;
+                    input.locals = smoothLocals[f].data();
+                    input.objects = truthObjects[f].data();
+                    encoded.Append(input);
+                }
+                std::vector<std::vector<pose::BoneQts>> decodedObjects, decodedLocals;
+                for (std::size_t f = 0; f < times.size(); ++f)
+                {
+                    if (!encoded.Sample(times[f], sample))
+                        return 3;
+                    decodedObjects.push_back(sample.objects);
+                    decodedLocals.push_back(sample.locals);
+                }
+                ShimmerStats s;
+                Shimmer(decodedObjects, truthObjects, times, upper, s);
+                PrintShimmer(v.name, s, encoded.Bytes());
+                if (!v.all64 && v.rotationEpsilon == record.track.config.rotationEpsilon)
+                {
+                    // The playback smoother on the decoded frames (pose_deadband_smooth.h).
+                    std::vector<std::vector<pose::BoneQts>> smoothed = decodedLocals, smoothedObjects;
+                    for (std::size_t f = 1; f + 1 < decodedLocals.size(); ++f)
+                        pose::smooth::SmoothDeadband(decodedLocals[f - 1].data(), decodedLocals[f].data(),
+                            decodedLocals[f + 1].data(), layout.boneCount, pose::smooth::Gate::For(config), smoothed[f].data());
+                    Objects(layout, smoothed, smoothedObjects, &unresolvedFrames);
+                    ShimmerStats sm;
+                    Shimmer(smoothedObjects, truthObjects, times, upper, sm);
+                    PrintShimmer("source=truth_codec_recorded_smoothed", sm, encoded.Bytes());
+                    // How far the smoother moves the truth itself (blur of real motion).
+                    std::vector<std::vector<pose::BoneQts>> truthSmoothed = smoothLocals, truthSmoothedObjects;
+                    for (std::size_t f = 1; f + 1 < smoothLocals.size(); ++f)
+                        pose::smooth::SmoothDeadband(smoothLocals[f - 1].data(), smoothLocals[f].data(),
+                            smoothLocals[f + 1].data(), layout.boneCount, pose::smooth::Gate::For(config), truthSmoothed[f].data());
+                    Objects(layout, truthSmoothed, truthSmoothedObjects, &unresolvedFrames);
+                    float worst = 0.0f;
+                    for (std::size_t f = 0; f < truthObjects.size(); ++f)
+                        for (std::uint32_t b = 0; b < layout.boneCount; ++b)
+                        {
+                            float d2 = 0.0f;
+                            for (int a = 0; a < 3; ++a)
+                            {
+                                const float d = truthSmoothedObjects[f][b].translation[a] - truthObjects[f][b].translation[a];
+                                d2 += d * d;
+                            }
+                            worst = std::max(worst, std::sqrt(d2));
+                        }
+                    std::printf("POSE_CODEC_SMOOTH_BIAS,max_mm=%.3f\n", worst * 1000.0f);
+                    // The load pass: the whole track smoothed and encoded again (SmoothTrack).
+                    pose::TrackExport exported, smoothedTrack;
+                    encoded.Export(exported);
+                    pose::smooth::SmoothStats smoothStats;
+                    std::string smoothError;
+                    pose::PoseTrack reloaded;
+                    if (pose::smooth::SmoothTrack(exported, smoothedTrack, smoothStats, smoothError) &&
+                        reloaded.Import(smoothedTrack, smoothError))
+                    {
+                        std::vector<std::vector<pose::BoneQts>> reloadedObjects;
+                        for (std::size_t f = 0; f < times.size(); ++f)
+                        {
+                            if (!reloaded.Sample(times[f], sample))
+                                return 3;
+                            reloadedObjects.push_back(sample.objects);
+                        }
+                        ShimmerStats st;
+                        Shimmer(reloadedObjects, truthObjects, times, upper, st);
+                        PrintShimmer("source=truth_codec_recorded_smoothtrack", st, smoothStats.bytesOut);
+                    }
+                    else
+                        std::printf("POSE_CODEC_SMOOTHTRACK,error=%s\n", smoothError.c_str());
+                }
+            }
+            return 0;
+        }
+        std::fprintf(stderr, "no record %08X\n", owner);
+        return 3;
+    }
+}
+
+namespace
+{
+    // pose-smooth: the clip load's deadband pass (pose_deadband_smooth.h
+    // SmoothRecords) on every record of a clip, timed, with the bytes before
+    // and after and the frame counts kept. The clip is not written.
+    int PoseSmooth(const std::wstring& clipPath)
+    {
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track cameraTrack;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, 0x140000000ull, 0x10000000ull, recording, poses, cameraTrack, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        std::vector<std::uint64_t> framesBefore;
+        for (const pose::PoseRecordExport& record : poses)
+        {
+            std::uint64_t frames = 0;
+            for (const pose::TrackChunkExport& chunk : record.track.chunks)
+                frames += chunk.frameTimes.size();
+            framesBefore.push_back(frames);
+        }
+        for (const pose::PoseRecordExport& record : poses)
+        {
+            const std::vector<pose::smooth::WorldFrame> frames = pose::smooth::WorldFrames(record.track);
+            for (const std::size_t n : pose::smooth::FindWorldSpikes(frames))
+            {
+                pose::WorldTransform a{}, b{};
+                pose::DecodeWorldMatrix(frames[n - 1].world, a);
+                pose::DecodeWorldMatrix(frames[n].world, b);
+                const float dx = b.position.x - a.position.x, dy = b.position.y - a.position.y, dz = b.position.z - a.position.z;
+                std::printf("POSE_SMOOTH_SPIKE,record=%08X,t=%u,moved_mm=%.1f,turned_deg=%.2f\n", record.recordId, frames[n].timeMs,
+                    std::sqrt(dx * dx + dy * dy + dz * dz) * 1000.0f, pose::AngleBetween(a.rotation, b.rotation) * 57.2958f);
+            }
+        }
+        const auto started = std::chrono::steady_clock::now();
+        pose::smooth::RecordsSummary summary;
+        pose::smooth::SmoothRecords(poses, summary);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        std::size_t mismatched = 0;
+        for (std::size_t n = 0; n < poses.size(); ++n)
+        {
+            std::uint64_t frames = 0;
+            for (const pose::TrackChunkExport& chunk : poses[n].track.chunks)
+                frames += chunk.frameTimes.size();
+            if (frames != framesBefore[n])
+                ++mismatched;
+        }
+        for (const pose::PoseRecordExport& record : poses)
+        {
+            // Left after the pass (0: every spike repaired).
+            const std::vector<pose::smooth::WorldFrame> frames = pose::smooth::WorldFrames(record.track);
+            for (const std::size_t n : pose::smooth::FindWorldSpikes(frames))
+                std::printf("POSE_SMOOTH_SPIKE_LEFT,record=%08X,t=%u\n", record.recordId, frames[n].timeMs);
+        }
+        std::printf("POSE_SMOOTH,records=%u,smoothed=%u,failed=%u,world_spikes=%u,spike_records=%u,frames=%llu,smoothed_frames=%llu,"
+                    "bytes_in=%llu,bytes_out=%llu,frame_count_mismatch=%zu,ms=%.0f\n",
+            summary.records, summary.smoothed, summary.failed, summary.worldSpikes, summary.spikeRecords,
+            static_cast<unsigned long long>(summary.frames),
+            static_cast<unsigned long long>(summary.smoothedFrames), static_cast<unsigned long long>(summary.bytesIn),
+            static_cast<unsigned long long>(summary.bytesOut), mismatched, ms);
+        return summary.failed || mismatched ? 4 : 0;
+    }
+}
+
+namespace
+{
+    // pose-fidelity: the pose codec settings compared on a whole clip. For
+    // every ped and horse record: its frames decoded, low passed (the smooth
+    // "truth" of pose-codec), encoded with each setting; per setting the raw
+    // pose bytes per second, the same bytes through zstd 19 (the background
+    // compressor's level) and zstd 3 (the save's quick pack), the encode time
+    // per record frame, and the codec's frame to frame motion of the upper
+    // body bones (median, p90, p99 mm; pose-codec's measure).
+    int PoseCodecSettings(const std::wstring& clipPath, float sigma)
+    {
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track cameraTrack;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, 0x140000000ull, 0x10000000ull, recording, poses, cameraTrack, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        struct Setting
+        {
+            const char* name;
+            float rotationEpsilon;
+            float translationEpsilon;
+            bool all64;
+        };
+        const Setting settings[] = {
+            {"old_0.002_0.5mm_rot32", 0.002f, 0.0005f, false},
+            {"old_0.002_0.5mm_rot64", 0.002f, 0.0005f, true},
+            {"fine_0.0005_0.2mm_rot32", 0.0005f, 0.0002f, false},
+            {"fine_0.0005_0.2mm_rot64", 0.0005f, 0.0002f, true},
+            {"finer_0.0002_0.1mm_rot32", 0.0002f, 0.0001f, false},
+            {"finer_0.0002_0.1mm_rot64", 0.0002f, 0.0001f, true},
+            {"zero_rot32", 0.0f, 0.0f, false},
+            {"zero_rot64", 0.0f, 0.0f, true},
+        };
+        const double seconds = static_cast<double>(durationMs) / 1000.0;
+        for (const Setting& setting : settings)
+        {
+            std::vector<std::uint8_t> all;
+            ShimmerStats shimmer;
+            double encodeMs = 0.0;
+            std::uint64_t frames = 0;
+            for (const pose::PoseRecordExport& record : poses)
+            {
+                if (record.track.layouts.empty())
+                    continue;
+                pose::PoseTrack track;
+                std::string importError;
+                if (!track.Import(record.track, importError))
+                    continue;
+                const pose::SkeletonLayout& layout = record.track.layouts.front();
+                pose::PoseSample sample;
+                std::vector<std::vector<pose::BoneQts>> locals, unresolvedFrames;
+                std::vector<std::uint32_t> times;
+                std::vector<std::array<float, 16>> worlds;
+                for (const pose::TrackChunkExport& chunk : record.track.chunks)
+                {
+                    if (chunk.layout != 0)
+                        continue;
+                    for (const std::uint32_t t : chunk.frameTimes)
+                    {
+                        if ((!times.empty() && t <= times.back()) || !track.Sample(t, sample) || sample.frameTimeA != t ||
+                            sample.locals.size() != layout.boneCount)
+                            continue;
+                        locals.push_back(sample.locals);
+                        times.push_back(t);                        unresolvedFrames.push_back(UnresolvedOf(layout, sample.objects));
+                        std::array<float, 16> world{};
+                        std::memcpy(world.data(), sample.worldA, sizeof(sample.worldA));
+                        worlds.push_back(world);
+                    }
+                }
+                if (locals.size() < 10)
+                    continue;
+                std::vector<std::vector<pose::BoneQts>> smoothLocals, truthObjects;
+                LowPass(locals, sigma, smoothLocals);
+                locals.clear();
+                locals.shrink_to_fit();
+                Objects(layout, smoothLocals, truthObjects, &unresolvedFrames);
+                std::vector<std::uint8_t> upper(layout.boneCount, 0);
+                for (std::uint32_t b = 0; b < layout.boneCount; ++b)
+                    upper[b] = truthObjects[0][b].translation[2] - truthObjects[0][0].translation[2] > 0.3f ? 1 : 0;
+
+                pose::SkeletonLayout variant = layout;
+                if (setting.all64)
+                    std::fill(variant.highPrecision.begin(), variant.highPrecision.end(), std::uint8_t{1});
+                pose::StreamConfig config = record.track.config;
+                config.rotationEpsilon = setting.rotationEpsilon;
+                config.translationEpsilon = setting.translationEpsilon;
+                config.byteBudget = std::size_t{1} << 40;
+                pose::PoseTrack encoded;
+                encoded.Begin(variant, config);
+                const auto started = std::chrono::steady_clock::now();
+                for (std::size_t f = 0; f < smoothLocals.size(); ++f)
+                {
+                    pose::FrameInput input;
+                    input.timeMs = times[f];
+                    input.world = worlds[f].data();
+                    input.locals = smoothLocals[f].data();
+                    input.objects = truthObjects[f].data();
+                    encoded.Append(input);
+                }
+                encodeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                frames += smoothLocals.size();
+                pose::TrackExport exported;
+                encoded.Export(exported);
+                for (const pose::TrackChunkExport& chunk : exported.chunks)
+                    all.insert(all.end(), chunk.bytes.begin(), chunk.bytes.end());
+                for (const std::vector<std::uint8_t>& anchor : exported.anchors)
+                    all.insert(all.end(), anchor.begin(), anchor.end());
+                std::vector<std::vector<pose::BoneQts>> decodedObjects;
+                for (std::size_t f = 0; f < times.size(); ++f)
+                {
+                    if (!encoded.Sample(times[f], sample))
+                        break;
+                    decodedObjects.push_back(sample.objects);
+                }
+                if (decodedObjects.size() == times.size())
+                    Shimmer(decodedObjects, truthObjects, times, upper, shimmer);
+            }
+            std::vector<std::uint8_t> z19, z3;
+            std::string zError;
+            clipcompress::Compress(all.data(), all.size(), 19, nullptr, z19, zError);
+            clipcompress::Compress(all.data(), all.size(), 3, nullptr, z3, zError);
+            std::printf("POSE_FIDELITY,setting=%s,raw_kb_s=%.0f,zstd19_kb_s=%.0f,zstd3_kb_s=%.0f,encode_us_per_frame=%.1f,frames=%llu,"
+                        "upper_p50_mm=%.3f,upper_p90_mm=%.3f,upper_p99_mm=%.3f\n",
+                setting.name, all.size() / 1024.0 / seconds, z19.size() / 1024.0 / seconds, z3.size() / 1024.0 / seconds,
+                frames ? encodeMs * 1000.0 / static_cast<double>(frames) : 0.0, static_cast<unsigned long long>(frames),
+                shimmer.Pct(shimmer.upper, 0.5f), shimmer.Pct(shimmer.upper, 0.9f), shimmer.Pct(shimmer.upper, 0.99f));
+            std::fflush(stdout);
+        }
+        return 0;
+    }
+}
+
+namespace
+{
     using namespace replay;
 
     double MsSince(std::chrono::steady_clock::time_point start)
@@ -5488,6 +6419,10 @@ int wmain(int argc, wchar_t** argv)
     }
     if (argc >= 3 && std::wstring(argv[1]) == L"sounds")
         return Sounds(argv[2]);
+    if (argc == 3 && std::wstring(argv[1]) == L"sites")
+        return Sites(argv[2]);
+    if (argc == 4 && std::wstring(argv[1]) == L"resave")
+        return Resave(argv[2], argv[3]);
     if (argc >= 3 && std::wstring(argv[1]) == L"appearance")
         return AppearanceOf(argv[2], argc >= 4 ? Narrow(argv[3]) : std::string());
     if (argc >= 3 && std::wstring(argv[1]) == L"segments")
@@ -5539,6 +6474,62 @@ int wmain(int argc, wchar_t** argv)
                 maxDistM = static_cast<float>(_wtof(argv[++n]));
         }
         return FrozenPoses(argv[2], maxPct, maxPeds, maxDistM);
+    }
+    if (argc >= 3 && std::wstring(argv[1]) == L"pose-fidelity")
+        return PoseCodecSettings(argv[2], argc >= 5 && std::wstring(argv[3]) == L"--sigma" ? static_cast<float>(_wtof(argv[4])) : 2.0f);
+    if (argc == 3 && std::wstring(argv[1]) == L"pose-smooth")
+        return PoseSmooth(argv[2]);
+    if (argc >= 4 && std::wstring(argv[1]) == L"pose-codec")
+    {
+        unsigned slot = 0, instance = 0;
+        if (swscanf_s(argv[3], L"%u:%u", &slot, &instance) != 2)
+            return 1;
+        std::uint32_t fromMs = 0, toMs = 0xFFFFFFFFu;
+        float sigma = 2.0f;
+        for (int n = 4; n + 1 < argc; ++n)
+        {
+            if (std::wstring(argv[n]) == L"--from")
+                fromMs = static_cast<std::uint32_t>(_wtoi(argv[++n]));
+            else if (std::wstring(argv[n]) == L"--to")
+                toMs = static_cast<std::uint32_t>(_wtoi(argv[++n]));
+            else if (std::wstring(argv[n]) == L"--sigma")
+                sigma = static_cast<float>(_wtof(argv[++n]));
+        }
+        return PoseCodec(argv[2], (slot << 16) | instance, fromMs, toMs, sigma);
+    }
+    if (argc >= 3 && std::wstring(argv[1]) == L"pose-rate")
+    {
+        std::uint32_t windowMs = 3000;
+        std::vector<std::uint32_t> owners;
+        for (int n = 3; n < argc; ++n)
+        {
+            unsigned slot = 0, instance = 0;
+            if (std::wstring(argv[n]) == L"--window-ms" && n + 1 < argc)
+                windowMs = static_cast<std::uint32_t>(std::max(100, _wtoi(argv[++n])));
+            else if (std::wstring(argv[n]) == L"--id" && n + 1 < argc && swscanf_s(argv[n + 1], L"%u:%u", &slot, &instance) == 2)
+            {
+                owners.push_back((slot << 16) | instance);
+                ++n;
+            }
+        }
+        return PoseRate(argv[2], windowMs, owners);
+    }
+    if (argc >= 4 && std::wstring(argv[1]) == L"pose-dump")
+    {
+        std::vector<std::uint32_t> owners;
+        std::uint32_t resampleMs = 0;
+        bool smoothed = false;
+        for (int n = 4; n < argc; ++n)
+        {
+            unsigned slot = 0, instance = 0;
+            if (std::wstring(argv[n]) == L"--resample-ms" && n + 1 < argc)
+                resampleMs = static_cast<std::uint32_t>(std::max(1, _wtoi(argv[++n])));
+            else if (std::wstring(argv[n]) == L"--smooth")
+                smoothed = true;
+            else if (swscanf_s(argv[n], L"%u:%u", &slot, &instance) == 2)
+                owners.push_back((slot << 16) | instance);
+        }
+        return PoseDump(argv[2], argv[3], owners, resampleMs, smoothed);
     }
     if (argc == 3 && std::wstring(argv[1]) == L"sections")
         return SectionsOf(argv[2]);
@@ -5632,6 +6623,8 @@ int wmain(int argc, wchar_t** argv)
                              "       ReplayClipTool project-info <project.rpproj>\n"
                              "       ReplayClipTool pack-verify <clip.rpclip> [--threads 8] [--level 9] [--zstd] [--block 32] [--plain] [--out <packed.rpclip>]\n"
                              "       ReplayClipTool pack-load <clip.rpclip>\n"
+                             "       ReplayClipTool sites <clip.rpclip>   (the game addresses by site id, and a round trip)\n"
+                             "       ReplayClipTool resave <clip.rpclip> <out.rpclip>   (written plain in this format)\n"
                              "       ReplayClipTool save-pack-verify <clip.rpclip> [--levels 1,3,6] [--threads 1,4] [--lzma] [--out <packed.rpclip>]\n"
                              "       ReplayClipTool compress-file <copy.rpclip> [--zstd] [--no-upgrade] [--threads 1]   (in place)\n"
                              "       ReplayClipTool trim <in.rpclip> <out.rpclip> <fromMs> <toMs>\n"
@@ -5659,7 +6652,12 @@ int wmain(int argc, wchar_t** argv)
                              "       ReplayClipTool signature <clip.rpclip>... [--id slot:instance]\n"
                              "       ReplayClipTool hats <clip.rpclip> [--step-ms 100] [--fix]\n"
                              "       ReplayClipTool never-animated <clip.rpclip>... [--ref slot:instance]\n"
-                             "       ReplayClipTool frozen-poses <clip.rpclip> [--max-pct 2] [--max-peds 0] [--max-dist 40]\n");
+                             "       ReplayClipTool frozen-poses <clip.rpclip> [--max-pct 2] [--max-peds 0] [--max-dist 40]\n"
+                             "       ReplayClipTool pose-rate <clip.rpclip> [--window-ms 3000] [--id slot:instance]...\n"
+                             "       ReplayClipTool pose-dump <clip.rpclip> <out.bin> [slot:instance]... [--resample-ms 16] [--smooth]\n"
+                             "       ReplayClipTool pose-codec <clip.rpclip> <slot:instance> [--from ms] [--to ms] [--sigma 2]\n"
+                             "       ReplayClipTool pose-smooth <clip.rpclip>\n"
+                             "       ReplayClipTool pose-fidelity <clip.rpclip> [--sigma 2]\n");
         return 1;
     }
     // No --step-ms: 100 ms up to 2 minutes, 200 up to 5, 250 beyond (a long

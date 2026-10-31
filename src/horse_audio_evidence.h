@@ -6,39 +6,13 @@
 // readers were disassembled in build 1491.50, no write, no call, no behaviour
 // change. HorseAudioEvidence=1 in the ini.
 //
-// Offline (build 1491.50, .text dump, capstone):
-//   - the queued hoofsteps (foot audio holder +0x1560, queue +0x70, count
-//     +0xB0, filled by the footstep entry 0x317A340) are played by the
-//     movement sounds 0x3193F20, one call of 0x318D52C per step; the main
-//     step sound is the create-and-play at 0x318DAF9 (return 0x318DAFE) with
-//     the ref from 0x317FC9C (foot +0x428 settings, when component row slot
-//     +0x00 is set) or 0x3182A98 (the ped audio's +0xE00 object, settings at
-//     its +0x650 = ped audio +0x1450, when slot +0x00 is empty). Both pick
-//     the hash at settings +4 * step type and resolve it (0x252B408).
-//   - the +0xE00 object's +0x650 is written by 0x319E8D8 for slot 10 only
-//     (0x3182A2C: game object type 0x16 from the slot 10 hash at +0x498,
-//     fallback 0x3D857DBD); the eleven slot hashes +0x470..+0x498 come from
-//     0x317C8D4 (the ped's audio component, vtable +0x80, 0x3276F78: tag per
-//     slot of the ped's outfit entries; empty slot 10 without row +0x00 ->
-//     0xDE27F155 or 0xDE27F155 + 0x863F3CF1 by 0xF0AB1C). The update that
-//     refreshes them (0x3191324, vtable 0x3839338 slot +0x18) first runs the
-//     player horse branch choice 0x319EEE8.
-//   - 0x319EEE8 (same object): +0x700 set, row +0xE0 component +0x400 bit 6
-//     clear and ped audio +0x45E8 <= 1, then with row +0xA8 component C:
-//     0x8B7498(C) || 0x8B69B0(C) || 0x8B4A88(C) || ped audio +0x4662 bit 0
-//     -> 0x319CF14 (player horse), else 0x3198574; no C -> 0x31A1900.
-//     0x8B69B0: [C+0xB0] entity, its row +0xB8 component +0x40: bit 1 set,
-//     bit 0 clear. 0x8B4A88: [C+0xA8] entity has row +0xF0. 0x8B7498:
-//     E1 = [C+8] & ~0xF, C0 = row(E1) +0x00, E2 = [C0+8] & ~0xF, then an
-//     obfuscated pointer of E2 (0x2B1990) and a task list (0x737B78) whose
-//     entity has row +0xB8 +0x40 bit 1 (any player). Only E1 and C0 are read
-//     here; the rest is decoded by the engine only.
-//   - movement sounds 0x3193F20 set init params +0x138 = 8 when 0x8B69B0
-//     says yes (0x31941F9), the params every queued step plays with.
+// The fields compared are the ones that pick the main step sound's ref (the
+// foot settings or the ped audio's +0xE00 object), the player horse branch
+// choice and the step's init params, live horse against puppet.
+// Research: docs/research/ped-audio-state.md
 //
 // Pure part (no game): the field table, the line text and the comparison;
 // unit tested in ReplayCoreTests.
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -80,26 +54,10 @@ namespace replay::horseaudio
         kFoot0024,       // foot +0x24 byte (enabled)
         kRowE0Flags,     // row +0xE0 component +0x400 dword (bit 3: 0x3193FB2, bit 6: 0x319EF45)
         // The horse's persistent loops, 1 while their slot holds a sound (the
-        // live horse at record start against its puppet). Offline, build
-        // 1491.50:
-        //   - +0xE00 object +0x30 and +0x48: the saddle weapon loops of
-        //     0x31A0F30 (called by the +0xE00 update 0x3191324 at 0x31914A6;
-        //     it walks the ped attachments 0xCC8C58 and keeps one slot per
-        //     carried weapon, created through 0x319D96C and the wrapper
-        //     0x2588BE0, stopped with 0x2585C2C when the weapon is gone);
-        //   - foot +0x596: the tack loops' switch, set by 0x3197C78 at
-        //     0x3198099 (from the game code 0x8EECE8, state 10), cleared by
-        //     the foot update 0x31925AC at 0x3192824 and by 0x31986BC;
-        //   - foot +0x4D8 and +0x4E0: the tack loops of 0x319F8A4 (foot
-        //     vtable 0x38389B0 slot +0x80 through 0x319CBF0), entry
-        //     0x63D72B3C of the sets at foot +0x240 and +0x280, created
-        //     through the wrapper (returns 0x319FC53 and 0x319FEB0) while
-        //     +0x596 is set, then moved and driven every update (0x2537168,
-        //     0x2536C70, 0x2536E48, variables 0x833FF9C9, 0x48FE569D and
-        //     0x41F750D5 = foot +0x580 is 0x41F750D5);
-        //   - foot +0x480 and +0x5A5: the urge loop of 0x31A1420 (called by
-        //     the foot update at 0x319290B when 0x8B69B0 says yes), created
-        //     through the wrapper (return 0x31A1593) while +0x5A5 is set.
+        // live horse at record start against its puppet): the saddle weapon
+        // loops, the tack loops and their switch, and the urge loop.
+        // Offline, build 1491.50; the writers and readers are in
+        // docs/research/ped-audio-state.md.
         kExt0030,        // +0xE00 object +0x30 set (saddle weapon loop 0)
         kExt0048,        // +0xE00 object +0x48 set (saddle weapon loop 1)
         kFoot0596,       // foot +0x596 byte (tack loops on)

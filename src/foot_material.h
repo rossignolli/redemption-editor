@@ -5,33 +5,15 @@
 // ground probe finds. Without it a puppet plays the same step index from
 // another container: same step, other surface.
 //
-// Engine facts (build 1491.50):
-//   - the foot audio (ped audio holder +0x1560, vtable 0x38389B0) keeps one
-//     64-byte record per foot at +0x240 (constructor 0x3178EB4 loops 4 times
-//     from +0x240 with stride 0x40). Its first 16 bytes are the main step
-//     container: +0x0 the container object (0x252B194 of the ref), +0x8 the
-//     container name hash, +0xC the ref low dword (written by 0x3188614 at
-//     0x3188741/0x3188762/0x318877B, from the material settings of the foot,
-//     [foot +0x30 + 8 * foot], field +0x25C for a quadruped, +0x140..+0x148
-//     by shoe type for a biped).
-//   - the main step sound (0x318D1B8, called from 0x318D96E inside
-//     0x318D52C) takes that slot ((foot index + 9) << 6 at 0x318D1D4) to
-//     0x3181374, which builds the indirect ref container[index of the step
-//     name] (0x252A888) and plays it (0x318E6E8, create-and-play return
-//     0x318E828).
-//   - the foot audio update 0x317F3E8 resolves the ground material of each
-//     foot every frame (0x31A0A44 -> 0x3116524 by the physics material id of
-//     the foot contact) and refreshes the slot (0x3188614) when that foot
-//     landed: a puppet's own probe decides the container of a replayed step.
-//   - the queued steps (entries of 16 bytes at +0x70, count at +0xB0, max 4,
-//     foot index at entry +0xC) are played by 0x3193F20 inside the movement
-//     update 0x3193D14 (detoured, MovementUpdateDetour); nothing in
-//     0x3193D14 refreshes the slots before 0x3193F20 consumes the queue.
+// The foot audio refreshes each foot's main step container from the ground
+// under it when the foot lands, so a puppet's own probe would decide the
+// container of a replayed step. The mechanism: record, per foot-down, the slot
+// the movement update played it with (sampled at the movement update entry,
+// paired here with the foot-down); play it back by setting that slot on the
+// puppet's foot before the movement update consumes the replayed step.
 //
-// The mechanism: record, per foot-down, the slot the movement update played
-// it with (sampled at the movement update entry, paired here with the
-// foot-down); play it back by setting that slot on the puppet's foot before
-// the movement update consumes the replayed step.
+// Evidence: offline dump of build 1491.50.
+// Research: docs/research/footsteps.md
 //
 // Pure (no game); unit tested in tests/foot_material_tests.cpp.
 
@@ -62,25 +44,11 @@ namespace replay::footmaterial
     inline bool ValidRef(std::uint32_t ref) { return ref != 0 && ref != 0xFFFFFFFFu; }
 
     // The ground layers of each foot (the replay ped steps on the recorded
-    // surface, not on what its own probes find).
-    //
-    // Engine facts (build 1491.50):
-    //   - the step sound 0x318D1B8 (called for every step by 0x318D52C) plays,
-    //     after the main step, up to five layer sounds through 0x318CEB4
-    //     (create-and-play return 0x318D0A0): for layer i in 0..4, when
-    //     [foot +0x3D0 + 4 * (5 * foot + i)] > 0 (0x318D297), the container
-    //     [0x5C7E370 + 16 * (size class + 4 * i)] at that weight as volume
-    //     (0x318D2FF); the size class is [ped audio +0x4608] +0x20, 3 when none;
-    //   - the only writer is 0x319F070 (store at 0x319F539: a per-layer
-    //     ground query 0x31FF1A0 with attack/decay toward the previous
-    //     value, layer 4 by 0x31157B4 with the player bit of the owner),
-    //     called by 0x319CBF0, which is the foot audio's vtable slot +0x80
-    //     (vtable 0x38389B0: +0x10 reset 0x319580C, +0x18 foot update
-    //     0x31925AC, +0x80 0x319CBF0);
-    //   - the foot update 0x31925AC calls [vtable +0x80] at 0x319292B right
-    //     before the movement update 0x3193D14 (0x3192934), which plays the
-    //     queued steps (0x3193F20): a value written at the movement update
-    //     entry is the one the steps read, as the wetness.
+    // surface, not on what its own probes find). The main step sound plays up
+    // to five layer sounds weighted by [foot +0x3D0 + 4 * (5 * foot + i)];
+    // the layer update writes them right before the movement update, so a
+    // value written at the movement update entry is the one the steps read,
+    // as the wetness. Research: docs/research/footsteps.md
     constexpr std::uint8_t kLayers = 5;
     constexpr std::uintptr_t kLayerBase = 0x3D0;
     inline std::uintptr_t LayerOffset(std::uint8_t foot, std::uint8_t layer)
@@ -120,7 +88,7 @@ namespace replay::footmaterial
     };
 
     // The audio LOD of a puppet with recorded steps. The override foot +0x444
-    // (holder +0x19A4, read by 0x317BABC at 0x317BB0F: any value but 4 is the
+    // (holder +0x19A4, read by the holder's LOD update: any value but 4 is the
     // holder's LOD) set to 0 keeps the foot (max LOD foot +0x28, 2) from ever
     // being turned off, but a LOD 0 holder runs components the live one had off.
     // The step records the holder's LOD (+0x45E8) at the foot-down; the playback
@@ -161,25 +129,12 @@ namespace replay::footmaterial
     }
 
     // The wetness of each foot, recorded and set on the replay ped's footstep
-    // audio.
-    //
-    // Engine facts (build 1491.50):
-    //   - the foot audio keeps one float per foot at +0x380 (the foot audio
-    //     reset 0x319580C clears it); the foot update 0x31925AC calls
-    //     0x31A67E8 after the movement update 0x3193D14, and 0x31A67E8 sets
-    //     each foot's value to the world ground wetness (the audio
-    //     environment's +0x15F0, read by 0x31BE794) when that is higher,
-    //     else lets it decay (1.0 while the ped audio's +0x774 says the foot
-    //     is in water);
-    //   - the step sound 0x318D1B8 (called for every step by 0x318D52C)
-    //     plays the wet layer of the step through 0x318CEB4 (create and
-    //     play return 0x318D0A0, the set 0x29934a for horses) only when
-    //     foot +0x380 + 4 * foot > 0 (0x318D338) and the ped's +0xB0 bit 7
-    //     is clear (0x318D346), with the wetness as its variable 0x02D01730;
-    //   - so the step reads the value the previous frame's update left: the
-    //     movement update entry is where the recorder samples it and where
-    //     the replay sets it on the puppet's foot.
+    // audio. The step plays its wet layer only when the foot's wetness
+    // (+0x380 + 4 * foot) is above 0, and reads the value the previous frame's
+    // wetness update left, so the movement update entry is where the recorder
+    // samples it and where the replay sets it on the puppet's foot.
     // Without it the puppets' steps never play the wet layer.
+    // Research: docs/research/footsteps.md
     constexpr std::uintptr_t kWetnessBase = 0x380;
     inline std::uintptr_t WetnessOffset(std::uint8_t foot)
     {
@@ -210,30 +165,17 @@ namespace replay::footmaterial
         return !(delta < 0.002f && delta > -0.002f);
     }
 
-    // A step whose wet layer plays (0x318D338: wetness > 0).
+    // A step whose wet layer plays (the main step's test: wetness > 0).
     inline bool WetStep(float wetness) { return wetness > 0.0f; }
 
     // The per-foot mix of a step (volume, high-pass, low-pass), recorded with
-    // the step.
-    //
-    // Engine facts (build 1491.50):
-    //   - the quadruped foot-down handler 0x317A57C (called by the foot-down
-    //     0x8C2B64 when [+0x4B8] type is 4) walks the gait's hit pattern
-    //     ([foot +0x420] metadata, up to 8 entries of 0x14 bytes: type,
-    //     volume, delay, high-pass, low-pass) and, for each hoof hit, calls
-    //     0x317AAD0 with the next foot ((foot + i) & 3);
-    //   - 0x317AAD0 writes that foot's slot (+0x390 + 4 * foot volume f32,
-    //     with the random +0x53C added; +0x3A0 delay; +0x3B0 high-pass u32;
-    //     +0x3C0 low-pass u32) and then queues the step through the footstep
-    //     entry 0x317A340, which the mod records (the delay goes as arg7);
-    //   - the step sound 0x318D52C reads the slot of the queued foot: volume
-    //     += [+0x390 + 4 * foot] (0x318D6EC), high-pass = max(params,
-    //     [+0x3B0 + 4 * foot]) (0x318D776), low-pass = min(params,
-    //     [+0x3C0 + 4 * foot]) (0x318D785);
-    //   - the foot audio reset 0x319580C sets them to 0, 0, 0 and 24000.
-    // A puppet's step is queued by the replay straight into 0x317A340, so
-    // its slots keep the reset values: every hoof hit at 0 dB, unfiltered
-    // (a live gallop has about -2 to -6 dB and 50 to 300 Hz high-pass per hit).
+    // the step. The quadruped foot-down handler writes each hoof hit's mix
+    // into the foot's slot (+0x390 volume, +0x3A0 delay, +0x3B0 high-pass,
+    // +0x3C0 low-pass) before it queues the step, and the step sound reads
+    // it. A puppet's step is queued by the replay straight into the footstep
+    // entry, so its slots keep the reset values: every hoof hit at 0 dB,
+    // unfiltered (a live gallop has about -2 to -6 dB and 50 to 300 Hz
+    // high-pass per hit). Research: docs/research/footsteps.md
     constexpr std::uintptr_t kMixVolumeBase = 0x390;
     constexpr std::uintptr_t kMixHighPassBase = 0x3B0;
     constexpr std::uintptr_t kMixLowPassBase = 0x3C0;
@@ -252,19 +194,19 @@ namespace replay::footmaterial
     };
 
     // Two more inputs of the step's sound that the puppet does not have:
-    //   - the movement sounds' base volume, foot audio +0x510 (0x3193FE7 puts
-    //     it in the step's params volume). 0x31A048C (via 0x31A09C4, run by
-    //     0x3193F20 right before the steps play) ramps it down while the
+    //   - the movement sounds' base volume, foot audio +0x510 (the step player
+    //     puts it in the step's params volume). A volume update, run by the
+    //     step player right before the steps play, ramps it down while the
     //     ped's locomotion gait (row +0x88 component +0x630) is canter or
     //     gallop: about -2 dB on a live horse, 0 on the puppet, which
     //     has no locomotion gait. Recorded per step and folded into the slot
     //     volume on the puppet (slot + recorded base - puppet base), since
     //     the puppet's own update rewrites +0x510 before the step reads it.
-    //   - the step's variable 0x01401A30 (0x318D93D: [row +0x88 component +
-    //     0xF0 + 0x90 * foot + 0x70]): the highest the foot rose over its
-    //     ground plane since its last contact (the per-foot update
-    //     0x8EED4A..0x8EF2A1 keeps max(h, [+0x70]) at 0x8EEEBA and zeroes it
-    //     after the foot-down at 0x8EF292). About 0.16 to 0.85 live; on a
+    //   - the step's variable 0x01401A30 (set by the step sound from [row +0x88
+    //     component + 0xF0 + 0x90 * foot + 0x70]): the highest the foot rose
+    //     over its ground plane since its last contact (the per-foot update
+    //     keeps max(h, [+0x70]) and zeroes it after the foot-down). About
+    //     0.16 to 0.85 live; on a
     //     puppet the ground plane goes stale (the contact never fires) and it
     //     grows to 1 to 4.7. Written on the puppet's component before the step
     //     plays (FootImpactReplay, default 1).
@@ -310,11 +252,12 @@ namespace replay::footmaterial
     // Clip fields (FOOT v4): the filters as u16 (the engine's are <= 24000).
     inline std::uint16_t EncodeMixFilter(std::uint32_t hz) { return static_cast<std::uint16_t>(hz > 0xFFFF ? 0xFFFF : hz); }
 
-    // The -2 dB term of the movement volume 0x31815C4 (build 1491.50): 0 dB
+    // The -2 dB term of the movement volume (build 1491.50): 0 dB
     // when the step's owner has the player bit (row +0xB8 component byte +0x40:
-    // bit 1 set, bit 0 clear) or its row +0xA8 link answers 0x8B69B0 (the rider
-    // is the player); otherwise -2.0 dB (float at 0x3E67E5C) when the real
-    // player has no mount (0xCC857C of the decrypted player is null), else 0.
+    // bit 1 set, bit 0 clear) or its row +0xA8 link answers the mount predicate
+    // (the rider is the player); otherwise -2.0 dB (an f32 of the exe) when
+    // the real player has no mount (the mount link of the decrypted player is
+    // null), else 0.
     // In a replay the live player is hidden on foot: the player's puppet (no
     // player bit) and every horse of a clip where the player rode lose 2 dB the
     // recording did not have. Correction to add to the original's result: the
@@ -322,10 +265,10 @@ namespace replay::footmaterial
     // have.
     struct MovementTermState
     {
-        bool enabled = false;            // ini MovementVolumeReplay and a clip playing
+        bool enabled = false;            // a clip playing
         bool puppetFoot = false;         // the foot audio is a replay puppet's
         bool ownerPlayerFlag = false;    // the engine's own player bit test
-        bool riderIsPlayer = false;      // 0x8B69B0 on the row +0xA8 link (with the mount detour's answer)
+        bool riderIsPlayer = false;      // the mount predicate on the row +0xA8 link (with the mount detour's answer)
         bool livePlayerMounted = false;  // the hidden live player rides (the engine's test)
         bool ownerIsPlayerPuppet = false; // the owner is the recorded player's puppet
         bool recordedPlayerMounted = false; // the recorded player rides at this playhead

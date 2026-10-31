@@ -3,16 +3,12 @@
 // The order a puppet weapon gets its recorded components in, pure and unit
 // tested (QA report 232-Valentine).
 //
-// The recorded component list is in hash order. A bolt-action rifle with a
-// scope and COMPONENT_RIFLE_BOLTACTION_WRAP (0x549A7FC8) gets the wrap
-// before COMPONENT_RIFLE_SCOPE03 (0x920B56D7) in that order. In game the
-// puppet then draws no scope at all (HAS_WEAPON_GOT_WEAPON_COMPONENT says it
-// has it, the mask bit shows it) and the wrap in the shape it has without a
-// scope: two stiff leather loops standing above the receiver and stock, the
-// "red loops" of the report. Removing the wrap and giving it again once the
-// scope is on (bench strap_test regive 549a7fc8) draws both as the live game
-// does: the scope on the receiver and the wrap flush. Giving the scope again
-// alone changes nothing; nor does any strap flag, weight or mask bit.
+// The recorded component list is in hash order, which can give a wrap
+// (COMPONENT_RIFLE_BOLTACTION_WRAP) before the scope. Built in that order the
+// puppet draws no scope and the wrap in its scopeless shape (two stiff
+// leather loops). Tested in game: regiving the wrap once the scope is on draws
+// both as the live game does.
+// Research: docs/research/peds-weapon-straps.md
 //
 // So the wraps go last: every other component first, then each wrap. A wrap
 // the weapon already has (a default, or one given earlier) is removed and

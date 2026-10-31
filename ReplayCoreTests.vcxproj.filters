@@ -4,6 +4,12 @@
     <ClCompile Include="src\camera_track.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="src\camera_track_spline.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\camera_track_markers.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
     <ClCompile Include="src\camera_shake.cpp">
       <Filter>Core</Filter>
     </ClCompile>
@@ -55,6 +61,9 @@
     <ClCompile Include="tests\frozen_pose_tests.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
+    <ClCompile Include="tests\pose_rate_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
     <ClCompile Include="tests\strap_state_tests.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
@@ -88,6 +97,12 @@
     <ClCompile Include="tests\editor_cursor_tests.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
+    <ClCompile Include="tests\host_input_tests.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="host\host_input.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
     <ClCompile Include="tests\ui_scale_tests.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
@@ -106,6 +121,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\camera_track.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\camera_track_internal.h">
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="src\record_gate.h">

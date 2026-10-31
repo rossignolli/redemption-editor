@@ -4,33 +4,19 @@
 // active physics body (bushes react only to an active body), but then the
 // engine's physics pushes it off the recorded track. So the puppet keeps its
 // active instance for the plants and collides with nothing else: its physics
-// instance's include flags are restricted to the vegetation and query
-// classes, so no pair with the map, peds, horses, vehicles or objects is ever
-// formed (a pair needs both sides to include each other). The end-of-frame
-// write (mount_placement.h) covers whatever still moves it.
+// instance's include flags (inst +0xC8) are restricted to the vegetation and
+// query classes, so no pair with the map, peds, horses, vehicles or objects is
+// ever formed (a pair needs both sides to include each other). The
+// end-of-frame write (mount_placement.h) covers whatever still moves it.
 //
-// Engine facts (build 1491.50):
-// - entity +0x38 = the current physics instance (phInst), +0x08 of it the
-//   archetype: _SET_PED_USE_HORSE_MAP_COLLISION's body 0xFF58A4 reads
-//   [ped+0x38] (0xFF59B3) and [inst+0x08] (0xFF59BC).
-// - inst +0xC0 = type flags (what it is), +0xC8 = include flags (what it
-//   collides with): the same function writes include at 0xFF59E1 and type
-//   at 0xFF59F6 (0x200 ped capsule, 0x800 horse capsule: `and eax, 0x600;
-//   add rax, 0x200`), with the instance in the level and no level call;
-//   the level insert 0x2823760 copies archetype +0x28/+0x30 into them
-//   (0x282387C..0x282388A).
-// - pair filter 0x2847C0C: (A.include & B.type) != 0 and (A.type &
-//   B.include) != 0, on per-frame copies of the two fields.
-// - class bits from the script shape test flag translation 0x10AFA84 and the
-//   Foliage Detector's include 0x80000 (0xC276E6): map 2 and 3, vehicles 6,
-//   7, 25, peds 9, horses 11, ragdolls 10 and 12, objects 13, foliage 19.
-//   Env cloth 14 and plant 15 (inferred, not proven), query classes 21 to
-//   24 (24 proven: the script test type).
+// Evidence: offline dump of 1491.50 for the instance layout and the pair
+// filter; the env cloth and plant class bits are inferred, not proven.
+// Research: docs/research/peds-puppets.md
 //
 // Guarded reads of the puppet's entity and instance, guarded writes of one
-// u64 on the replay's own puppet's instance (the engine itself writes there
-// at 0xFF59E1, 0x1354A84, 0x14C48DC). Never the archetype (shared by every
-// ped of the model). Script thread only, no native here.
+// u64 on the replay's own puppet's instance (the engine itself writes there:
+// the horse map native, vehicle and fragment code). Never the archetype
+// (shared by every ped of the model). Script thread only, no native here.
 //
 // The pure part (the plan of a tick) is below and unit tested; the reads and
 // writes are in puppet_collision.cpp.
@@ -155,7 +141,7 @@ namespace replay::collision
     // ------------------------------------------------------------------
     // Mod part (puppet_collision.cpp, ReplayProbe only). Script thread.
 
-    // PhysicsFilter in the ini (default: JitterFix, 1) and PuppetIncludeKeep
+    // PhysicsFilter in the ini (default 1) and PuppetIncludeKeep
     // (default kDefaultKeep). Off: the body collides with the world, the
     // other puppets kept off pair by pair.
     void Configure(bool on, std::uint64_t keep);

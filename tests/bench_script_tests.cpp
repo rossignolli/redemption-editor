@@ -223,8 +223,7 @@ int RunBenchScriptTests()
         "stop_fire takes one id");
     // fire_forget takes nothing.
     Check(Parses("fire_forget\n") && !Parses("fire_forget 1\n"), "fire_forget takes no argument");
-    Check(Parses("fire_untracked on\nfire_untracked off\n") && !Parses("fire_untracked 1\n") && !Parses("fire_untracked\n"),
-        "fire_untracked takes on or off");
+    Check(!Parses("fire_untracked on\n"), "fire_untracked is gone (FireUntrackedInitial left the ini)");
     Check(Parses("scorch v3 1\nscorch player 0\n") && !Parses("scorch v3\n") && !Parses("scorch v3 2\n") &&
             !Parses("scorch v3 on\n"),
         "scorch takes an id and 0 or 1");

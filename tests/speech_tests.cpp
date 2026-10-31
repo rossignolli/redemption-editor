@@ -30,26 +30,30 @@ namespace
     {
         using replay::puppetaudio::LegacyRefuseOwnPersistent;
         using replay::puppetaudio::RefuseOwnPersistent;
+        // The speech controller's two calls as the 1491.50 exe returns from them.
+        const replay::puppetaudio::SpeechControllerCallers controller{0x2FA10CFu, 0x2FA0DCCu};
         // The controller's 0x800004004366e8 at 0x2FA10CF on a silenced puppet,
         // no tracker, carried by the clip, outside any replay call (the line
         // data's prepare runs in the line update).
         Check(RefuseOwnPersistent(true, false, false, true, false, true), "before: rule 2 refused the line's sound");
-        Check(!LegacyRefuseOwnPersistent(0x2FA10CFu, true, false, false, true, false, true),
+        Check(!LegacyRefuseOwnPersistent(0x2FA10CFu, controller, true, false, false, true, false, true),
             "legacy: the controller's sound at 0x2FA10CF (prepare, state 2) passes");
-        Check(!LegacyRefuseOwnPersistent(0x2FA0DCCu, true, false, false, true, false, true),
+        Check(!LegacyRefuseOwnPersistent(0x2FA0DCCu, controller, true, false, false, true, false, true),
             "legacy: the controller's sound at 0x2FA0DCC (state 3) passes");
         // Same answer as the packets mode for the same call sites.
-        Check(!replay::puppetaudio::BlockPuppetCreate(true, true, false, false, 0x2FA10CFu),
+        Check(!replay::puppetaudio::BlockPuppetCreate(true, true, false, false, 0x2FA10CFu, controller),
             "packets: the same exemption");
         // The foley duplicates rule 2 was made for stay refused.
-        Check(LegacyRefuseOwnPersistent(0x2588C2Fu, true, false, false, true, false, true),
+        Check(LegacyRefuseOwnPersistent(0x2588C2Fu, controller, true, false, false, true, false, true),
             "legacy: a carried foley call site is still refused");
-        Check(!LegacyRefuseOwnPersistent(0x2588C2Fu, true, false, false, true, false, false),
+        Check(!LegacyRefuseOwnPersistent(0x2588C2Fu, controller, true, false, false, true, false, false),
             "legacy: an uncarried call site passes as before");
-        Check(!LegacyRefuseOwnPersistent(0x2588C2Fu, false, false, false, true, false, true),
+        Check(!LegacyRefuseOwnPersistent(0x2588C2Fu, controller, false, false, false, true, false, true),
             "legacy: switched off refuses nothing");
-        Check(!LegacyRefuseOwnPersistent(0x2588C2Fu, true, true, false, true, false, true),
+        Check(!LegacyRefuseOwnPersistent(0x2588C2Fu, controller, true, true, false, true, false, true),
             "legacy: the replay's own create passes");
+        Check(LegacyRefuseOwnPersistent(0x2FA10CFu, {}, true, false, false, true, false, true),
+            "legacy: without the controller's calls (not found) nothing is exempt");
     }
 
     // The puppet's own speech request is refused at the core; the replay's

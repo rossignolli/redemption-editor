@@ -42,18 +42,18 @@ namespace replay::objcheck
 {
     // ---- engine layout (build 1491.50, offline dump) ------------------------
 
-    // CObject's weapon: HAS_WEAPON_GOT_WEAPON_COMPONENT's core 0x10EABB4
+    // CObject's weapon: HAS_WEAPON_GOT_WEAPON_COMPONENT's core
     // reads [object+0x448] (null tested) and the weapon's components at
     // +0x390 (count +0x3E0); _GIVE_WEAPON_COMPONENT_TO_WEAPON_OBJECT's core
-    // 0x10E9AF0 passes [weapon+0x68] as the weapon hash to the inventory
-    // lookup 0x1166A0C and to the give call 0x77F9E4. Playback validates the
+    // passes [weapon+0x68] as the weapon hash to the inventory
+    // lookup and to the give call. Playback validates the
     // hash with _GET_WEAPONTYPE_MODEL(hash) == the object's model.
     constexpr std::uint32_t kObjectWeaponOffset = 0x448;
     constexpr std::uint32_t kWeaponHashOffset = 0x68;
 
     // The entity owner (5 bits of [entity+0xB4]): DeleteAllMissionObjects
-    // 0x7FE7D8 deletes owner 5 (and 0x7C000000 == 0x14000000), and
-    // DeleteAllTempObjects 0x7FE894 owner 2 or 3. The map's own objects are
+    // deletes owner 5 (and 0x7C000000 == 0x14000000), and
+    // DeleteAllTempObjects owner 2 or 3. The map's own objects are
     // none of these (their value is logged at the snapshot, H until a bench).
     constexpr std::uint32_t kOwnerFieldOffset = 0xB4;
     constexpr std::uint32_t kOwnerMask = 0x7C000000u;
@@ -62,12 +62,12 @@ namespace replay::objcheck
     constexpr std::uint32_t kOwnerTempA = 2;
     constexpr std::uint32_t kOwnerTempB = 3;
     // A prop set's objects (the player camp's tent, bedroll and cooking grate).
-    // The prop set spawner 0x7FD248 creates each object through the object
-    // factory 0x7FC250 (the one CREATE_OBJECT's core 0x10D30A0 calls) with 0x17
-    // as the owner of the create parameters (0x6A8C84, the owner at +4;
-    // CREATE_OBJECT passes 5) and sets it again with SetOwnedBy 0xE3F058 (the 5
+    // The prop set spawner creates each object through the object
+    // factory (the one CREATE_OBJECT's core calls) with 0x17
+    // as the owner of the create parameters (their init, the owner at +4;
+    // CREATE_OBJECT passes 5) and sets it again with SetOwnedBy (the 5
     // bits at +0xB4) right after; no other site writes 23 as a constant. The
-    // instance itself (0x7FCFCC, 0x150 bytes) is no object.
+    // instance itself (0x150 bytes) is no object.
     constexpr std::uint32_t kOwnerPropSet = 23;
     constexpr std::uint32_t kOwnerUnknown = 0xFF;
 
@@ -147,32 +147,13 @@ namespace replay::objcheck
     // ---- map data by its creator -----------------------------------------------
     // A replay editor treats an object of the map data (an IPL instance) as
     // map-object state and gives every other object a create. RDR2 keeps that
-    // origin in the owner field itself (offline dump, build 1491.50):
-    //   - 25: a real object made from a map data instance. 0xE2F42C walks
-    //     the queued (map data slot, instance index) pairs of the map data
-    //     store, builds the object, sets the owner bits to 25 (0xE2F7F9 and
-    //     0xE2F815) and calls 0xE2EA6C, which stores the slot at +0xD8, the
-    //     instance index at +0xDA and 1 at +0xDC and puts the object in the
-    //     store entry's per-instance table (+0x280). The object removal
-    //     0x7FED8C releases that table slot only for owner 25 (cmp
-    //     0x64000000 at 0x7FEE69). No other site writes 25 as a constant
-    //     (no SetOwnedBy 0xE3F058 caller loads it, no other store of
-    //     0x64000000 at +0xB4; the lend's give-back 0x83F400 restores the
-    //     owner it kept).
-    //   - 14: an entity set up from a map data entity definition (0xE3E95C,
-    //     the definition's flags, archetype and tint, then the owner bits
-    //     to 14 at 0xE3E9F8).
-    //   - 17: the entities an interior instance adds (0xE76E24 passes 0x11
-    //     to SetOwnedBy for each); 0xEB04D0 walks a map data entity list
-    //     and acts on owner 14 or 17 only.
-    //   - 24: a map object the engine lends for a while (0x83F426 keeps the
-    //     old owner at +0x798 and sets 24; 0x83F400 gives it back).
-    // So the map's owners are exactly 14, 17, 24 and 25 (they also held
-    // 97.8% of the objects that were no scenery in 67 snapshots); a "most
-    // frequent owner" learned at the snapshot is not part of the rule (it only
-    // adds noise: a camp's map owner was 25, a town's 14 or 17). CREATE_OBJECT
-    // gives 5, a prop set 23, the temporary objects 2 or 3; every other value
-    // (0, 1, 4 the persistence system, 7, 11, 18...) is no map data either.
+    // origin in the owner field itself: the map's owners are exactly 14 (map
+    // data definition), 17 (interior instance), 24 (lent map object) and 25
+    // (map data instance). CREATE_OBJECT gives 5, a prop set 23, temporary
+    // objects 2 or 3; every other value is no map data either. A "most
+    // frequent owner" learned at the snapshot is not part of the rule.
+    // Evidence: offline dump, build 1491.50.
+    // Research: docs/research/objects-map-owner.md
     constexpr std::uint32_t kOwnerMapInstance = 25;   // a real object from a map data instance
     constexpr std::uint32_t kOwnerMapDefinition = 14; // an entity from a map data definition
     constexpr std::uint32_t kOwnerInterior = 17;      // an interior instance's entity
@@ -240,24 +221,18 @@ namespace replay::objcheck
     }
 
     // ---- map dressing --------------------------------------------------------
-    // A mission's camp (tent and boxes) can be map data of the mission's IPL
-    // (every snapshot object there owner 25, the map data instance's, none
-    // scenery); a playback in a mission only counts the world state's
-    // difference (RestoreWorldStateInMission=0), and the closed theater's
-    // clear removes a town's map data too (a store's shelf). So the map data
-    // near the player (nearest first) is kept as a map dressing entry with the
-    // clip IPL whose sphere holds it (0: the always-on map), and the playback
-    // builds it only when the map does not have it: its IPL off, or its
-    // original still missing after kMapDressingWaitMs.
-    // Nearest first within the snapshot radius: each entry is watched with
-    // the scenery (four times a second). The closed theater clears the town's
-    // map data, so every map data object of the snapshot is kept: the
-    // snapshot lists at most 1024 objects (recorder::kPoolCapacity), so the
-    // cap is that list. The old cap of 192 left Saint Denis 274 to 458 short
-    // and Blackwater 69 (built_missing at playback). Measured on the QA logs
-    // (rec.scenery, PROFILE_ZONE): about 1.5 us per watched entry
-    // per scan (320 us for about 200 entries), so 650 map data objects cost
-    // about 1 ms every 250 ms; play.object_stands stays under 35 us a frame.
+    // A mission's camp can be map data of the mission's IPL, a playback in a
+    // mission only counts the world state's difference, and the closed
+    // theater's clear removes a town's map data too. So the map data near the
+    // player (nearest first) is kept as a map dressing entry with the clip IPL
+    // whose sphere holds it (0: the always-on map), and the playback builds it
+    // only when the map does not have it: its IPL off, or its original still
+    // missing after kMapDressingWaitMs.
+    // Each entry is watched with the scenery (four times a second). The cap is
+    // the snapshot's own list (recorder::kPoolCapacity): a smaller cap left
+    // town objects missing at playback, and 650 entries cost about 1 ms every
+    // 250 ms (measured on the QA logs).
+    // Research: docs/research/objects-map-owner.md
     constexpr std::size_t kMaxMapDressing = 1024;
     constexpr std::size_t kMaxScenery = kMaxSceneryOwn + kMaxMapDressing;
     constexpr std::uint64_t kMapDressingWaitMs = 4000; // the original's search before a stand-in is built
@@ -748,11 +723,33 @@ namespace replay::objcheck
 
     // The start of a playback waits for the stand-ins of the scenery due at
     // the playhead, like the map's doors (door_rebind.h MapSettle): done when
-    // none is pending, or at the cap.
-    inline bool SceneryReady(std::uint32_t pending, std::uint64_t elapsedMs, std::uint64_t capMs)
+    // none is pending, or at the cap once nothing else (the load scene, the
+    // puppets) holds the start.
+    inline bool SceneryReady(std::uint32_t pending, std::uint64_t elapsedMs, std::uint64_t capMs, bool othersHolding = false)
     {
-        return pending == 0 || elapsedMs >= capMs;
+        return pending == 0 || (elapsedMs >= capMs && !othersHolding);
     }
+
+    // A stand-in's model. One the game does not know (IS_MODEL_VALID false)
+    // never loads: it fails at once instead of after the model timeout (5 s,
+    // longer than the 3 s scenery cap). The rope models (rope_models.h) never
+    // load either and fail at the playback's begin.
+    enum class StandModel : std::uint8_t
+    {
+        Loaded, // build it
+        Wait,   // requested, not in yet
+        Fail,   // never built (scenery_missing)
+    };
+
+    inline StandModel StandModelStep(bool valid, bool loaded, std::uint64_t loadingMs, std::uint64_t timeoutMs)
+    {
+        if (!valid)
+            return StandModel::Fail;
+        if (loaded)
+            return StandModel::Loaded;
+        return loadingMs > timeoutMs ? StandModel::Fail : StandModel::Wait;
+    }
+
 
     // ---- animated world objects --------------------------------------------------
 
@@ -763,7 +760,7 @@ namespace replay::objcheck
 
     // ---- the skeleton that appears, the scenery's children -----------------------
     //   - An object builds its skeleton only when something first needs one
-    //     (CreateSkeleton 0xE34A18, 36 call sites in the dump: animation,
+    //     (CreateSkeleton, 36 call sites in the dump: animation,
     //     PLAY_ENTITY_ANIM, the attach paths), so a chest's lid has no
     //     skeleton when the snapshot reads the bones. The world scan reads
     //     again the skeleton of a watched object near a recorded actor. On a

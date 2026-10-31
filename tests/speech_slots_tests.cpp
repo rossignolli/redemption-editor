@@ -204,10 +204,12 @@ namespace
             "state 3: codes under 0x46 are failures (0x2F49A64)");
         Check(!theatre::SpeechCodeFailed(0x49) && !theatre::SpeechCodeFailed(0x4A) && !theatre::SpeechCodeFailed(0x4D),
             "state 3: 0x49 to 0x4D are success");
-        Check(theatre::kSpeechState3Signature.rva == 0x2FC486C && theatre::kSpeechState3Signature.bytes[0] == 0x48 &&
-                theatre::kSpeechState3Signature.bytes[15] == 0xA9,
-            "state 3: the handler's prologue (lea rbp, [rsp-0x57])");
-        Check(theatre::kAmbientReleaseSignature.rva == 0x2FB1E94 && theatre::kAmbientReleaseSignature.bytes[23] == 0x66,
+        replay::sig::Pattern state3, release;
+        Check(theatre::kSpeechState3.rva == 0x2FC486C && replay::sig::Parse(theatre::kSpeechState3.pattern, state3) &&
+                state3.wild[0] && state3.bytes[15] == 0xA9,
+            "state 3: the handler's prologue (lea rbp, [rsp-0x57]); hooked, so its first 14 bytes are ??");
+        Check(theatre::kAmbientRelease.rva == 0x2FB1E94 && replay::sig::Parse(theatre::kAmbientRelease.pattern, release) &&
+                release.bytes[23] == 0x66,
             "release: 0x2FB1E94's prologue ends in the cmp of the slot count");
         Check(theatre::kAmbientArray == 0x3F0 && theatre::kAmbientCount == 0x3F8 && theatre::kAmbientStride == 0x38,
             "release: the manager's ambient array, count and stride");

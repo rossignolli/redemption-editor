@@ -7,8 +7,11 @@ uses. A release ZIP carries this file next to the binaries.
 ## ReShade
 
 The add-on API headers (`external/reshade/include`, a git submodule of https://github.com/crosire/reshade, version
-6.6.2) are compiled into `RedemptionEditor.addon64` and `RedemptionEditorCore.dll`. ReShade itself is installed by the
-player and is not part of the release. BSD 3-Clause License (`external/reshade/LICENSE.md`):
+6.6.2) are compiled into `RedemptionEditor.addon64` and `RedemptionEditorCore.dll`. The mod's own overlay
+(`RedemptionEditor\host\RedemptionEditorHost.dll`) compiles ReShade's Vulkan implementation of that API
+(`external/reshade/source/vulkan/vulkan_impl_*.cpp`) and its D3D12 implementation (`external/reshade/source/d3d12/d3d12_impl_*.cpp`) and ports parts of its Vulkan layer and its ImGui renderer
+(`source/vulkan/vulkan_hooks*.cpp`, `source/runtime_gui.cpp`; each file says which). ReShade itself is optional, installed
+by the player, and is not part of the release. BSD 3-Clause License (`external/reshade/LICENSE.md`):
 
 ```
 Copyright 2014 Patrick Mours. All rights reserved.
@@ -24,7 +27,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ## MinHook
 
-The detour library, compiled into `RedemptionEditor.asi` from `external/reshade/deps/minhook`. BSD 2-Clause License
+The detour library, compiled into `RedemptionEditor.asi` and `RedemptionEditorHost.dll` from `external/reshade/deps/minhook`. BSD 2-Clause License
 (`external/reshade/deps/minhook/LICENSE.txt`):
 
 ```
@@ -113,7 +116,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Dear ImGui
 
-The editor's interface is drawn with the Dear ImGui of the running ReShade, through ReShade's function table; the UI
+The editor's interface is drawn with the Dear ImGui of the running ReShade, through ReShade's function table, or with
+the Dear ImGui compiled into `RedemptionEditorHost.dll` (the mod's own overlay); the UI
 harness (`ReplayEditorUiRuntime.vcxproj`, a test tool, not shipped) compiles Dear ImGui from
 `external/reshade/deps/imgui`. MIT License (`external/reshade/deps/imgui/LICENSE.txt`):
 
@@ -140,6 +144,114 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## glad (Vulkan loader code)
+
+Generated from the Vulkan registry and compiled into `RedemptionEditorHost.dll` from `host/third_party/glad`
+(`host/third_party/glad/LICENSE.txt`):
+
+```
+The glad source code:
+
+    The MIT License (MIT)
+
+    Copyright (c) 2013-2022 David Herberth
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of
+    this software and associated documentation files (the "Software"), to deal in
+    the Software without restriction, including without limitation the rights to
+    use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+    the Software, and to permit persons to whom the Software is furnished to do so,
+    subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+    FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+    COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+The Khronos Specifications:
+
+    Copyright (c) 2013-2020 The Khronos Group Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+
+The EGL Specification and various headers:
+
+    Copyright (c) 2007-2016 The Khronos Group Inc.
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and/or associated documentation files (the
+    "Materials"), to deal in the Materials without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Materials, and to
+    permit persons to whom the Materials are furnished to do so, subject to
+    the following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Materials.
+
+    THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+    MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+```
+
+## Vulkan Memory Allocator
+
+Compiled into `RedemptionEditorHost.dll` from `host/third_party/vma`. MIT License (`host/third_party/vma/LICENSE.txt`):
+
+```
+Copyright (c) 2017-2025 Advanced Micro Devices, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+## DirectX-Headers
+
+Five headers of https://github.com/microsoft/DirectX-Headers (commit e2db6d9b, the one ReShade pins), compiled into
+`RedemptionEditorHost.dll` from `host/third_party/directx-headers` (see its README.txt). MIT License, Copyright (c)
+Microsoft Corporation.
+
+## Dear ImGui DirectX 12 backend
+
+`imgui_impl_dx12` from `external/reshade/deps/imgui/backends`, compiled into `RedemptionEditorHost.dll` for the D3D12
+overlay; same MIT License as Dear ImGui above.
 
 ## stb_truetype and stb_rect_pack
 

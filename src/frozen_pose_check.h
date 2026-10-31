@@ -4,11 +4,9 @@
 // one capture frame to the next. The body moves on (the entity matrix is read
 // every frame) but the skeleton is the one of the frame before, so the replay
 // plays the walk as a slide with a pose that jumps now and then ("laggy").
-// The engine stops animating a ped every frame when it is off the game
-// camera; the recording has to keep it animated, and in 1.0 it did not: the
-// share of frozen pairs off camera went from 0 to 0.4% to 7 to 18%, with the
-// peds in the camera's view unchanged. No test saw it (the core tests run no
-// game, the benches ran the developer ini).
+// The engine stops animating off camera peds every frame; the recording has
+// to keep them animated, and this check catches a regression of that.
+// Research: docs/research/pose-frozen.md
 //
 // The measure, per ped, on the pose track's own frames (30 Hz capture, about
 // 33 ms apart):
@@ -18,8 +16,7 @@
 //    around the pair, about 100 ms: one frame's step is noisy) and stands
 //    within maxDistM of the game camera on the ground plane;
 //  - a carried body (a wagon seat, a saddle) does not count: it moves while
-//    its pose may rightly hold (a wagon driver of 1051-Valentine repeats
-//    100% of his pairs, on camera as well);
+//    its pose may rightly hold;
 //  - it is frozen when every bone's object space transform is the same as
 //    in the frame before (SamePose, within the codec's epsilons doubled: a
 //    relative keyframe re-sends a held value with its rounding);

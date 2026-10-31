@@ -1,4 +1,8 @@
 #include "ped_blood.h"
+#include "clip_sites.h" // kBloodMerge, kBloodAdd and the finalize calls a clip names
+#include "engine_sigs.h" // the graphics component pool (the surface)
+#include "engine_calls.h"
+#include "game_sig.h"
 #include "guarded_memory.h"
 #include "mod_clock.h"
 #include "profiler.h"
@@ -21,13 +25,53 @@ namespace replay::blood
 {
     namespace
     {
-        constexpr std::uintptr_t kFinalizeRva = 0x1285DA4;
-        constexpr std::uint8_t kFinalizeSignature[] = {
-            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78, 0x20, 0x55,
-            0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x68, 0xA1, 0x48, 0x81, 0xEC, 0xC0};
-        constexpr std::uintptr_t kPoolBaseRva = 0x4C3CE70;   // record pool base pointer
-        constexpr std::uintptr_t kPoolStrideRva = 0x4C3CE88; // record size
-        constexpr std::uintptr_t kEngineTimeRva = 0x5429034; // float seconds the records age against
+        namespace sig = replay::sig;
+
+        // The record finalize (record, owner entity, set slot), and its call of
+        // the projected decal add.
+        const sig::Signature kBloodFinalize{"blood_finalize",
+            "?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 20 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC C0 00 00 00 "
+            "0F 29 70 C8 45 8A E0 4C 8B FA 48 8B F1",
+            0x1285DA4};
+        const sig::Signature kBloodFinalizeProjCall{"blood_finalize_proj_call", kBloodFinalize, sig::Offset{0x1A7},
+            "E8 ?? ?? ?? ?? 4C 8D 9C 24 C0 00 00 00", 0x1285F4B};
+        // The record merge the add path calls, the bullet blood and the add
+        // path, with their calls of the finalize, are in clip_sites.h (a
+        // clip names the calls): kBloodMerge, kBloodEvolveCall, kBloodBullet,
+        // kBloodBulletCall, kBloodAdd, kBloodPackCall.
+        // The merge's address of a set entry's record: index * the record size (u32) +
+        // the pool base (u64), then the record's info (+0x108).
+        const sig::Signature kBloodPoolRead{"blood_pool_read", kBloodMerge, sig::Offset{0xC7},
+            "0F AF 1D ?? ?? ?? ?? 48 03 1D ?? ?? ?? ?? 8B 83 08 01 00 00", 0x125D933};
+        const sig::Signature kBloodPoolStride{"blood_pool_stride", kBloodPoolRead, sig::Rel32{0x03, 0x07}, "", 0x4C3CE88};
+        const sig::Signature kBloodPoolBase{"blood_pool_base", kBloodPoolRead, sig::Rel32{0x0A, 0x0E}, "", 0x4C3CE70};
+        // Its age test: the engine time (float seconds) minus the record's time
+        // stamp (+0x130).
+        const sig::Signature kBloodRecordAge{"blood_record_age", kBloodMerge, sig::Offset{0x265},
+            "F3 0F 10 0D ?? ?? ?? ?? 48 3B EE 75 41 F7 85 DC 01 00 00 00 01 00 00 74 35 F6 83 50 01 00 00 FD 75 2C 0F "
+            "28 C1 F3 0F 5C 83 30 01 00 00",
+            0x125DAD1};
+        const sig::Signature kBloodEngineTime{"blood_engine_time", kBloodRecordAge, sig::Rel32{0x04, 0x08}, "", 0x5429034};
+        // Its test of a held record against the new one's info: the held
+        // record's next info (+0x10C).
+        const sig::Signature kBloodMergeNextInfo{"blood_merge_next_info", kBloodMerge, sig::Offset{0x10D},
+            "8B 83 0C 01 00 00 85 C0 78 0C 8B C8 49 8B 45 78 48 8B 14 C8 EB 03", 0x125D979};
+        // Its evolve of a record to the next info: +0x104, then the new info at
+        // +0x108, then the finalize (record, owner, 0xFF), then the count
+        // (+0x110) cleared.
+        const sig::Signature kBloodEvolveWrite{"blood_evolve_write", kBloodMerge, sig::Offset{0x4CB},
+            "F3 0F 11 8B 04 01 00 00 48 8D 94 24 A0 00 00 00 40 88 AB 81 00 00 00 44 88 BB 82 00 00 00 8B 06 48 8B 0D "
+            "?? ?? ?? ?? 89 84 24 A0 00 00 00 E8 ?? ?? ?? ?? 0F 10 9B 20 01 00 00 66 0F 70 C3 AA 66 0F 70 D3 55 0F 14 "
+            "D8 89 83 08 01 00 00",
+            0x125DD37};
+        // The add path's read of the record's info (+0x108) and its load of the ped damage
+        // manager (a pointer).
+        const sig::Signature kBloodAddManager{"blood_add_manager", kBloodAdd, sig::Offset{0x6A},
+            "41 8B 90 08 01 00 00 4C 8B 0D ?? ?? ?? ?? 85 D2 78 0A 49 8B 41 78 4C 8B 04 D0 EB 03", 0x125D4DA};
+        const sig::Signature kBloodManager{"blood_manager", kBloodAddManager, sig::Rel32{0x0A, 0x0E}, "", 0x4C38A18};
+        // Its read of the record's owner ref (+0x78), handed to the merge.
+        const sig::Signature kBloodAddOwnerRef{"blood_add_owner_ref", kBloodAdd, sig::Offset{0xB2},
+            "49 8B 45 78 4C 8D 44 24 30 48 89 44 24 28 0F 28 D9 49 8B CF 44 88 54 24 20 E8 ?? ?? ?? ??", 0x125D522};
         constexpr std::size_t kRecordTimeOffset = 0x130;
         using FinalizeFn = void(__fastcall*)(void*, void*, std::uint8_t);
 
@@ -41,16 +85,16 @@ namespace replay::blood
         void* g_target = nullptr;
         std::uintptr_t g_base = 0;
         std::uintptr_t g_imageEnd = 0;
+        // Where the detour reads the record's pool index and age (0: not in this
+        // game, index -1 and age 0).
+        std::uintptr_t g_poolBaseAt = 0;
+        std::uintptr_t g_poolStrideAt = 0;
+        std::uintptr_t g_engineTimeAt = 0;
         LARGE_INTEGER g_frequency{};
 
         std::uint64_t QpcUs()
         {
             return replay::clock::NowUs(); // mod_clock.h (no 21-day overflow)
-        }
-
-        bool GuardedCompare(const void* target, const std::uint8_t* signature, std::size_t size)
-        {
-            return replay::mem::Matches(target, signature, size); // guarded_memory.h
         }
 
         bool GuardedRead(void* out, const void* source, std::size_t size)
@@ -87,13 +131,15 @@ namespace replay::blood
             std::uintptr_t poolBase = 0;
             std::uint32_t stride = 0;
             float engineTime = 0.0f;
-            if (GuardedRead(&poolBase, reinterpret_cast<void*>(g_base + kPoolBaseRva), sizeof(poolBase)) &&
-                GuardedRead(&stride, reinterpret_cast<void*>(g_base + kPoolStrideRva), sizeof(stride)) && stride &&
+            if (g_poolBaseAt && g_poolStrideAt &&
+                GuardedRead(&poolBase, reinterpret_cast<void*>(g_poolBaseAt), sizeof(poolBase)) &&
+                GuardedRead(&stride, reinterpret_cast<void*>(g_poolStrideAt), sizeof(stride)) && stride &&
                 reinterpret_cast<std::uintptr_t>(record) >= poolBase)
             {
                 call.index = static_cast<std::int32_t>((reinterpret_cast<std::uintptr_t>(record) - poolBase) / stride);
             }
-            if (call.copied && GuardedRead(&engineTime, reinterpret_cast<void*>(g_base + kEngineTimeRva), sizeof(engineTime)))
+            if (call.copied && g_engineTimeAt &&
+                GuardedRead(&engineTime, reinterpret_cast<void*>(g_engineTimeAt), sizeof(engineTime)))
             {
                 float stamp = 0.0f;
                 std::memcpy(&stamp, call.record + kRecordTimeOffset, sizeof(stamp));
@@ -113,12 +159,15 @@ namespace replay::blood
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
         g_base = reinterpret_cast<std::uintptr_t>(base);
         g_imageEnd = g_base + nt->OptionalHeader.SizeOfImage;
-        void* target = base + kFinalizeRva;
-        if (!GuardedCompare(target, kFinalizeSignature, sizeof(kFinalizeSignature)))
+        void* target = reinterpret_cast<void*>(sig::Find(kBloodFinalize));
+        if (!target)
         {
             error = "blood_finalize_signature_mismatch";
             return false;
         }
+        g_poolBaseAt = sig::Find(kBloodPoolBase);
+        g_poolStrideAt = sig::Find(kBloodPoolStride);
+        g_engineTimeAt = sig::Find(kBloodEngineTime);
         const MH_STATUS init = MH_Initialize();
         if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED)
         {
@@ -168,33 +217,86 @@ namespace replay::blood
 
     namespace
     {
-        constexpr std::uintptr_t kManagerRva = 0x4C38A18;   // pointer to the ped damage manager
-        constexpr std::uintptr_t kRenderGateRva = 0x5A9D690; // object whose +0xB0/+0xC0 are null when idle
-        constexpr std::uintptr_t kCompCreateRva = 0xCC5A30;
-        constexpr std::uint8_t kCompCreateSignature[] = {
-            0x48, 0x83, 0xEC, 0x28, 0x48, 0x83, 0x64, 0x24, 0x30, 0x00, 0x48, 0x8D, 0x54, 0x24, 0x30, 0x4C,
-            0x8B, 0xC1, 0x48, 0x81, 0xC1, 0x9C, 0x00, 0x00};
-        constexpr std::uintptr_t kCompReadRva = 0xCC8848;
-        constexpr std::uint8_t kCompReadSignature[] = {
-            0x8B, 0x81, 0x9C, 0x00, 0x00, 0x00, 0x25, 0xFF, 0xFF, 0x01, 0x00, 0x2B};
-        constexpr std::uintptr_t kSlotAllocRva = 0x126AB48;
-        constexpr std::uint8_t kSlotAllocSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x80,
-            0x7A, 0x10, 0xFF, 0x48, 0x8B, 0xFA, 0x48, 0x8B};
-        constexpr std::uintptr_t kAddRva = 0x125D470;
-        constexpr std::uint8_t kAddSignature[] = {
-            0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
-            0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00, 0x45,
-            0x8A, 0xD1, 0x4D, 0x8B, 0xE8, 0x44, 0x8A, 0xF2};
-        constexpr std::uintptr_t kClearRva = 0xE1F5A0;
-        constexpr std::uint8_t kClearSignature[] = {
-            0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x8A, 0x51, 0x10, 0x48, 0x8B, 0xD9, 0x80, 0xFA, 0xFF, 0x74};
+        // The RVA the return of the call at `call` (5 bytes) has, or `missing`
+        // (above every RVA) when the game lacks the call.
+        std::uint32_t ReturnRva(const sig::Signature& call, std::uint32_t missing)
+        {
+            const std::uintptr_t at = sig::Find(call);
+            const std::uintptr_t base = sig::ImageBase();
+            return at && base ? static_cast<std::uint32_t>(at + 5 - base) : missing;
+        }
+
+        struct CallerRvas
+        {
+            std::uint32_t pack;
+            std::uint32_t blood;
+            std::uint32_t evolve;
+            std::uint32_t finalizeProj;
+        };
+
+        // Once: a value of its own for each site the game lacks, so the sites
+        // stay apart (a held record's pack flag rides on them).
+        const CallerRvas& Callers()
+        {
+            static const CallerRvas callers{ReturnRva(kBloodPackCall, 0xFFFFFFFFu),
+                ReturnRva(kBloodBulletCall, 0xFFFFFFFEu), ReturnRva(kBloodEvolveCall, 0xFFFFFFFDu),
+                ReturnRva(kBloodFinalizeProjCall, 0xFFFFFFFCu)};
+            return callers;
+        }
+    }
+
+    std::uint32_t CallerPack() { return Callers().pack; }
+    std::uint32_t CallerBlood() { return Callers().blood; }
+    std::uint32_t CallerEvolve() { return Callers().evolve; }
+    std::uint32_t FinalizeProjReturn() { return Callers().finalizeProj; }
+
+    namespace
+    {
+        // The pack apply: the set slot of the ped's damage component (+0x10, 0xFF
+        // none) after the slot allocation, then the render gate object handed to
+        // the gate test (busy while its +0xB0 or +0xC0 is set).
+        const sig::Signature kBloodPackGate{"blood_pack_gate",
+            "48 8B D3 48 8B CE E8 ?? ?? ?? ?? 80 7B 10 FF 0F 84 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 74 "
+            "25",
+            0x125ED00};
+        const sig::Signature kBloodRenderGate{"blood_render_gate", kBloodPackGate, sig::Rel32{0x18, 0x1C}, "", 0x5A9D690};
+        const sig::Signature kBloodGateTest{"blood_gate_test", kBloodPackGate, sig::Rel32{0x1D, 0x21},
+            "48 83 B9 B0 00 00 00 00 75 0D 48 83 B9 C0 00 00 00 00 75 03 B0 01 C3", 0x2BA8E14};
+        // The ped's damage component, created when missing (ped) -> component:
+        // reached from a caller that reads its set slot right after.
+        const sig::Signature kBloodCompCaller{"blood_comp_caller",
+            "48 8B CD E8 ?? ?? ?? ?? 48 85 C0 74 14 80 78 10 FF 74 0E 0F B6 40 10", 0x12B8512};
+        const sig::Signature kBloodCompCreate{"blood_comp_create", kBloodCompCaller, sig::Rel32{0x04, 0x08},
+            "48 83 EC 28 48 83 64 24 30 00 48 8D 54 24 30 4C 8B C1 48 81 C1 9C 00 00 00 E8 ?? ?? ?? ?? 48 8B 44 24 30 48 "
+            "83 C4 28 C3",
+            0xCC5A30};
+        // The same component when the ped has one (ped) -> component or null.
+        const sig::Signature kBloodCompRead{"blood_comp_read",
+            "8B 81 9C 00 00 00 25 FF FF 01 00 2B 05 ?? ?? ?? ?? 48 69 C8 48 01 00 00 48 8B 05 ?? ?? ?? ?? 48 8B 94 01 E8 "
+            "00 00 00 48 8B CA",
+            0xCC8848};
+        // The set slot allocation (manager, component) and the clear (component).
+        const sig::Signature kBloodSlotAlloc{"blood_slot_alloc",
+            "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 80 7A 10 FF 48 8B FA 48 8B F1", 0x126AB48};
+        const sig::Signature kBloodClear{"blood_clear", "40 53 48 83 EC 20 8A 51 10 48 8B D9 80 FA FF 74 1B", 0xE1F5A0};
         constexpr std::size_t kCompSlot = 0x10;
         constexpr std::size_t kRecordOwnerRef = 0x78;
-        using CompFn = void*(__fastcall*)(void*);
-        using AllocFn = void(__fastcall*)(void*, void*);
-        using AddFn = void*(__fastcall*)(void*, std::uint8_t, const void*, std::uint8_t);
-        using ClearFn = void(__fastcall*)(void*);
+
+        // What the player calls and reads, found once (EnsurePlayer).
+        struct Player
+        {
+            std::uintptr_t compCreate = 0;
+            std::uintptr_t compRead = 0;
+            std::uintptr_t slotAlloc = 0;
+            std::uintptr_t add = 0;
+            std::uintptr_t clear = 0;
+            std::uintptr_t manager = 0;    // pointer to the ped damage manager
+            std::uintptr_t renderGate = 0; // object whose +0xB0/+0xC0 are null when idle
+            std::uintptr_t poolBase = 0;   // record pool base pointer
+            std::uintptr_t poolStride = 0; // record size (u32)
+            std::uintptr_t engineTime = 0; // float seconds the records age against
+        };
+        Player g_player;
 
         // The damage component through the engine, checked first. The engine reads it
         // from an index in the ped (+0x9C); a ped being torn down (e.g. a scrub past a
@@ -275,11 +377,19 @@ namespace replay::blood
             return readable;
         }
 
-        void* ReadComp(std::uintptr_t base, std::uintptr_t rva, const void* ped)
+        // The ped's blood component by `f` (create or read); `faulted` when the
+        // call faulted (its code in engine::LastFault()).
+        void* ReadComp(const engine::Function<void*(void*)>& f, std::uintptr_t function, const void* ped, bool& faulted)
         {
+            faulted = false;
             if (!Readable(static_cast<const std::uint8_t*>(ped) + 0x9C, sizeof(std::uint32_t)))
                 return nullptr;
-            void* comp = reinterpret_cast<CompFn>(base + rva)(const_cast<void*>(ped));
+            void* comp = nullptr;
+            if (!engine::Call(f, function, comp, const_cast<void*>(ped)))
+            {
+                faulted = true;
+                return nullptr;
+            }
             return comp && Readable(comp, 0x20) ? comp : nullptr;
         }
 
@@ -295,15 +405,26 @@ namespace replay::blood
                 return g_playerReady;
             }
             g_playerChecked = true;
-            auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-            if (!g_base)
-                g_base = reinterpret_cast<std::uintptr_t>(base);
-            g_playerReady = GuardedCompare(base + kCompCreateRva, kCompCreateSignature, sizeof(kCompCreateSignature)) &&
-                GuardedCompare(base + kCompReadRva, kCompReadSignature, sizeof(kCompReadSignature)) &&
-                GuardedCompare(base + kSlotAllocRva, kSlotAllocSignature, sizeof(kSlotAllocSignature)) &&
-                GuardedCompare(base + kAddRva, kAddSignature, sizeof(kAddSignature)) &&
-                GuardedCompare(base + kClearRva, kClearSignature, sizeof(kClearSignature));
-            if (!g_playerReady)
+            Player player;
+            player.compCreate = sig::Find(kBloodCompCreate);
+            player.compRead = sig::Find(kBloodCompRead);
+            player.slotAlloc = sig::Find(kBloodSlotAlloc);
+            player.add = sig::Find(kBloodAdd);
+            player.clear = sig::Find(kBloodClear);
+            player.manager = sig::Find(kBloodManager);
+            player.renderGate = sig::Find(kBloodRenderGate);
+            player.poolBase = sig::Find(kBloodPoolBase);
+            player.poolStride = sig::Find(kBloodPoolStride);
+            player.engineTime = sig::Find(kBloodEngineTime);
+            // The fields the copy of a record gets (the owner ref the add reads,
+            // the time stamp the merge ages) and the gate's two fields are in the
+            // bytes of these.
+            g_playerReady = player.compCreate && player.compRead && player.slotAlloc && player.add && player.clear &&
+                player.manager && player.renderGate && player.poolBase && player.poolStride && player.engineTime &&
+                sig::Find(kBloodAddOwnerRef) && sig::Find(kBloodRecordAge) && sig::Find(kBloodGateTest);
+            if (g_playerReady)
+                g_player = player;
+            else
                 error = "blood_player_signature_mismatch";
             return g_playerReady;
         }
@@ -328,18 +449,21 @@ namespace replay::blood
             g_lastAllocated = false;
             __try
             {
-                const std::uintptr_t base = g_base;
-                void* manager = *reinterpret_cast<void**>(base + kManagerRva);
+                void* manager = *reinterpret_cast<void**>(g_player.manager);
                 if (!manager)
                     return false;
-                void* comp = ReadComp(base, kCompCreateRva, ped);
+                bool faulted = false;
+                void* comp = ReadComp(engine::kBloodCompCreate, g_player.compCreate, ped, faulted);
+                if (faulted)
+                    return engine::Failed(code);
                 if (!comp)
                     return false;
                 std::uint8_t slot = *(reinterpret_cast<std::uint8_t*>(comp) + kCompSlot);
                 if (slot == 0xFF)
                 {
                     const std::uint64_t allocStart = QpcTicks();
-                    reinterpret_cast<AllocFn>(base + kSlotAllocRva)(manager, comp);
+                    if (!engine::Call(engine::kBloodSlotAlloc, g_player.slotAlloc, manager, comp))
+                        return engine::Failed(code);
                     g_lastAllocTicks = QpcTicks() - allocStart;
                     g_lastAllocated = true;
                     slot = *(reinterpret_cast<std::uint8_t*>(comp) + kCompSlot);
@@ -348,7 +472,8 @@ namespace replay::blood
                 if (slot == 0xFF)
                     return false;
                 const std::uint64_t addStart = QpcTicks();
-                added = reinterpret_cast<AddFn>(base + kAddRva)(manager, slot, buffer, pack ? 1 : 0);
+                if (!engine::Call(engine::kBloodAdd, g_player.add, added, manager, slot, buffer, pack ? 1 : 0))
+                    return engine::Failed(code);
                 g_lastAddTicks = QpcTicks() - addStart;
                 return true;
             }
@@ -358,7 +483,7 @@ namespace replay::blood
             }
         }
 
-        // The engine's own merge test (0x125D86C, offline): a record of the
+        // The engine's own merge test (kBloodMerge): a record of the
         // ped's set whose +0x108 or +0x10C info equals the new one's and whose
         // +0x00 xyz lies within info+0x198 * new w absorbs the new record and
         // the add returns null. Replaying a record the engine already rebuilt
@@ -369,14 +494,16 @@ namespace replay::blood
             found = false;
             __try
             {
-                const std::uintptr_t base = g_base;
-                void* comp = ReadComp(base, kCompReadRva, ped);
+                bool faulted = false;
+                void* comp = ReadComp(engine::kBloodCompRead, g_player.compRead, ped, faulted);
+                if (faulted)
+                    return false;
                 if (!comp)
                     return true;
                 const std::uint8_t slot = *(static_cast<const std::uint8_t*>(comp) + kCompSlot);
                 if (slot == 0xFF || slot >= 128)
                     return true;
-                const std::uintptr_t manager = *reinterpret_cast<const std::uintptr_t*>(base + kManagerRva);
+                const std::uintptr_t manager = *reinterpret_cast<const std::uintptr_t*>(g_player.manager);
                 if (!manager)
                     return true;
                 const std::uintptr_t set = *reinterpret_cast<const std::uintptr_t*>(manager + 0xD8 + slot * 8);
@@ -396,8 +523,8 @@ namespace replay::blood
                 const float radius = *reinterpret_cast<const float*>(infoObject + 0x198) * position[3];
                 if (!(radius > 0.0f))
                     return true;
-                const std::uintptr_t pool = *reinterpret_cast<const std::uintptr_t*>(base + kPoolBaseRva);
-                const std::uint32_t stride = *reinterpret_cast<const std::uint32_t*>(base + kPoolStrideRva);
+                const std::uintptr_t pool = *reinterpret_cast<const std::uintptr_t*>(g_player.poolBase);
+                const std::uint32_t stride = *reinterpret_cast<const std::uint32_t*>(g_player.poolStride);
                 if (!pool || !stride)
                     return true;
                 for (std::uint32_t n = 0; n < count && !found; ++n)
@@ -427,10 +554,13 @@ namespace replay::blood
         {
             __try
             {
-                void* comp = ReadComp(g_base, kCompReadRva, ped);
+                bool faulted = false;
+                void* comp = ReadComp(engine::kBloodCompRead, g_player.compRead, ped, faulted);
+                if (faulted)
+                    return engine::Failed(code);
                 had = comp != nullptr;
-                if (comp)
-                    reinterpret_cast<ClearFn>(g_base + kClearRva)(comp);
+                if (comp && !engine::Call(engine::kBloodClear, g_player.clear, comp))
+                    return engine::Failed(code);
                 return true;
             }
             __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
@@ -442,30 +572,49 @@ namespace replay::blood
 
     namespace
     {
-        constexpr std::uintptr_t kComponentIndexBaseRva = 0x39ECE40; // u32
-        constexpr std::uintptr_t kComponentTableRva = 0x39ECE48;     // u64 pointer
+        // The ped's graphics component (engine_sigs.h kComponentRead: rows of
+        // 0x148, the component at +0x98).
         constexpr std::size_t kComponentStride = 0x148;
         constexpr std::size_t kSurfaceSlot = 0x98;
-        constexpr std::uintptr_t kDirtSetterRva[3] = {0x8E1624, 0x8E15E4, 0x8E15A4};
-        constexpr std::uint8_t kDirtSetterSignature[3][16] = {
-            {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x89, 0x91, 0xA8, 0x03, 0x00, 0x00, 0x48},
-            {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x89, 0x91, 0xAC, 0x03, 0x00, 0x00, 0x48},
-            {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x89, 0x91, 0xB0, 0x03, 0x00, 0x00, 0x48},
-        };
-        using DirtSetterFn = void(__fastcall*)(void* component, std::int32_t value);
+        // The engine's wetness clear (component): the heights and amounts at
+        // +0x30..+0x3F and the flags at +0x40, the fields a puppet's wetness is
+        // written to.
+        const sig::Signature kBloodWetClear{"blood_wet_clear",
+            "33 D2 B8 00 00 00 C0 88 51 40 89 41 30 89 41 34 48 89 51 38 C3", 0x89AD10};
+        // The bank recompute request (ped): the ped's graphics component as above,
+        // then +0xC0 = 1.
+        const sig::Signature kBloodSurfaceRecompute{"blood_surface_recompute",
+            "48 83 EC 28 48 85 C9 74 43 8B 81 9C 00 00 00 25 FF FF 01 00 2B 05 ?? ?? ?? ?? 48 69 C8 48 01 00 00 48 8B 05 "
+            "?? ?? ?? ?? 48 8B 94 01 98 00 00 00 48 8B C2 48 83 E0 FE 48 F7 DA 48 1B C9 48 23 C8 C6 81 C0 00 00 00 01 E8 "
+            "?? ?? ?? ?? 48 83 C4 28 C3",
+            0xFEEC90};
+        // The three dirt setters (component, value): +0x3A8, +0x3AC and +0x3B0,
+        // each mirrored to the MetaPed.
+        const sig::Signature kBloodDirtSet3A8{"blood_dirt_set_3a8",
+            "40 53 48 83 EC 20 48 8B D9 89 91 A8 03 00 00 48 8B 49 08", 0x8E1624};
+        const sig::Signature kBloodDirtSet3AC{"blood_dirt_set_3ac",
+            "40 53 48 83 EC 20 48 8B D9 89 91 AC 03 00 00 48 8B 49 08", 0x8E15E4};
+        const sig::Signature kBloodDirtSet3B0{"blood_dirt_set_3b0",
+            "40 53 48 83 EC 20 48 8B D9 89 91 B0 03 00 00 48 8B 49 08", 0x8E15A4};
         int g_dirtSettersChecked = 0; // 1 ok, -1 mismatch
+        std::uintptr_t g_dirtSetters[3] = {};
+        const engine::Function<void(void*, std::int32_t)>* const kDirtSetterCalls[3] = {&engine::kBloodDirtSet3A8,
+            &engine::kBloodDirtSet3AC, &engine::kBloodDirtSet3B0};
 
         std::uintptr_t SurfaceComponent(void* ped)
         {
             if (!ped)
                 return 0;
-            const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+            static const replay::enginesig::Pool pool{sig::Find(replay::enginesig::kComponentBaseIndex),
+                sig::Find(replay::enginesig::kComponentTable)};
+            if (!pool.Found())
+                return 0;
             std::uint32_t handle = 0;
             std::uint32_t indexBase = 0;
             std::uintptr_t table = 0;
             if (!GuardedRead(&handle, static_cast<std::uint8_t*>(ped) + 0x9C, 4) ||
-                !GuardedRead(&indexBase, reinterpret_cast<void*>(base + kComponentIndexBaseRva), 4) ||
-                !GuardedRead(&table, reinterpret_cast<void*>(base + kComponentTableRva), 8) || !table)
+                !GuardedRead(&indexBase, reinterpret_cast<void*>(pool.baseIndex), 4) ||
+                !GuardedRead(&table, reinterpret_cast<void*>(pool.table), 8) || !table)
                 return 0;
             const std::uint32_t index = (handle & 0x1FFFF) - indexBase;
             if (index > 0x20000)
@@ -489,17 +638,9 @@ namespace replay::blood
             }
         }
 
-        bool GuardedDirt(DirtSetterFn fn, void* component, std::int32_t value)
+        bool GuardedDirt(int n, void* component, std::int32_t value)
         {
-            __try
-            {
-                fn(component, value);
-                return true;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
+            return engine::Call(*kDirtSetterCalls[n], g_dirtSetters[n], component, value);
         }
     }
 
@@ -521,6 +662,11 @@ namespace replay::blood
             error = "no_component";
             return false;
         }
+        if (!sig::Find(kBloodWetClear))
+        {
+            error = "wet_signature_mismatch";
+            return false;
+        }
         if (!GuardedWrite(reinterpret_cast<void*>(comp + 0x30), surface.wet, sizeof(surface.wet)) ||
             !GuardedWrite(reinterpret_cast<void*>(comp + 0x40), &surface.wetFlags, 1))
         {
@@ -529,13 +675,18 @@ namespace replay::blood
         }
         if (!dirt)
             return true;
-        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
         if (!g_dirtSettersChecked)
         {
-            g_dirtSettersChecked = 1;
+            // The recompute request is part of it: +0xC0 is written after the
+            // setters.
+            const sig::Signature* const setters[3] = {&kBloodDirtSet3A8, &kBloodDirtSet3AC, &kBloodDirtSet3B0};
+            g_dirtSettersChecked = sig::Find(kBloodSurfaceRecompute) ? 1 : -1;
             for (int n = 0; n < 3; ++n)
-                if (!GuardedCompare(reinterpret_cast<void*>(base + kDirtSetterRva[n]), kDirtSetterSignature[n], 16))
+            {
+                g_dirtSetters[n] = sig::Find(*setters[n]);
+                if (!g_dirtSetters[n])
                     g_dirtSettersChecked = -1;
+            }
         }
         if (g_dirtSettersChecked < 0)
         {
@@ -547,7 +698,7 @@ namespace replay::blood
             std::memcmp(current, surface.dirt, sizeof(current)) == 0)
             return true;
         for (int n = 0; n < 3; ++n)
-            if (!GuardedDirt(reinterpret_cast<DirtSetterFn>(base + kDirtSetterRva[n]), reinterpret_cast<void*>(comp), surface.dirt[n]))
+            if (!GuardedDirt(n, reinterpret_cast<void*>(comp), surface.dirt[n]))
             {
                 error = "dirt_setter_fault";
                 return false;
@@ -597,7 +748,7 @@ namespace replay::blood
         if (!EnsurePlayer(error))
             return false;
         std::uint64_t gate[2] = {};
-        const auto* gateObject = reinterpret_cast<const std::uint8_t*>(g_base + kRenderGateRva);
+        const auto* gateObject = reinterpret_cast<const std::uint8_t*>(g_player.renderGate);
         if (!GuardedRead(&gate[0], gateObject + 0xB0, 8) || !GuardedRead(&gate[1], gateObject + 0xC0, 8))
         {
             error = "gate_unreadable";
@@ -618,7 +769,7 @@ namespace replay::blood
         alignas(16) std::uint8_t buffer[kRecordBytes] = {};
         std::memcpy(buffer, record, kRecordBytes);
         float engineTime = 0.0f;
-        if (GuardedRead(&engineTime, reinterpret_cast<void*>(g_base + kEngineTimeRva), sizeof(engineTime)))
+        if (GuardedRead(&engineTime, reinterpret_cast<void*>(g_player.engineTime), sizeof(engineTime)))
         {
             const float stamp = engineTime - (age > 0.0f ? age : 0.0f);
             std::memcpy(buffer + kRecordTimeOffset, &stamp, sizeof(stamp));
@@ -664,25 +815,31 @@ namespace replay::blood
         // 0 found and evolved, 1 already evolved, 2 no base record, 3 no set. The owner
         // passed to the finalize is the set's own (set+0x608 -> comp, comp+0x08 &
         // ~0xF), the ped when unreadable.
-        int GuardedEvolve(std::uintptr_t base, void* ped, const std::uint8_t* record, FinalizeFn finalize, std::uint32_t& code)
+        int GuardedEvolve(void* ped, const std::uint8_t* record, std::uintptr_t finalize, std::uint32_t& code)
         {
             __try
             {
-                void* comp = ReadComp(base, kCompReadRva, ped);
+                bool faulted = false;
+                void* comp = ReadComp(engine::kBloodCompRead, g_player.compRead, ped, faulted);
+                if (faulted)
+                {
+                    engine::Failed(code);
+                    return -1;
+                }
                 if (!comp)
                     return 3;
                 const std::uint8_t slot = *(static_cast<const std::uint8_t*>(comp) + kCompSlot);
                 if (slot == 0xFF || slot >= 128)
                     return 3;
-                const std::uintptr_t manager = *reinterpret_cast<const std::uintptr_t*>(base + kManagerRva);
+                const std::uintptr_t manager = *reinterpret_cast<const std::uintptr_t*>(g_player.manager);
                 if (!manager)
                     return 3;
                 const std::uintptr_t set = *reinterpret_cast<const std::uintptr_t*>(manager + 0xD8 + slot * 8);
                 if (!set)
                     return 3;
                 const std::uint32_t count = *reinterpret_cast<const std::uint32_t*>(set + 0x690);
-                const std::uintptr_t pool = *reinterpret_cast<const std::uintptr_t*>(base + kPoolBaseRva);
-                const std::uint32_t stride = *reinterpret_cast<const std::uint32_t*>(base + kPoolStrideRva);
+                const std::uintptr_t pool = *reinterpret_cast<const std::uintptr_t*>(g_player.poolBase);
+                const std::uint32_t stride = *reinterpret_cast<const std::uint32_t*>(g_player.poolStride);
                 if (count > 64 || !pool || !stride)
                     return 3;
                 std::int32_t newInfo = 0;
@@ -725,7 +882,11 @@ namespace replay::blood
                     if (entity)
                         owner = reinterpret_cast<void*>(entity);
                 }
-                finalize(base8, owner, 0xFF);
+                if (!engine::Call(engine::kBloodFinalize, finalize, static_cast<void*>(base8), owner, 0xFF))
+                {
+                    engine::Failed(code);
+                    return -1;
+                }
                 return 0;
             }
             __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER)
@@ -745,19 +906,25 @@ namespace replay::blood
         }
         if (!EnsurePlayer(error))
             return false;
-        auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-        FinalizeFn finalize = g_original.load(std::memory_order_acquire);
+        // The fields written into the held record (+0x104, +0x108, +0x10C,
+        // +0x110) as the merge's own evolve and test use them.
+        if (!sig::Find(kBloodEvolveWrite) || !sig::Find(kBloodEvolveCall) || !sig::Find(kBloodMergeNextInfo))
+        {
+            error = "blood_evolve_signature_mismatch";
+            return false;
+        }
+        auto finalize = reinterpret_cast<std::uintptr_t>(g_original.load(std::memory_order_acquire));
         if (!finalize)
         {
-            if (!GuardedCompare(base + kFinalizeRva, kFinalizeSignature, sizeof(kFinalizeSignature)))
+            finalize = sig::Find(kBloodFinalize);
+            if (!finalize)
             {
                 error = "blood_finalize_signature_mismatch";
                 return false;
             }
-            finalize = reinterpret_cast<FinalizeFn>(base + kFinalizeRva);
         }
         std::uint64_t gate[2] = {};
-        const auto* gateObject = reinterpret_cast<const std::uint8_t*>(g_base + kRenderGateRva);
+        const auto* gateObject = reinterpret_cast<const std::uint8_t*>(g_player.renderGate);
         if (!GuardedRead(&gate[0], gateObject + 0xB0, 8) || !GuardedRead(&gate[1], gateObject + 0xC0, 8))
         {
             error = "gate_unreadable";
@@ -770,7 +937,7 @@ namespace replay::blood
             return false;
         }
         std::uint32_t code = 0;
-        const int result = GuardedEvolve(g_base, ped, record, finalize, code);
+        const int result = GuardedEvolve(ped, record, finalize, code);
         switch (result)
         {
         case 0:
@@ -796,17 +963,20 @@ namespace replay::blood
 
     namespace
     {
-        bool GuardedReadSet(std::uintptr_t base, const void* ped, std::vector<HeldRecord>& out)
+        bool GuardedReadSet(const void* ped, std::vector<HeldRecord>& out)
         {
             __try
             {
-                void* comp = ReadComp(base, kCompReadRva, ped);
+                bool faulted = false;
+                void* comp = ReadComp(engine::kBloodCompRead, g_player.compRead, ped, faulted);
+                if (faulted)
+                    return false;
                 if (!comp)
                     return true;
                 const std::uint8_t slot = *(static_cast<const std::uint8_t*>(comp) + kCompSlot);
                 if (slot == 0xFF || slot >= 128)
                     return true;
-                const std::uintptr_t manager = *reinterpret_cast<const std::uintptr_t*>(base + kManagerRva);
+                const std::uintptr_t manager = *reinterpret_cast<const std::uintptr_t*>(g_player.manager);
                 if (!manager)
                     return true;
                 const std::uintptr_t set = *reinterpret_cast<const std::uintptr_t*>(manager + 0xD8 + slot * 8);
@@ -815,9 +985,9 @@ namespace replay::blood
                 const std::uint32_t count = *reinterpret_cast<const std::uint32_t*>(set + 0x690);
                 if (count > 64)
                     return true;
-                const std::uintptr_t pool = *reinterpret_cast<const std::uintptr_t*>(base + kPoolBaseRva);
-                const std::uint32_t stride = *reinterpret_cast<const std::uint32_t*>(base + kPoolStrideRva);
-                const float now = *reinterpret_cast<const float*>(base + kEngineTimeRva);
+                const std::uintptr_t pool = *reinterpret_cast<const std::uintptr_t*>(g_player.poolBase);
+                const std::uint32_t stride = *reinterpret_cast<const std::uint32_t*>(g_player.poolStride);
+                const float now = *reinterpret_cast<const float*>(g_player.engineTime);
                 if (!pool || !stride)
                     return true;
                 for (std::uint32_t n = 0; n < count; ++n)
@@ -851,7 +1021,7 @@ namespace replay::blood
         }
         if (!EnsurePlayer(error))
             return false;
-        if (!GuardedReadSet(g_base, ped, out))
+        if (!GuardedReadSet(ped, out))
         {
             error = "set_unreadable";
             return false;

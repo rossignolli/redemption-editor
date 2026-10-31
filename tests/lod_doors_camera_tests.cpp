@@ -51,19 +51,18 @@ namespace
         v = observe(state, config, true, 12, true, false);
         Check(!v.stale, "lod: a hidden puppet is not counted");
         Config off;
-        off.forceUpdate = false;
         off.scriptPose = false;
         PuppetState quiet;
         observe(quiet, off, true, 5, true, true);
         v = observe(quiet, off, true, 5, true, true);
-        Check(v.stale && !v.force && quiet.forcedTicks == 0, "lod: PuppetForceAnimUpdate=0 counts without forcing");
+        Check(v.stale && v.force && quiet.forcedTicks == 1, "lod: a second puppet counts and forces on its own");
         v = observe(quiet, off, false, 5, true, true);
         Check(!v.stale && !quiet.hasWrites, "lod: not armed forgets the write count");
 
         Summary summary;
         summary.Add(0x00110072u, state);
         summary.Add(0x002200C9u, quiet);
-        Check(summary.staleTicks == 4 && summary.forcedTicks == 3 && summary.puppetsStale == 2 && summary.episodes == 1 &&
+        Check(summary.staleTicks == 4 && summary.forcedTicks == 4 && summary.puppetsStale == 2 && summary.episodes == 1 &&
                 summary.worstPacked == 0x00110072u && summary.scriptTicks == 0 && summary.puppetsScript == 0,
             "lod: the summary adds every puppet and keeps the worst");
     }
@@ -187,6 +186,37 @@ namespace
         }
         Check(capped.done && capped.timedOut && settle.EndMs() == 3000, "map: never stable: the cap ends the wait");
 
+        Check(settle.OverCapMs() == 0 && settle.ObjectsAtCap() == objects, "map: ended at the cap, the count there kept");
+
+        // Past the cap while the load scene or the puppets hold the start: the
+        // count keeps being judged, a held count ends it without a timeout.
+        settle.Begin(0, 3000);
+        objects = 800;
+        MapSettle::Verdict past;
+        for (std::uint64_t t = 0; t <= 3000; t += 100)
+        {
+            objects += 100;
+            past = settle.Feed(t, objects, 0, true);
+        }
+        Check(!past.done && settle.Active() && settle.ObjectsAtCap() == objects, "map: at the cap with the rest holding: still waiting");
+        Check(!settle.Feed(3500, objects + 2, 0, true).done, "map: past the cap, the count held only 500 ms");
+        const MapSettle::Verdict stable = settle.Feed(3800, objects + 1, 0, true);
+        Check(stable.done && !stable.timedOut && settle.OverCapMs() == 800, "map: past the cap, the count held 800 ms: done, no timeout");
+
+        settle.Begin(0, 3000);
+        settle.Feed(2900, 100, 0, true);
+        Check(!settle.Feed(3100, 200, 0, true).done, "map: rising past the cap with the rest holding");
+        const MapSettle::Verdict rest = settle.Feed(3300, 300, 0, false);
+        Check(rest.done && rest.timedOut && settle.EndMs() == 3300, "map: the rest ready, still rising: the cap ends it then");
+
+        settle.Begin(0, 3000);
+        settle.Feed(3100, 100, 0, true);
+        settle.Stop(8000);
+        Check(!settle.Active() && settle.TimedOut() && settle.EndMs() == 8000 && settle.OverCapMs() == 5000,
+            "map: the load wait's own timeout stops it");
+        settle.Stop(9000);
+        Check(settle.EndMs() == 8000, "map: Stop after the end changes nothing");
+
         settle.Begin(0, 0);
         Check(!settle.Active() && settle.Feed(0, 0, 3).done, "map: MapObjectsWaitMs=0 does not wait");
     }
@@ -194,17 +224,13 @@ namespace
     void TestCameraCut()
     {
         using namespace replay::camcut;
-        Check(ModeFromIni("legacy") == Mode::Legacy && ModeFromIni("LEGACY") == Mode::Legacy &&
-                ModeFromIni("params") == Mode::Params && ModeFromIni("") == Mode::Bits && ModeFromIni(nullptr) == Mode::Bits,
-            "camera: the ini mode (bits, is the default)");
-        // The bytes of 0x174AE8 in the dump 1491.50.
-        const std::uint8_t code[] = {0xB8, 0xC0, 0x00, 0x00, 0x00, 0x66, 0x85, 0x05, 0x58, 0xC1, 0xD2, 0x03, 0x0F, 0x97, 0xC0, 0xC3};
-        Check(FlagsRvaFromCode(code, kFinalFrameCutTestRva) == kFinalFrameFlagsRva,
-            "camera: the final frame's flags from the cut test's code (0x3EA0C4C)");
-        std::uint8_t other[sizeof(code)];
-        std::memcpy(other, code, sizeof(code));
-        other[13] = 0x94; // sete: another function
-        Check(FlagsRvaFromCode(other, kFinalFrameCutTestRva) == 0, "camera: other bytes, no address");
+        // The final frame's flags: the disp32 of the cut test's test word
+        // [rip+disp32], ax (8 bytes in, the instruction ends at 12).
+        Check(kCameraFinalFrameFlags.parent == &kCameraCutTest && kCameraFinalFrameFlags.at == 8 &&
+                  kCameraFinalFrameFlags.end == 12 && kCameraFinalFrameFlags.pattern[0] == 0,
+            "camera: the final frame's flags, where the cut test reads them");
+        Check(std::string(kCameraCutTest.pattern) == "B8 C0 00 00 00 66 85 05 ?? ?? ?? ?? 0F 97 C0 C3",
+            "camera: the cut test (mov eax,0xC0; test word [flags],ax; seta al; ret)");
 
         Tracker tracker;
         Placement p;

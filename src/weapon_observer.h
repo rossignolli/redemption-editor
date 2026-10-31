@@ -68,21 +68,33 @@ namespace replay::weapon
     // Attach frame of a weapon object, as the engine attachment extension
     // keeps it ([object+0xA8]+0x50: +0x58 parent bone index, +0x30 offset
     // position, +0x40 offset quaternion xyzw). The shoulder strap update
-    // (offline 0x118F1C0) rebuilds the weapon's frame from the parent bone
+    // rebuilds the weapon's frame from the parent bone
     // matrix and these offsets, so a puppet weapon attached to the entity
     // root (bone -1) gets its strap computed from the wrong bone.
+    //
+    // +0x5A is the child's own bone (-1 none): the engine puts that bone of
+    // the child, not its origin, on the parent bone plus the offsets. The
+    // two-bone attach 0xF044FC checks it against the child's skeleton bone
+    // count (+0x108) and the parent bone (+0x58) against the parent's, and
+    // the arrow conversion 0x11980C0 passes ext+0x58 and ext+0x5A to it as
+    // the two bones (offline, dump 1491.50). The crowd torch
+    // s_interact_torch_crowd is attached that way (bone 1 of its 5, offsets
+    // zero): read as a plain frame it sits 84 degrees and 5 cm off the hand.
+    // childBone is read for the recording, which folds it into the offsets
+    // (entity_transform.h FoldChildBone); it is not saved in the clip.
     struct AttachFrame
     {
         std::int16_t bone = -1;
         float position[3] = {0.0f, 0.0f, 0.0f};
         float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        std::int16_t childBone = -1;
     };
     // False when the object has no attachment extension.
     bool ReadAttachFrame(std::uint64_t object, AttachFrame& out);
 
     // The weapon object's look read from its CWeapon with guarded reads
     // (weapon_look_core.h), layout from the core of
-    // HAS_WEAPON_GOT_WEAPON_COMPONENT 0x10EABB4 and the wear getters and
+    // HAS_WEAPON_GOT_WEAPON_COMPONENT and the wear getters and
     // setters. ReadComponentList: every component the engine lists (model
     // components in the array, decorations in the hash table), normalized;
     // false when the weapon or a bound is not readable.
@@ -107,9 +119,9 @@ namespace replay::weapon
     bool ReadWearShaderDirt(std::uint64_t object, float& value);
 
     // Strap visibility. Build 1491.50: the weapon system's per-frame pass over
-    // every weapon instance (0xC23738 -> 0x117D49C) ends by calling
-    // 0x1172E44(weapon), which looks the weapon up in the attach-parent ped's
-    // inventory items and, when no item owns it, sets the hidden bit of the
+    // every weapon instance (its loop calls the weapon pass) ends by calling
+    // the strap hide (weapon), which looks the weapon up in the attach-parent
+    // ped's inventory items and, when no item owns it, sets the hidden bit of the
     // three strap components. That pass runs after the script update and before
     // the draw list, so the recorded mask a puppet weapon gets from
     // ApplyStrapState never reaches the render. The detour skips the hide for
@@ -129,9 +141,9 @@ namespace replay::weapon
     StrapVisibilityStats StrapVisibilitySnapshot();
 
     // Ini WeaponPassPose, default 1. The weapon system's per-frame pass over
-    // every weapon instance, 0x117D49C(CWeapon*) called from 0xC23738,
+    // every weapon instance, the weapon pass (CWeapon*) called by its loop,
     // writes the weapon object's own bones after the script tick
-    // (0x1182660 -> 0x2648C40, the turning part's local; 0x264967C, the
+    // (one call writes the turning part's local, another the
     // object matrices of the component bone pairs). A replay weapon's pose
     // written by the script thread is then overwritten. The detour forwards
     // every call and, only for a playback puppet weapon with an armed pose

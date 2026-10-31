@@ -854,7 +854,7 @@ namespace
             mixscene::Instance convo;
             convo.id = 7;
             convo.hash = mixscene::kConversationScene;
-            convo.caller = mixscene::kCallerConversation;
+            convo.caller = 0x2FC2335; // the conversation duck's start site
             convo.kind = mixscene::Kind::Conversation;
             convo.startMs = 120;
             convo.tagCount = 2;
@@ -863,7 +863,7 @@ namespace
             mixscene::Instance script;
             script.id = 8;
             script.hash = 0x12345678u;
-            script.caller = mixscene::kCallerScript;
+            script.caller = 0x31C88EB; // START_AUDIO_SCENE's start site
             script.kind = mixscene::Kind::Script;
             script.startMs = 200;
             script.stopMs = 800;
@@ -2391,8 +2391,8 @@ namespace
         }
     }
 
-    // Decals v1 (no hasEntity) and decalRemoves v1 (no expired) still load; a
-    // version past this build's is refused.
+    // Decals v1 (no hasEntity, callerReturn a u32 RVA) and decalRemoves v1 (no
+    // expired) still load; a version past this build's is refused.
     void TestDecalSectionVersions()
     {
         Clip clip;
@@ -2402,7 +2402,21 @@ namespace
         clipfile::Encode(clip.recording, clip.poses, clip.camera, 1000, kBase, kImageSize, bytes, error);
         Check(clip.recording.decals.Events().size() == 1 && clip.recording.decalRemoves.Events().size() == 1,
             "decal version test: one decal and one removal");
-        std::vector<std::uint8_t> old = WithOlderSection(bytes, "decals", 1, 1);
+        // v1: the trailing hasEntity off, and callerReturn (after the count 8,
+        // time 4, entity 4, attached 1, model 4, position 12) a u32: the site
+        // id's high dword (0, a raw RVA) out.
+        std::vector<std::uint8_t> old;
+        const std::size_t decalsAt = FindSection(bytes, "decals");
+        if (decalsAt < bytes.size())
+        {
+            std::uint64_t length = 0;
+            std::memcpy(&length, bytes.data() + decalsAt + 6, 8);
+            std::vector<std::uint8_t> payload(bytes.begin() + static_cast<std::ptrdiff_t>(decalsAt + 14),
+                bytes.begin() + static_cast<std::ptrdiff_t>(decalsAt + 14 + length - 1));
+            constexpr std::size_t kCallerReturn = 8 + 4 + 4 + 1 + 4 + 12;
+            payload.erase(payload.begin() + kCallerReturn + 4, payload.begin() + kCallerReturn + 8);
+            old = WithSectionPayload(bytes, "decals", 1, payload);
+        }
         old = old.empty() ? old : WithOlderSection(old, "decalRemoves", 1, 1);
         Check(!old.empty(), "decal version test: v1 payloads built");
         if (old.empty())
@@ -2418,6 +2432,7 @@ namespace
             const auto& decals = loaded.recording.decals.Events();
             const auto& removes = loaded.recording.decalRemoves.Events();
             Check(decals.size() == 1 && !decals[0].hasEntity && decals[0].attached && decals[0].engineId == 0xD3u &&
+                    decals[0].callerReturn == clip.recording.decals.Events()[0].callerReturn &&
                     std::memcmp(decals[0].settings, clip.recording.decals.Events()[0].settings, sizeof(decals[0].settings)) == 0,
                 "decals v1: hasEntity false, the rest kept");
             Check(removes.size() == 1 && removes[0].expired == 0 && removes[0].engineId == 0xD3u && removes[0].timeMs == 130,
@@ -2427,10 +2442,10 @@ namespace
         const std::size_t decals = FindSection(future, "decals");
         if (decals < future.size())
         {
-            future[decals + 4] = 3;
+            future[decals + 4] = 4;
             std::string futureError;
             Check(DecodeFails(future, futureError) && futureError.find("'decals'") != std::string::npos,
-                "decals version 3 refused");
+                "decals version 4 refused");
         }
         // An expired byte other than 0 or 1 is malformed (the last payload
         // byte of the one-removal section, hash recomputed).
@@ -3743,7 +3758,8 @@ namespace
             "APPC, VPRT, VBRN, BLVL, FREC, ESND, TRNC, "
             "SCEN and GSND among them)");
         {
-            // A clip from another game build is refused (META).
+            // A clip from another game build opens (META read ahead; its raw
+            // addresses dropped, game_sig_site_tests.cpp).
             clipfile::SetBuildIdentity(0x11111111u, kImageSize);
             std::vector<std::uint8_t> fromBuildA;
             std::string buildError;
@@ -3755,7 +3771,7 @@ namespace
             std::uint64_t otherDuration = 0;
             const bool loaded = clipfile::Decode(fromBuildA.data(), fromBuildA.size(), kBase, kImageSize, other, otherPoses,
                 otherCamera, otherDuration, buildError);
-            Check(!loaded && buildError.find("meta") != std::string::npos, "a clip from another game build is refused");
+            Check(loaded, ("a clip from another game build opens: " + buildError).c_str());
             clipfile::SetBuildIdentity(0x11111111u, kImageSize);
             Check(clipfile::Decode(fromBuildA.data(), fromBuildA.size(), kBase, kImageSize, other, otherPoses, otherCamera,
                       otherDuration, buildError),
@@ -5628,7 +5644,7 @@ namespace
             std::uint64_t length = 0;
             std::memcpy(&length, bytes.data() + at + 6, 8);
             // nextIndex, three counts, then the packets' bytes (the budget counts the same).
-            Check(length == 4 + 8 * 3 + track.FileBytes() && track.FileBytes() == 2 * 115 + 21 + 13 + 17 + 2 * 9, // SGEN v4: 115 bytes (no init variable, no value field)
+            Check(length == 4 + 8 * 3 + track.FileBytes() && track.FileBytes() == 2 * 131 + 21 + 13 + 17 + 2 * 9, // SGEN v5: 131 bytes (no init variable, no value field)
                 "sound generic: the section's bytes are the packets' bytes");
         }
         Clip loaded;
@@ -5701,15 +5717,15 @@ namespace
             std::string badError;
             Check(DecodeSkips(bad, "sound generic", badError), what);
         };
-        // The first end's index: nextIndex (4), creates count (8) + 2 * 115 (SGEN v4), adjusts count (8) + 21 + 13 + 17, ends count (8), timeMs (4).
+        // The first end's index: nextIndex (4), creates count (8) + 2 * 131 (SGEN v5), adjusts count (8) + 21 + 13 + 17, ends count (8), timeMs (4).
         const std::uint32_t pastIndex = 7;
-        refused(4 + 8 + 2 * 115 + 8 + 51 + 8 + 4, &pastIndex, 4, "sound generic: an end naming a sound past the next index is refused");
+        refused(4 + 8 + 2 * 131 + 8 + 51 + 8 + 4, &pastIndex, 4, "sound generic: an end naming a sound past the next index is refused");
         const std::uint32_t early = 50;
-        refused(4 + 8 + 115, &early, 4, "sound generic: creates out of order are refused");
+        refused(4 + 8 + 131, &early, 4, "sound generic: creates out of order are refused");
         const float notANumber = std::numeric_limits<float>::quiet_NaN();
-        refused(4 + 8 + 2 * 115 + 8 + 9 + 4, &notANumber, 4, "sound generic: a position that is not a number is refused");
+        refused(4 + 8 + 2 * 131 + 8 + 9 + 4, &notANumber, 4, "sound generic: a position that is not a number is refused");
         const std::uint8_t badKind = 9;
-        refused(4 + 8 + 2 * 115 + 8 + 8, &badKind, 1, "sound generic: an adjust of an unknown kind is refused");
+        refused(4 + 8 + 2 * 131 + 8 + 8, &badKind, 1, "sound generic: an adjust of an unknown kind is refused");
         // Finding 2 of the release review: nextIndex sizes tables (the player's
         // asked 16 GiB for UINT32_MAX next to one create): past
         // kMaxNextIndex the section is left out.
@@ -5816,7 +5832,7 @@ namespace
         opensWithout(withPayloadChange(4, &tooFew, 8), "malformed at payload byte",
             "sound generic: a create count short of the bytes is skipped, the clip opens");
         const std::uint64_t noEnds = 0;
-        opensWithout(withPayloadChange(4 + 8 + 2 * 115 + 8 + 51, &noEnds, 8), "bytes left over after the payload",
+        opensWithout(withPayloadChange(4 + 8 + 2 * 131 + 8 + 51, &noEnds, 8), "bytes left over after the payload",
             "sound generic: bytes past the last count are skipped, the clip opens");
         // Through Load: LoadInfo carries the sections left out.
         {
@@ -5870,7 +5886,7 @@ namespace
             }
             track.creates.push_back(c);
         }
-        Check(track.FileBytes() == 115 + 24 + 115, "init variables: a create costs 115 bytes (SGEN v4) plus 8 per variable");
+        Check(track.FileBytes() == 131 + 24 + 131, "init variables: a create costs 131 bytes (SGEN v5) plus 8 per variable");
         std::vector<std::uint8_t> bytes;
         std::string error;
         Check(clipfile::Encode(clip.recording, clip.poses, clip.camera, 1000, kBase, kImageSize, bytes, error), "init variables: encode");
@@ -5889,7 +5905,7 @@ namespace
                     b.creates[1].params.initVariableCount == 0 && b.creates[1].timeMs == 45558,
                 "init variables: the grain's three variables round trip, the next create has none");
         }
-        // The speed's value of the first create: nextIndex (4), count (8), 113 bytes, the count byte, two pairs, the hash.
+        // The speed's value of the first create: nextIndex (4), count (8), 129 bytes, the count byte, two pairs, the hash.
         const std::size_t section = FindSection(bytes, "sound generic");
         Check(section < bytes.size(), "init variables: section found");
         if (section < bytes.size())
@@ -5900,9 +5916,9 @@ namespace
             std::uint8_t* payload = bad.data() + section + 14;
             const float notANumber = std::numeric_limits<float>::quiet_NaN();
             float speed = 0.0f;
-            std::memcpy(&speed, payload + 4 + 8 + 113 + 1 + 8 + 4, 4);
+            std::memcpy(&speed, payload + 4 + 8 + 129 + 1 + 8 + 4, 4);
             Check(speed == 4.686f, "init variables: the speed sits where the layout says");
-            std::memcpy(payload + 4 + 8 + 113 + 1 + 8 + 4, &notANumber, 4);
+            std::memcpy(payload + 4 + 8 + 129 + 1 + 8 + 4, &notANumber, 4);
             const std::uint64_t hash = TestFnv64(payload, static_cast<std::size_t>(length));
             std::memcpy(payload + length, &hash, sizeof(hash));
             std::string note;
@@ -5945,7 +5961,7 @@ namespace
         }
         const soundgeneric::InitParams& p0 = track.creates[0].params;
         Check(p0.valuesKnown && p0.valueCount == 4 && p0.hasEnvGroup, "values: the body differs from the constructor in 4 dwords, and has a group");
-        Check(track.FileBytes() == 115 + 4 * 5 + 115, "values: 5 bytes per value dword");
+        Check(track.FileBytes() == 131 + 4 * 5 + 131, "values: 5 bytes per value dword");
         std::vector<std::uint8_t> bytes;
         std::string error;
         Check(clipfile::Encode(clip.recording, clip.poses, clip.camera, 1000, kBase, kImageSize, bytes, error), "values: encode");

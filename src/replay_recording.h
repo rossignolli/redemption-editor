@@ -478,7 +478,7 @@ namespace replay
         std::uint64_t audioRva = 0;
         std::uint32_t audioOffset = 0;
         std::uint32_t trackerOffset = 0; // params +0xC8 minus the entity address
-        std::uint32_t caller = 0;        // evidence
+        std::uint32_t caller = 0;        // creation return RVA (the playback compares it: a site id on disk)
         std::vector<std::uint8_t> params;
         // A one-shot (created and played, the engine ends it): the span
         // [startMs, endMs) is only the window it may start in (its puppet can come
@@ -604,7 +604,7 @@ namespace replay
     };
 
     // A fragment group of a recorded world object that came off (PartsBrokeOff
-    // 0x6EAE68 seen by the frag observer).
+    // calls seen by the frag observer).
     struct FragBreak
     {
         std::uint32_t timeMs = 0;
@@ -853,8 +853,7 @@ namespace replay
         // (render_target_core.h, section RTGT).
         rendertarget::Track renderTargets;
         // The live engine volume listener position (game_listener_core.h, section
-        // LSTN, ListenerRecord=1), put back with ReplayGameListener=1 on the
-        // recorded game camera.
+        // LSTN) and the microphone hash put back on the recorded game camera.
         gamelistener::Track gameListener;
         // The audio wind strength, the wind rows' weather and the simple path flag
         // of the weather audio, 4 times a second (wind_replay_core.h, section WNDA;
@@ -862,7 +861,7 @@ namespace replay
         windreplay::Track windAudio;
         // The mixer scenes started and stopped while recording (hash, who started
         // it, a conversation scene's participants) and each recorded ped's audio mix
-        // group (mix_scene_core.h, section MIXS, written only when MixSceneRecord=1
+        // group (mix_scene_core.h, section MIXS, written only when the recording
         // saw something).
         mixscene::Track mixScenes;
         // Every static sound category's controller values (volume, the two

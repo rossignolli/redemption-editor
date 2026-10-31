@@ -535,7 +535,8 @@ namespace replay::mixprobe
             replay::audio::CollectPlayRequestsSince(g_requestCursor, g_requestBatch);
             for (const replay::audio::SoundRequest& request : g_requestBatch)
                 if (!request.flags[0]) // flags[0] = 1: a persistent create, not the queue
-                    g_requests.Note(request.audioEntity, request.soundRef, nowUs, request.callers, 4);
+                    g_requests.Note(request.audioEntity, request.soundRef, nowUs, request.callers, 4,
+                        replay::audio::OwnerCallerRanges());
             g_requests.Prune(nowUs);
         }
 
@@ -587,7 +588,8 @@ namespace replay::mixprobe
             const Role role = RoleOf(owner, source, sourceClass, probe);
             s.role = static_cast<std::uint8_t>(role);
             const bool horse = role == Role::Horse || role == Role::MainHorse;
-            Kind kind = KindOf(weapon, horse, row.ref, row.callers, census::kRowCallers);
+            Kind kind =
+                KindOf(weapon, horse, row.ref, row.callers, census::kRowCallers, replay::audio::OwnerCallerRanges());
             if (kind == Kind::Generic && row.audio)
             {
                 soundowner::Family family = soundowner::Family::Owned;

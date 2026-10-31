@@ -9,8 +9,8 @@
 // pelvis 1.4 m over the ground the capsule reaches 0.4 m over it, and a
 // kerb, a boardwalk edge or a rut pushes the rider out of its placement
 // between our placement and the render, while the horse goes on. The
-// engine gives a mounted rider no vegetation modifier anyway (0xC2CF14),
-// so the physics bought nothing for him.
+// engine gives a mounted rider no vegetation modifier anyway (its mounted
+// test), so the physics bought nothing for him.
 //
 // Pairing: a ped whose recorded origin sits in a horse's saddle box (the
 // horse's space, +Y forward) rides it. Entered in a tight box, left out of
@@ -203,7 +203,7 @@ namespace replay::jerk
         std::uint32_t causes = 0;         // physics, segment, created, frozen
         std::uint32_t playheadMs = 0;
         // > 0 when the end-of-frame
-        // placement (JitterFix) puts the puppet back before the frame is
+        // placement (FrameEnd) puts the puppet back before the frame is
         // drawn, up to this far: such an engine move is never seen.
         float frameEndRefuseM = 0.0f;
     };

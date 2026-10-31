@@ -2,51 +2,17 @@
 
 // The request fields of a speech line, recorded and asked again.
 //
-// A line the ped's own AI said when recorded (path=ai, data_type=1, e.g. the
-// gang's camp chatter, context 0xe9a2985b) comes back on the replay's direct
-// path as data type 2 unless the type is asked: the direct entry builds its
-// params with the ctor (0x2FAECDC zeroes +0xF4) and the human validator writes
-// 2 when +0xF4 is 0 (0x2F9A7BB). Offline (build 1491.50):
-//   - params +0xF4 picks the line data class (0x2F961B8, copied to data
-//     +0xE0 by 0x2FA92C0). Type 1 (0x158 bytes, vtable 0x37FEE88) plays ONE
-//     sound, the wave (data +0xC0): its play setup 0x2FB46F8 puts the
-//     request's volume, pitch and the two distance values straight on it,
-//     and its per-frame volume 0x2FC1E04 takes component [2] of the line's
-//     volume vector. Type 2 (0x1D0, vtable 0x37FE9C8) plays the wave as a
-//     parent (0x2537168 gets -100 on it) plus up to five child sounds of
-//     a speech sound set (names 0x75E4276D, 0x623B8117, 0x52F58009,
-//     0x0FDF5A1C, 0xBEE1D782 on data +0xE8, created by 0x2FA0D88 as layers
-//     0, 4, 1, 2, 3), adds a metadata volume (in mB, 0x2FB42E2..0x2FB4306)
-//     to the request's volume, and feeds each layer its own component
-//     [0..4] (0x2FC1D5C);
-//   - the volume vector (0x2F9B800, 0x2F9D70C): a positioned line gets the
-//     volume on [2], [0] and [1] silent (-100 dB), [3] silent unless params
-//     +0xD8 is 2 with the type 2 pad flag, and [4] the share a crossfade
-//     moves off [2] (0x2F9D70C, silent by default); a volume type 2 line
-//     (frontend, no position) gets it on [0] with [2] silent. Type 1 hears
-//     [2] only: the layers and the crossfaded share that type 2 adds are the
-//     difference (its audible size depends on runtime metadata, not proven);
-//   - the request fields the engine copies to the line when it creates it
-//     (line init 0x2FABBAC): +0xD8 -> line +0x214, +0xDC -> +0x21C, +0xE0 ->
-//     +0x220, +0xE8 -> +0x224, +0xF8 -> +0x218, +0x100 -> +0x228, +0x104 ->
-//     +0x22C, +0x108 -> +0x230, +0xEC -> +0x23C, +0xF0 -> +0x240, +0x168 ->
-//     +0x27C, +0xD4 -> +0x1F8, +0x170 -> +0x290, +0x178 -> +0x294, +0x180
-//     -> +0x2A4, flag bytes -> +0x2BC..+0x2BF. The SpeechParams applier
-//     0x2F967E8 (metadata type 0x12, the public speechParamHash) writes
-//     +0xDC from its RequestedVolume byte (+0xC) and +0xE0 from its
-//     Audibility byte (+0xD), +0xD8, +0xE8 and +0x104 from three more bytes,
-//     +0x168 from its preload timeout (default 30000 = 0x7530 in the ctor);
-//     the volume vector adds a dB offset by audibility (0x3E26B08: -1.5,
-//     -0.75, 0, 0) and by volume type (0x3E26B28: 0, 0, 0, +3), and
-//     0x2F9970C picks the distance values of the play setup from the tables
-//     of +0xE8 (1 to 3; 0 and 4 none) indexed by +0xDC and +0xE0. The
-//     replay's ctor leaves +0xD8 = +0xDC = +0xE0 = 0 and +0xE8 = 4.
-// The recorder reads the line's copies of the request (what the engine really
-// used, after its own resolution) and the replay writes the line type and the
-// four request fields the SpeechParams metadata sets, each only in the range
-// the engine reads (0x2F9B800 refuses +0x21C or +0x220 >= 4, and +0x214 >= 5).
-// The other fields are only compared: one diff line per line type and a count
-// per field.
+// A line the ped's own AI said when recorded (path=ai, data_type=1) comes back
+// on the replay's direct path as data type 2 unless the type is asked, and the
+// two types play a different set of sounds. So the recorder reads the line's
+// copies of the request (what the engine really used, after its own
+// resolution) and the replay writes the line type and the four request fields
+// the SpeechParams metadata sets, each only in the range the engine reads (the
+// volume vector refuses +0x21C or +0x220 >= 4, and +0x214 >= 5). The other
+// fields are only compared: one diff line per line type and a count per field.
+//
+// Evidence: offline dump of build 1491.50.
+// Research: docs/research/speech-line-request.md
 //
 // Pure: unit tested in ReplayCoreTests (scenery_speech_tests.cpp).
 
@@ -88,7 +54,7 @@ namespace replay::speech::request
     struct FieldInfo
     {
         const char* name;
-        std::uint16_t lineOffset;   // the line's copy (line init 0x2FABBAC)
+        std::uint16_t lineOffset;   // the line's copy (the line init)
         std::uint16_t paramsOffset; // the request field (0: none)
         std::uint32_t limit;        // asked again only below this (0: compared only)
     };
@@ -115,7 +81,7 @@ namespace replay::speech::request
     };
 
     // One guarded read of the line covers every copy (the line is 0x2C0
-    // bytes, 0x2F96284).
+    // bytes, its allocator's size).
     constexpr std::size_t kLineBlockFrom = 0x1F8;
     constexpr std::size_t kLineBlockBytes = 0x2C0 - kLineBlockFrom;
 
@@ -124,9 +90,9 @@ namespace replay::speech::request
         bool read = false;
         std::uint32_t value[kFieldCount] = {};
         // The line's sound set (speech_conversation.h), data +0xE8..+0xF7 =
-        // params +0xC0..+0xCF (copied by the data init 0x2FA92C0 at
-        // 0x2FA9327): +0xF0 the set's name hash (params +0xC8), +0xF4 its
-        // metadata ref (params +0xCC; chunk << 24 | offset, 0x252B408). Read
+        // params +0xC0..+0xCF (copied by the data init): +0xF0 the set's
+        // name hash (params +0xC8), +0xF4 its metadata ref (params +0xCC;
+        // chunk << 24 | offset, from the ref lookup). Read
         // from the line's data, not the line block; SPRQ v2. The pointer at
         // +0xE8 belongs to the session and is not kept.
         bool setRead = false;
@@ -180,7 +146,7 @@ namespace replay::speech::request
         std::uint32_t value = 0;
     };
     // A params flag byte the line init turns into one of the line's bits
-    // (+0x2BC..+0x2BF, 0x2FABBAC; speech_script_path.h).
+    // (+0x2BC..+0x2BF; speech_script_path.h).
     struct ByteWrite
     {
         std::uint16_t offset = 0;
@@ -191,7 +157,7 @@ namespace replay::speech::request
     // (speech_conversation.h).
     enum class SetFrom : std::uint8_t
     {
-        None = 0,      // left to the context metadata (0x2F965D0)
+        None = 0,      // left to the context metadata (the context applier)
         Recorded = 1,  // the line's own set, recorded (SPRQ v2)
         EntitySounds = 2 // an older clip: the set ref of the line's recorded sounds (ESND)
     };
@@ -203,7 +169,7 @@ namespace replay::speech::request
         std::uint8_t byteCount = 0;
         ByteWrite bytes[kMaxByteWrites];
         // The sound set written into params +0xC0/+0xC8/+0xCC the way the
-        // SpeechParams applier 0x2F967E8 does (by hash when known, else by the
+        // SpeechParams applier does (by hash when known, else by the
         // recorded ref).
         SetFrom setFrom = SetFrom::None;
         std::uint32_t setHash = 0;
