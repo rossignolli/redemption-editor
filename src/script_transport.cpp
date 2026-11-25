@@ -177,9 +177,10 @@ namespace
     {
         MarkerHistory& history = g_markerHistory;
         const ULONGLONG now = GetTickCount64();
-        // Only a drag (moves) and a held arrow (one option) merge: two adds or
-        // two deletes are two steps.
-        const bool mergeable = type == static_cast<std::uint32_t>(replay::editor::CommandType::MoveCameraKeyframe) || (type & 0x10000u);
+        // Camera drags, held marker options, and streamed light-drag updates
+        // merge while the same item is being edited; adds and deletes stay distinct.
+        const bool mergeable = type == static_cast<std::uint32_t>(replay::editor::CommandType::MoveCameraKeyframe) ||
+            type == static_cast<std::uint32_t>(replay::editor::CommandType::LightUpdate) || (type & 0x10000u);
         const bool run = mergeable && type == history.lastType && marker == history.lastMarker && now - history.lastAt < 1000 &&
             !history.undo.empty();
         history.lastType = type;
@@ -1360,6 +1361,7 @@ namespace
         for (const replay::camera::Keyframe& key : g_cameraTrack.Keyframes())
             if (key.timeMs <= at)
                 previous = &key;
+        const std::uint32_t previousId = previous ? previous->id : 0u;
         if (previous)
             replay::camera::InheritFrom(fresh, *previous, replay::camera::InsideBlend(g_cameraTrack, at));
         // The shake in force there (a marker added inside a blend holds the blended
@@ -1388,6 +1390,26 @@ namespace
         const std::uint32_t id = g_cameraTrack.AddMarker(fresh);
         if (!id)
             return;
+        // Match the other marker settings: a marker starts with the light rig
+        // from the marker immediately before it. Editing its lights then changes
+        // only this marker's copy, so every new setup does not need a manual copy.
+        if (previousId)
+        {
+            std::vector<replay::editor::AuthoredLight>& lights = g_cameraTrack.AuthoredLights();
+            std::vector<replay::editor::AuthoredLight> inherited;
+            for (const replay::editor::AuthoredLight& light : lights)
+                if (light.markerId == previousId)
+                    inherited.push_back(light);
+            const std::size_t room = replay::editor::kMaxAuthoredLights - lights.size();
+            const std::size_t copied = std::min(room, inherited.size());
+            for (std::size_t n = 0; n < copied; ++n)
+            {
+                inherited[n].markerId = id;
+                lights.push_back(inherited[n]);
+            }
+            if (copied < inherited.size())
+                replay::hud::ShowNotice(TR("hud.light_inherit_limit", "Redemption Editor: light states are at the clip limit; some were not inherited."));
+        }
         // Always (the freecam off too): the view stored so the marker shows it back
         // with its attach and Look At.
         if (replay::camera::Keyframe* added = g_cameraTrack.FindMutable(id))
@@ -1396,7 +1418,7 @@ namespace
         g_cameraTrackEnabled = true;
         g_cameraTrackManualOverride = false;
         LogFile() << "CAMERA_MARKER,action=add,id=" << id << ",at_ms=" << at << ",mode="
-                  << static_cast<std::uint32_t>(fresh.cameraMode) << ",inherited=" << (previous ? previous->id : 0) << '\n';
+                  << static_cast<std::uint32_t>(fresh.cameraMode) << ",inherited=" << previousId << '\n';
     }
 
     void LeaveMarkerCameraEdit(bool keep)

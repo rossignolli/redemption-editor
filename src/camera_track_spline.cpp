@@ -649,7 +649,12 @@ namespace replay::camera
                 if (to <= from || !EvaluateMarkersImpl(track, from, scene, a, nullptr, 0.0f, &planA, false) ||
                     !EvaluateMarkersImpl(track, to, scene, b, nullptr, 0.0f, &planB, false))
                     return 0.0f;
-                if (planA.current == planB.current || planA.blending || planB.current < 0)
+                if (planA.current == planB.current || planB.current < 0)
+                    break;
+                // A blend that ends at planB's marker explains the path: the
+                // window is a move. Any other change of the marker inside the
+                // window is a jump into it (a cut) and ends the window there.
+                if (planA.blending && planA.next == planB.current)
                     break;
                 cutAt(track.Keyframes()[static_cast<std::size_t>(planB.current)].timeMs);
             }

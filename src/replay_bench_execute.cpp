@@ -1475,17 +1475,17 @@ namespace replay::bench
                 censusSeen.clear();
                 censusSeen.insert(objects, objects + count);
                 static ItemSet itemset = 0;
-                if (!itemset || !ITEMSET::IS_ITEMSET_VALID(itemset))
-                    itemset = ITEMSET::CREATE_ITEMSET(TRUE);
+                if (!itemset || !ITEMSETS::IS_ITEMSET_VALID(itemset))
+                    itemset = ITEMSETS::CREATE_ITEMSET(TRUE);
                 int carriables = -1;
                 if (itemset)
                 {
-                    ITEMSET::CLEAN_ITEMSET(itemset);
+                    ITEMSETS::CLEAN_ITEMSET(itemset);
                     PED::FIND_ALL_ATTACHED_CARRIABLE_ENTITIES(ped, itemset);
-                    carriables = ITEMSET::GET_ITEMSET_SIZE(itemset);
+                    carriables = ITEMSETS::GET_ITEMSET_SIZE(itemset);
                     for (int n = 0; n < carriables && n < 16; ++n)
                     {
-                        const Entity entity = MISC::_GET_ENTITY_FROM_ITEM(ITEMSET::GET_INDEXED_ITEM_IN_ITEMSET(n, itemset));
+                        const Entity entity = MISC::_GET_ENTITY_FROM_ITEM(ITEMSETS::GET_INDEXED_ITEM_IN_ITEMSET(n, itemset));
                         Log() << "BENCH_ATTACHED_CENSUS_CARRIABLE,of=" << step.args[0] << ",handle=" << entity << ",model=0x" << std::hex
                               << (entity ? static_cast<std::uint32_t>(ENTITY::GET_ENTITY_MODEL(entity)) : 0u) << std::dec
                               << ",attached_to=" << (entity ? ENTITY::GET_ENTITY_ATTACHED_TO(entity) : 0) << '\n';
@@ -1780,12 +1780,12 @@ namespace replay::bench
                     detail = "unknown_propset";
                     return StepResult::Failed;
                 }
-                const ItemSet items = ITEMSET::CREATE_ITEMSET(TRUE);
+                const ItemSet items = ITEMSETS::CREATE_ITEMSET(TRUE);
                 int count = items ? PROPSET::_GET_ENTITIES_FROM_PROP_SET(found->second, items, 0, FALSE, FALSE) : -1;
                 std::map<std::uint32_t, int> owners;
                 for (int n = 0; items && n < count && n < 64; ++n)
                 {
-                    const Object object = MISC::_GET_OBJECT_FROM_INDEXED_ITEM(ITEMSET::GET_INDEXED_ITEM_IN_ITEMSET(n, items));
+                    const Object object = MISC::_GET_OBJECT_FROM_INDEXED_ITEM(ITEMSETS::GET_INDEXED_ITEM_IN_ITEMSET(n, items));
                     if (!object || !ENTITY::DOES_ENTITY_EXIST(object))
                         continue;
                     std::uint32_t field = 0;
@@ -1802,7 +1802,7 @@ namespace replay::bench
                           << p.z << '\n';
                 }
                 if (items)
-                    ITEMSET::DESTROY_ITEMSET(items);
+                    ITEMSETS::DESTROY_ITEMSET(items);
                 std::string text = "loaded=" + std::to_string(PROPSET::IS_PROP_SET_FULLY_LOADED(found->second) ? 1 : 0) +
                     ",objects=" + std::to_string(count) + ",owners=";
                 for (const auto& [owner, n] : owners)

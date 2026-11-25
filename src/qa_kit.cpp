@@ -562,6 +562,23 @@ namespace replay::qa::kit
                     anomaly.detail = "family=" + failure.family + ";taker=" + failure.taker + ";set=" + set;
                     mark.anomalies.push_back(anomaly);
                 }
+                for (const replay::soundgeneric::player::WindowPacket& p : generic.packetsDetailed)
+                {
+                    SoundPacket packet;
+                    packet.timeMs = p.timeMs;
+                    packet.owner = replay::census::IdText(p.owner);
+                    packet.family = replay::soundowner::FamilyName(p.family);
+                    packet.taker = replay::soundowner::TakerName(p.taker);
+                    char stableId[32], rawRef[32];
+                    std::snprintf(stableId, sizeof(stableId), "0x%llx", static_cast<unsigned long long>(p.stableId));
+                    std::snprintf(rawRef, sizeof(rawRef), "0x%llx", static_cast<unsigned long long>(p.rawRef));
+                    packet.stableId = stableId;
+                    packet.rawRef = rawRef;
+                    packet.caller = p.caller;
+                    packet.outcome = replay::soundgeneric::player::OutcomeName(p.outcome);
+                    packet.mutedMarkedSound = p.mutedMarkedSound;
+                    w.packetDetails.push_back(std::move(packet));
+                }
             }
             {
                 const replay::events::EntitySoundWindow esnd = replay::events::EntitySoundWindowOf(w.fromMs, w.toMs);

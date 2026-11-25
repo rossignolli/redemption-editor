@@ -8,6 +8,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="editor\replay_editor_addon.cpp" />
+    <ClCompile Include="src\camera_spline.cpp" />
     <ClCompile Include="editor\replay_editor_addon_menus.cpp" />
     <ClCompile Include="editor\replay_editor_addon_export.cpp" />
     <ClCompile Include="editor\replay_editor_addon_projects.cpp" />

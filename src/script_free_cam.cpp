@@ -745,14 +745,13 @@ namespace
             InterlockedCompareExchange(&g_moveDown, 0, 0) != 0 ||
             InterlockedCompareExchange(&g_fovIn, 0, 0) != 0 ||
             InterlockedCompareExchange(&g_fovOut, 0, 0) != 0;
-        // With the editor's UI up the keyboard is the editor's (Ctrl+Z must not roll
-        // the camera, typing a clip name must not move it); H hides the UI to fly,
-        // Edit Camera hands the keys over.
+        // With the editor's UI up, hold the exact free-camera pose so keyboard and
+        // mouse input can operate the menu without moving the shot. H hides the UI
+        // to fly; Edit Camera hands the keys over to its camera controls.
         const bool keysForEditor = g_editorCoversScreen && !g_editingMarker;
         if (keysForEditor)
         {
             g_freeCamVelocity = {};
-            FreeCamFollowTick(); // a followed target still carries the camera
             TraceFreeCam("keys_for_editor");
             PlaceCam(g_freeCam, g_freeCamCut, "freecam", g_freeCamPosition.x, g_freeCamPosition.y, g_freeCamPosition.z,
                 g_freeCamRotation.x, g_freeCamRotation.y, g_freeCamRotation.z, g_freeCamFov, deltaSeconds, false);

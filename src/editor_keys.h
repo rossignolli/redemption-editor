@@ -65,6 +65,7 @@ namespace replay::keys
         FreeCamBehind,
         FreeCamLock,
         CameraOverlay,
+        LightEditor,
         Count
     };
     constexpr std::size_t kActionCount = static_cast<std::size_t>(Action::Count);
@@ -135,6 +136,7 @@ namespace replay::keys
         {Action::FreeCamBehind, "FreeCamBehind", "Num0", "Free camera: behind the main character", "behind"},
         {Action::FreeCamLock, "FreeCamLock", "L", "Free camera: hold still on/off", "hold"},
         {Action::CameraOverlay, "CameraOverlay", "Backquote", "Camera markers and path in the world on/off", "overlay"},
+        {Action::LightEditor, "LightEditor", "F6", "Open the light editor", "lights"},
     };
 
     inline const ActionInfo& Info(Action action) { return kActions[static_cast<std::size_t>(action)]; }
@@ -568,7 +570,8 @@ namespace replay::keys
                     else
                         detail::SetWhy(issue, TR_NOOP("keys.issue.not_key", "not a key name"));
                 }
-                else if (const Reserved* reserved = ReservedFor(binding))
+                else if (const Reserved* reserved = ReservedFor(binding);
+                    reserved && !(info.action == Action::LightEditor && std::strcmp(reserved->reason, "photo_mode") == 0))
                 {
                     issue.reason = std::string("reserved_") + reserved->reason;
                     detail::SetWhy(issue, reserved->whyKey, reserved->why);

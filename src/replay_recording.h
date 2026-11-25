@@ -14,6 +14,7 @@
 #include "entity_lifecycle.h"
 #include "entity_transform.h"
 #include "environment_track.h"
+#include "lightning_track.h"
 #include "sky_track.h"
 #include "timecycle_track.h"
 #include "moon_track.h"
@@ -650,6 +651,11 @@ namespace replay
         // the date as evidence (moon_track.h, section MOON); empty in an older clip
         // (the session's moon is kept, and given back when the clip ends).
         std::vector<MoonSample> moon;
+        // The lightnings the weather manager started over time (lightning_track.h,
+        // section LGTN); empty in an older clip and in a clip that saw none (the
+        // section is then omitted). Personal build: replayed through the engine's
+        // own lightning port so the flash and its thunder play as recorded.
+        std::vector<LightningStrike> lightning;
         // The editor's settings over the recorded state (env_override.h); all
         // Recorded by default. Saved in section ENVO; a cut copies them with the
         // rest.

@@ -327,6 +327,21 @@ namespace replay::project
         camera::Track result;
         if (outMs <= inMs)
             return result;
+        for (const editor::AuthoredLight& light : source.AuthoredLights())
+            if (light.markerId == 0 && result.AuthoredLights().size() < editor::kMaxAuthoredLights)
+                result.AuthoredLights().push_back(light);
+        const auto copyMarkerLights = [&](std::uint32_t sourceId, std::uint32_t destinationId) {
+            if (!sourceId || !destinationId)
+                return;
+            for (const editor::AuthoredLight& sourceLight : source.AuthoredLights())
+            {
+                if (sourceLight.markerId != sourceId || result.AuthoredLights().size() >= editor::kMaxAuthoredLights)
+                    continue;
+                editor::AuthoredLight light = sourceLight;
+                light.markerId = destinationId;
+                result.AuthoredLights().push_back(light);
+            }
+        };
         static const std::vector<Keyframe> kNone;
         const std::vector<Keyframe>& keys = source.LegacyBlendAnyMode() ? kNone : source.Keyframes();
         Keyframe start = startTemplate;
@@ -363,11 +378,18 @@ namespace replay::project
         }
         start.timeMs = inMs;
         end.timeMs = outMs;
-        result.AddMarker(start);
-        result.AddMarker(end);
+        const std::uint32_t startSourceId = start.id;
+        const std::uint32_t endSourceId = end.id;
+        const std::uint32_t startId = result.AddMarker(start);
+        const std::uint32_t endId = result.AddMarker(end);
+        copyMarkerLights(startSourceId, startId);
+        copyMarkerLights(endSourceId, endId);
         for (const Keyframe& key : keys)
             if (key.timeMs > inMs && key.timeMs < outMs && &key != movedStart && &key != movedEnd)
-                result.AddMarker(key); // refused when too close to a bound or a neighbour
+            {
+                const std::uint32_t markerId = result.AddMarker(key); // refused when too close to a bound or a neighbour
+                copyMarkerLights(key.id, markerId);
+            }
         camera::ApplyLastMarkerRule(result);
         // The legacy view as a loaded clip has it (ReadCamera derives it):
         // the markers compare equal after a save and load of the project.

@@ -1396,6 +1396,17 @@ namespace replay::events
         std::uint32_t startOffsetMs = 0, bool resumed = false, bool fromSlotQueue = false)
     {
         const replay::entity::SpeechEvent& line = Ctx().clip.speechLines.Events()[index];
+        if (!g_speechBankReplay && line.dataType == replay::speech::request::kTypeSingle && line.request.read &&
+            line.request.value[replay::speech::request::Source] == replay::speech::slots::kSourceBank)
+        {
+            ++g_speechBankMuted;
+            if (g_speechBankMuted <= 20)
+                Ctx().log << "POSE_V2_SPEECH_MUTED,ped=" << replay::entity::IdText(line.speaker)
+                          << ",reason=ambient_bank,context=0x" << std::hex
+                          << replay::audio::FinalizeHash(line.contextPartialHash) << std::dec
+                          << ",event_ms=" << line.timeMs << ",playhead_ms=" << timeMs << '\n';
+            return false;
+        }
         g_poseV2SlotGateLast = replay::speech::slots::Decision::Ask;
         g_poseV2LastAskedType = 0;
         // A line adopted already playing (startedBeforeMs) goes on from where it

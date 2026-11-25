@@ -487,6 +487,16 @@ namespace replay::clipfile
         void WriteEnvironmentTrack(Writer& w, const SaveContext& c);
         void ReadEnvironmentTrack(Reader& r, LoadContext& c);
 
+        // Section "lightning" (LGTN, optional, personal build): the lightnings
+        // the weather manager started over time (lightning_track.h): time, type
+        // and, when the manager held one, the strike position. A row is 18
+        // bytes. Written only when the recording saw a lightning, so a clip
+        // without one stays readable by an unmodified build (which refuses an
+        // unknown section); a clip with one needs this build.
+        constexpr std::uint16_t kLightningVersion = 1;
+        void WriteLightning(Writer& w, const SaveContext& c);
+        void ReadLightning(Reader& r, LoadContext& c);
+
         // Section "sky track" (SKYT, optional): the cloud accumulators over
         // time and their periods (sky_track.h). A clip without it leaves the
         // clouds to the session.
@@ -567,9 +577,11 @@ namespace replay::clipfile
         void WriteCuts(Writer& w, const SaveContext& c);
         void ReadCuts(Reader& r, LoadContext& c);
 
-        // Section "spans" (SPAN, optional): the restricted-camera
-        // spans (cutscene, script camera, no control).
-        constexpr std::uint16_t kSpansVersion = 1;
+        // Section "spans" (SPAN, optional): the restricted-camera spans
+        // (cutscene, script camera, no control). Version 2 adds the cutscene
+        // mission, scene name and master-audio offset; version 1 remains valid.
+        constexpr std::uint16_t kSpansVersion = 2;
+        constexpr std::uint16_t kSpansMinVersion = 1;
         void WriteSpans(Writer& w, const SaveContext& c);
         void ReadSpans(Reader& r, LoadContext& c);
 

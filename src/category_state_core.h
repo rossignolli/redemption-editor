@@ -415,6 +415,20 @@ namespace replay::catstate
         return std::find(keepLive.begin(), keepLive.end(), hash) != keepLive.end();
     }
 
+    // A live category at the engine's hard-mute floor must stay muted during
+    // playback. In particular, replayed camp/ambient voices can share these
+    // global category volumes with the live world; restoring an audible
+    // recorded value over a live -100 dB mute makes those voices sound like
+    // loud ghosts. Keep this narrow: ordinary mix differences still use the
+    // recorded category state.
+    constexpr float kHardMuteDb = -90.0f;
+    constexpr float kAudibleDb = -20.0f;
+    inline bool PreserveLiveMute(const Values& live, const Values& recorded)
+    {
+        return std::isfinite(live.volume) && std::isfinite(recorded.volume) && live.volume <= kHardMuteDb &&
+            recorded.volume >= kAudibleDb;
+    }
+
     // ---- the evidence ----
 
     // One window of the playback (CATEGORY_STATE event=window).

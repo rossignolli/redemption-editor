@@ -109,6 +109,7 @@ namespace replay::events
         g_speechConversationPlainLogs = 0;
         g_speechConversationTally = {};
         g_speechConversationLogs = 0;
+        g_speechBankMuted = 0;
         for (const replay::soundgeneric::CreatePacket& create : Ctx().clip.soundGeneric.creates)
             if (create.ownerClass == replay::census::OwnerClass::Player && create.owner != replay::census::kNoOwner)
             {
@@ -508,6 +509,9 @@ namespace replay::events
             // conversation lines out of the ambient set and its self duck)
             // (speech_conversation.h).
             g_speechConversationLive = replay::identity::IniInt("SpeechConversationLive", 1, ini.c_str()) != 0;
+            // Source-3, type-1 bank lines are ambient AI chatter. Keep them
+            // muted by default; scripted/source-2 conversation remains intact.
+            g_speechBankReplay = replay::identity::IniInt("SpeechBankReplay", 0, ini.c_str()) != 0;
             // The replay's lines pass the rules' world context codes (28 another
             // speaker, 41 out of range, 48 a scripted conversation on), as a replay
             // editor's own say path skips the can-say rules (speech_replay_rules.h).
@@ -865,6 +869,7 @@ namespace replay::events
                 std::string failed = "off";
                 const bool callsOk = g_speechConversationLive && replay::audio::SpeechSoundSetCallsOk(failed);
                 log << "SPEECH_CONVERSATION_TOTAL,on=" << (g_speechConversationLive ? 1 : 0)
+                    << ",bank_replay=" << (g_speechBankReplay ? 1 : 0) << ",bank_muted=" << g_speechBankMuted
                     << ",calls_ok=" << (callsOk ? 1 : 0) << ",calls_failed=" << failed << ",lines=" << c.lines
                     << ",duck_asked=" << c.duckAsked << ",duck_cleared=" << c.duckCleared << ",duck_kept=" << c.duckKept
                     << ",set_recorded=" << c.setRecorded << ",set_from_sounds=" << c.setSounds << ",set_none=" << c.setNone

@@ -134,6 +134,19 @@ namespace replay::qa
         std::string lastStatus;
     };
 
+    struct SoundPacket
+    {
+        std::uint32_t timeMs = 0;
+        std::string owner;
+        std::string family;
+        std::string taker;
+        std::string stableId;
+        std::string rawRef;
+        std::uint32_t caller = 0;
+        std::string outcome;
+        bool mutedMarkedSound = false;
+    };
+
     struct SoundWindow
     {
         bool genericKnown = false;     // the generic player ran (SoundGeneric=1)
@@ -143,6 +156,7 @@ namespace replay::qa
         std::vector<SoundRow> families;
         std::vector<SoundRow> owners;
         std::vector<SoundFailure> failures;
+        std::vector<SoundPacket> packetDetails;
         bool entityKnown = false;      // the entity sound track was read
         EntitySoundRow entityTotals;
         std::vector<EntitySoundRow> entityOwners;
@@ -391,7 +405,22 @@ namespace replay::qa
                     std::to_string(offset) + ",\"owner\":" + JsonString(f.owner) + ",\"family\":" + JsonString(f.family) +
                     ",\"taker\":" + JsonString(f.taker) + ",\"set\":" + JsonString(set) + ",\"outcome\":" + JsonString(f.outcome) + "}";
             }
-            j += w.failures.empty() ? "]},\n" : "\n      ]},\n";
+            j += w.failures.empty() ? "],\n" : "\n      ],\n";
+            j += "      \"packet_details\": [";
+            for (std::size_t n = 0; n < w.packetDetails.size(); ++n)
+            {
+                const SoundPacket& p = w.packetDetails[n];
+                char caller[16];
+                std::snprintf(caller, sizeof(caller), "0x%x", p.caller);
+                const long long offset = static_cast<long long>(p.timeMs) - static_cast<long long>(pressPlayheadMs);
+                j += (n ? ",\n        " : "\n        ") + std::string("{\"time_ms\":") + std::to_string(p.timeMs) + ",\"offset_ms\":" +
+                    std::to_string(offset) + ",\"owner\":" + JsonString(p.owner) + ",\"family\":" + JsonString(p.family) +
+                    ",\"taker\":" + JsonString(p.taker) + ",\"stable_id\":" + JsonString(p.stableId) +
+                    ",\"raw_ref\":" + JsonString(p.rawRef) + ",\"caller\":" + JsonString(caller) +
+                    ",\"outcome\":" + JsonString(p.outcome) + ",\"muted_marked_sound\":" +
+                    (p.mutedMarkedSound ? "true}" : "false}");
+            }
+            j += w.packetDetails.empty() ? "]},\n" : "\n      ]},\n";
         }
         j += "    \"entity_sounds\": ";
         if (!w.entityKnown)

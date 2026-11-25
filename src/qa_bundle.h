@@ -15,8 +15,8 @@
 //                          compression (still a .rpclip the editor opens)
 //   <report>\crashes\...   the newest minidumps of
 //                          %LOCALAPPDATA%\RedemptionEditor\crashes (7 days)
-//   <report>\debug\...     ReplayDebug\<clip>.sound-generic.txt
-//                          and <clip>.sound-check.txt of the clips above
+//                          and <clip>.sound-check.txt of the clips above;
+//                          the newest capture-probe report when the developer probe was enabled
 //
 // Then ReplayReports\<report>-<clip>.zip (qa_zip.h, deflate through z.dll
 // of RedemptionEditor\dlls when it loads, stored otherwise); the folder is
@@ -51,6 +51,7 @@ namespace replay::qa::bundle
         // readRoots in turn (empty: the working directory only).
         std::wstring dataRoot;
         std::vector<std::wstring> readRoots;
+        bool captureProbeEnabled = false;  // the developer-only read probe was enabled for this game session
     };
 
     struct Result
@@ -62,7 +63,7 @@ namespace replay::qa::bundle
         std::uint32_t zipDeflated = 0;
         std::uint32_t marks = 0;
         std::vector<std::string> markFolders; // the folders moved, in listing order
-        std::uint32_t debugFiles = 0;         // ReplayDebug sound reports of the clips, copied to the debug folder
+        std::uint32_t debugFiles = 0;         // sound reports and the optional capture probe, copied to debug
         std::uint32_t clips = 0;
         std::uint32_t clipsCompressed = 0;
         std::vector<std::string> missingClips; // named, not in ReplayClips

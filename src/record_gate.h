@@ -163,6 +163,12 @@ namespace replay::gate
         std::uint32_t endMs = 0; // equal to start while still open
         SpanKind kind = SpanKind::Cutscene;
         bool open = false;       // recording only
+        // Optional cutscene master-audio identity. audioOffsetMs is the WAV
+        // position at startMs, so a trimmed buffer window can shift the span
+        // without losing sync to the scene's original audio clock.
+        std::uint32_t audioOffsetMs = 0;
+        char mission[64]{};
+        char cutscene[64]{};
     };
 
     // Opens a span of `kind` when `active` turns on and closes it when it

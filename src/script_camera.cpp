@@ -9,6 +9,14 @@ namespace
     std::uint64_t g_camLends = 0;
     bool g_replayCamPlacedThisTick = false; // UpdateReplayCamera placed the replay camera this tick
     bool g_replayCamKeyedThisTick = false;  // and it followed the camera markers
+    // Keep a generous high-detail area around the replay view so small camera
+    // moves do not cross a vegetation LOD boundary during a shot.
+    constexpr float kReplayHdAreaRadius = 100.0f;
+    // When a replay camera stays near the hidden player, keep the streaming
+    // focus anchored there as it is during live camera work. The render view
+    // still gets its own HD area; moving the focus with every small camera move
+    // can make the world streamer churn through nearby vegetation LODs.
+    constexpr float kNearbyPlayerFocusRadius = 100.0f;
 
     // A camera target's puppet: where it stands and where it faces.
     bool TargetState(std::uint32_t target, Vector3& position, float& heading)
@@ -328,7 +336,7 @@ namespace
             return *entry;
         if (!entry)
         {
-            if (g_camTargetBones.size() >= 256)
+            if (g_camTargetBones.size() >= replay::editor::kMaxTargetsInSnapshot)
                 g_camTargetBones.erase(g_camTargetBones.begin());
             g_camTargetBones.push_back(CamTargetBones{});
             entry = &g_camTargetBones.back();
@@ -1635,7 +1643,10 @@ namespace
         // The focus stays set while a clip plays (another camera takes it this
         // tick); StopPlayback clears it.
         if (g_replayCam && !g_transport.Playing())
+        {
             STREAMING::CLEAR_FOCUS();
+            STREAMING::CLEAR_HD_AREA();
+        }
         g_renderedCamera.valid = false;
         if (!g_freeCamEnabled)
             g_lastPlacedView.valid = false;
@@ -1892,13 +1903,13 @@ namespace
     }
 
     // Once per tick after UpdateFreeCam and UpdateReplayCamera (world_focus_core.h).
-    // While a clip plays (the replay owns the world) the streaming focus is put on
-    // the camera that renders, whatever it is: the replay camera, the free camera,
-    // Edit Camera, another mod's camera the view was lent to, or the live game
-    // camera. Otherwise the focus would stay on the hidden live player, maybe
-    // hundreds of metres away, and the puppets' hooves would never be created.
+    // While a clip plays (the replay owns the world) the streaming focus follows
+    // the camera that renders, unless a replay/free/edit camera stays within
+    // 100 m of the player. In that case the focus stays on the player while the HD area
+    // follows the camera, to avoid recentering the world stream during close shots.
+    // At long range the focus follows the camera so distant replay actors stream in.
     // Rung 1 (natives). FOCUS on each owner change, FOCUS_SAMPLE once per second
-    // (focus to camera distance, also with WorldFocus=0).
+    // (focus to rendered-camera distance, also with WorldFocus=0).
     void UpdateWorldFocus(ULONGLONG now)
     {
         using namespace replay::worldfocus;
@@ -1954,9 +1965,6 @@ namespace
         {
             at = g_freeCamPosition;
         }
-        STREAMING::SET_FOCUS_POS_AND_VEL(at.x, at.y, at.z, 0.0f, 0.0f, 0.0f);
-        g_worldFocusAt = at;
-        g_worldFocusTracker.owned = true;
         const Ped player = PLAYER::PLAYER_PED_ID();
         const bool playerExists = player && ENTITY::DOES_ENTITY_EXIST(player);
         const Vector3 playerAt = playerExists ? ENTITY::GET_ENTITY_COORDS(player, TRUE, FALSE) : Vector3{};
@@ -1964,6 +1972,14 @@ namespace
             const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
             return std::sqrt(dx * dx + dy * dy + dz * dz);
         };
+        const bool replayCamera = source == Source::Replay || source == Source::Marker ||
+            source == Source::FreeCam || source == Source::Edit;
+        const bool playerAnchored = replayCamera && playerExists && dist(at, playerAt) <= kNearbyPlayerFocusRadius;
+        const Vector3 focusAt = playerAnchored ? playerAt : at;
+        STREAMING::SET_FOCUS_POS_AND_VEL(focusAt.x, focusAt.y, focusAt.z, 0.0f, 0.0f, 0.0f);
+        STREAMING::SET_HD_AREA(at.x, at.y, at.z, kReplayHdAreaRadius);
+        g_worldFocusAt = focusAt;
+        g_worldFocusTracker.owned = true;
         const bool changed = Update(g_worldFocusTracker, source);
         const bool sample = SampleDue(g_worldFocusTracker, now);
         if (!changed && !sample)
@@ -1973,6 +1989,8 @@ namespace
         log << (changed ? "FOCUS" : "FOCUS_SAMPLE") << ",source=" << SourceName(source)
             << ",set=1,cam=" << in.renderingCam
             << ",at=" << at.x << ';' << at.y << ';' << at.z
+            << ",focus_at=" << focusAt.x << ';' << focusAt.y << ';' << focusAt.z
+            << ",focus_mode=" << (playerAnchored ? "player_anchor" : "camera")
             << ",focus_cam_m=" << dist(g_worldFocusAt, rendered)
             << ",player_cam_m=" << (playerExists ? dist(playerAt, rendered) : -1.0f)
             << ",player_is_focus=" << (playerIsFocus ? 1 : 0)
@@ -1988,7 +2006,10 @@ namespace
     {
         const bool owned = g_worldFocusTracker.owned;
         if (owned)
+        {
             STREAMING::CLEAR_FOCUS();
+            STREAMING::CLEAR_HD_AREA();
+        }
         if (owned || g_worldFocusTracker.changes)
             LogFile() << "FOCUS,source=none,why=" << why << ",cleared=" << (owned ? 1 : 0)
                       << ",changes=" << g_worldFocusTracker.changes << ",samples=" << g_worldFocusTracker.samples << '\n';

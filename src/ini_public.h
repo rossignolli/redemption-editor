@@ -90,6 +90,10 @@ LockCutsceneCamera=0
 ReplayDeadEye=0
 ; 1: the world stays frozen while a replay is paused (Replay Settings).
 FreezeWorldOnPause=1
+; 0: mute recorded bank-backed ambient NPC chatter during replay (source-3
+; single-wave lines). Scripted conversations and player speech still play.
+; Set to 1 to replay that chatter too.
+SpeechBankReplay=0
 ; The REC notice while you record (Replay Settings): normal (REC always, REPLAY
 ; ON for 5 seconds when the buffer starts); brief (3 seconds when a recording
 ; starts, stops or saves); hidden (you see it, screen
@@ -100,6 +104,10 @@ RecordingIndicator=normal
 ; (Replay Settings): 80, 90, 100, 110 or 125. 100 looks the same at every
 ; resolution. A 4:3 screen stays at 100 at most.
 InterfaceScale=100
+; Opacity of the Lighting menu background, from 0 (clear) to 100 (solid).
+LightMenuOpacity=50
+; Lighting menu appearance: 0 Blueprint mockup, 1 Frontier mockup, 2 Crimson mockup, 3 Original (default, red and gold).
+LightMenuPreset=3
 ; The font of the editor's titles, menus and notices (Replay Settings):
 ; redemption (the game's) or segoe (Segoe UI Bold, easier to read).
 Font=redemption
@@ -206,6 +214,7 @@ FreeCamLevel=Num5
 FreeCamBehind=Num0
 FreeCamLock=L
 CameraOverlay=Backquote
+LightEditor=F6
 )INI";
 
     struct ReadKey
@@ -222,7 +231,8 @@ CameraOverlay=Backquote
         {"RedemptionEditor", "ManualMaxSeconds"}, {"RedemptionEditor", "ManualMaxMB"}, {"RedemptionEditor", "CompressClips"},
         {"RedemptionEditor", "CompressAfterDays"}, {"RedemptionEditor", "CompressLevel"}, {"RedemptionEditor", "RecordCutscenes"},
         {"RedemptionEditor", "LockCutsceneCamera"}, {"RedemptionEditor", "ReplayDeadEye"}, {"RedemptionEditor", "FreezeWorldOnPause"},
-        {"RedemptionEditor", "RecordingIndicator"}, {"RedemptionEditor", "InterfaceScale"}, {"RedemptionEditor", "Font"}, {"RedemptionEditor", "Host"}, {"RedemptionEditor", "PoseDetail"},
+        {"RedemptionEditor", "RecordingIndicator"}, {"RedemptionEditor", "InterfaceScale"}, {"RedemptionEditor", "LightMenuOpacity"},
+        {"RedemptionEditor", "LightMenuPreset"}, {"RedemptionEditor", "Font"}, {"RedemptionEditor", "Host"}, {"RedemptionEditor", "PoseDetail"},
         {"RedemptionEditor", "RestoreWorldState"}, {"RedemptionEditor", "RestoreWorldStateInMission"}, {"RedemptionEditor", "FullLog"},
         {"RedemptionEditor", "QaMarks"}, {"RedemptionEditor", "ReportIncludeClips"}, {"RedemptionEditor", "Language"},
         {"RedemptionEditor", "FreeCamMotion"}, {"RedemptionEditor", "FreeCamWalk"},
@@ -246,6 +256,7 @@ CameraOverlay=Backquote
         {"RedemptionEditor", "RecordPedAnimLod0"}, {"RedemptionEditor", "CategoryStateReplay"},
         {"RedemptionEditor", "SpeechReplayRules"}, {"RedemptionEditor", "SpeechDuckReplay"},
         {"RedemptionEditor", "SpeechConversationLive"}, {"RedemptionEditor", "PuppetOwnSpeech"},
+        {"RedemptionEditor", "SpeechBankReplay"},
         {"RedemptionEditor", "RefusePuppetOwnPersistent"}, {"RedemptionEditor", "ListenerMicReplay"},
         {"RedemptionEditor", "WindReplay"}, {"RedemptionEditor", "RenderTargetRecord"}, {"RedemptionEditor", "RenderTargetPlayback"},
         {"RedemptionEditor", "ObjectLook"}, {"RedemptionEditor", "MoonReplay"}, {"RedemptionEditor", "FxPuppetNoWarp"},
@@ -266,7 +277,7 @@ CameraOverlay=Backquote
         {"Keys", "Record"}, {"Keys", "SaveBuffer"}, {"Keys", "MarkProblem"}, {"Keys", "Report"}, {"Keys", "FreeCamDrone"},
         {"Keys", "FreeCamAcrobatic"}, {"Keys", "FreeCamWalk"}, {"Keys", "FreeCamCollision"}, {"Keys", "FreeCamLockAltitude"},
         {"Keys", "FreeCamFollow"}, {"Keys", "FreeCamPick"}, {"Keys", "FreeCamPickNearest"}, {"Keys", "FreeCamLevel"},
-        {"Keys", "FreeCamBehind"}, {"Keys", "FreeCamLock"}, {"Keys", "CameraOverlay"},
+        {"Keys", "FreeCamBehind"}, {"Keys", "FreeCamLock"}, {"Keys", "CameraOverlay"}, {"Keys", "LightEditor"},
     };
     inline constexpr std::size_t kPublicReadKeyCount = sizeof(kPublicReadKeys) / sizeof(kPublicReadKeys[0]);
 

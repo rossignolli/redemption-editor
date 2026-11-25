@@ -1755,6 +1755,7 @@ namespace
             input.crashFolder = crashdump::g_folder;
             input.dataRoot = replay::storage::Current().base;
             input.readRoots = replay::storage::Current().roots;
+            input.captureProbeEnabled = replay::captureprobe::Enabled();
             input.asiVersion = replay::build::kVersion;
             input.asiSha256 = g_asiSha256;
             input.asiPath = g_asiPath;

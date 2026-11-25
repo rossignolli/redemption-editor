@@ -648,7 +648,20 @@ namespace replay::camera
         Keyframe copy = source;
         copy.timeMs = at;
         copy.transition = 0; // a fade belongs to the clip's first or last marker
-        return track.AddCopy(copy);
+        const std::uint32_t duplicateId = track.AddCopy(copy);
+        if (duplicateId)
+        {
+            std::vector<editor::AuthoredLight>& lights = track.AuthoredLights();
+            const std::size_t originalCount = lights.size();
+            for (std::size_t n = 0; n < originalCount && lights.size() < editor::kMaxAuthoredLights; ++n)
+                if (lights[n].markerId == id)
+                {
+                    editor::AuthoredLight light = lights[n];
+                    light.markerId = duplicateId;
+                    lights.push_back(light);
+                }
+        }
+        return duplicateId;
     }
 
     namespace

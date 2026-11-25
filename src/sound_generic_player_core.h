@@ -177,13 +177,14 @@ namespace replay::soundgeneric::player
         // interface, frontend, the 2D beds of the ambience). Nothing to place
         // it on; the live world makes its own.
         Unplaced = 8,
+        MutedMarkedSound = 9, // explicitly suppressed sweeping audio packet
     };
-    constexpr std::uint8_t kSkipReasonCount = 9;
+    constexpr std::uint8_t kSkipReasonCount = 10;
 
     inline const char* SkipName(SkipReason reason)
     {
         static const char* const kNames[kSkipReasonCount] = {"none", "specific", "puppet", "yielded", "refused", "missed",
-            "jumped", "disabled", "unplaced"};
+            "jumped", "disabled", "unplaced", "muted_marked_sound"};
         return static_cast<std::uint8_t>(reason) < kSkipReasonCount ? kNames[static_cast<std::uint8_t>(reason)] : "?";
     }
 
@@ -204,19 +205,62 @@ namespace replay::soundgeneric::player
         Jumped = 7,
         Disabled = 8,
         Unplaced = 9, // a 2D sound of no entity, left to the live world
+        MutedMarkedSound = 10,
     };
-    constexpr std::uint8_t kOutcomeCount = 10;
+    constexpr std::uint8_t kOutcomeCount = 11;
 
     inline const char* OutcomeName(Outcome outcome)
     {
         static const char* const kNames[kOutcomeCount] = {"none", "played", "specific", "puppet", "yielded", "refused", "missed",
-            "jumped", "disabled", "unplaced"};
+            "jumped", "disabled", "unplaced", "muted_marked_sound"};
         return static_cast<std::uint8_t>(outcome) < kOutcomeCount ? kNames[static_cast<std::uint8_t>(outcome)] : "?";
     }
 
     inline Outcome OutcomeOfSkip(SkipReason reason)
     {
         return reason == SkipReason::None ? Outcome::None : static_cast<Outcome>(static_cast<std::uint8_t>(reason) + 1);
+    }
+
+    constexpr std::uint32_t kMarkedSweepingWorldSet = 0x0049E98Cu;
+    constexpr std::uint32_t kMarkedSweepingAmbientSet = 0x004C4A0Cu;
+    constexpr std::uint32_t kMarkedSweepingAmbientVariantSet = 0x004C49C7u;
+    constexpr std::uint32_t kMarkedSweepingAmbientUnknownSet = 0x004CCD18u;
+    constexpr std::uint32_t kMarkedSweepingLoopSet = 0x0028B1C6u;
+    constexpr std::uint32_t kMarkedSweepingLoopVariantSet = 0x0028B16Du;
+    constexpr std::uint32_t kMarkedSweepingPedSet = 0x000DA07Fu;
+    // These four ownerless world hashes were the remaining candidates at the
+    // marked camp sound. The clip passed its playback check when this group was
+    // filtered, after the earlier marked ambient IDs alone had failed.
+    constexpr std::uint32_t kMarkedSweepingWorldHashA = 0x0004E4DBu;
+    constexpr std::uint32_t kMarkedSweepingWorldHashB = 0x000B6632u;
+    constexpr std::uint32_t kMarkedSweepingWorldHashC = 0x01039C6Au;
+    constexpr std::uint32_t kMarkedSweepingWorldHashD = 0x0003C25Bu;
+    inline bool IsMarkedSweepingWorldSound(const CreatePacket& packet)
+    {
+        if (packet.owner != census::kNoOwner)
+            return false;
+        const auto matches = [](std::uint64_t ref) {
+            const std::uint32_t set = static_cast<std::uint32_t>(census::RefLow(ref));
+            return set == kMarkedSweepingWorldSet || set == kMarkedSweepingAmbientSet ||
+                set == kMarkedSweepingAmbientVariantSet || set == kMarkedSweepingAmbientUnknownSet ||
+                set == kMarkedSweepingLoopSet || set == kMarkedSweepingLoopVariantSet ||
+                set == kMarkedSweepingWorldHashA || set == kMarkedSweepingWorldHashB ||
+                set == kMarkedSweepingWorldHashC || set == kMarkedSweepingWorldHashD;
+        };
+        return matches(packet.rawRef) || matches(packet.stableId);
+    }
+    inline bool IsMarkedSweepingPedSound(const CreatePacket& packet)
+    {
+        if (packet.owner == census::kNoOwner || packet.ownerClass != census::OwnerClass::Ped)
+            return false;
+        const auto matches = [](std::uint64_t ref) {
+            return static_cast<std::uint32_t>(census::RefLow(ref)) == kMarkedSweepingPedSet;
+        };
+        return matches(packet.rawRef) || matches(packet.stableId);
+    }
+    inline bool IsMarkedSweepingSound(const CreatePacket& packet)
+    {
+        return IsMarkedSweepingWorldSound(packet) || IsMarkedSweepingPedSound(packet);
     }
 
     // One sound of the clip: its create packet, its adjusts and ends, what
@@ -228,6 +272,7 @@ namespace replay::soundgeneric::player
         std::uint32_t endMs = kNeverMs; // the release (end of the sound), kNeverMs when the clip ends first
         bool released = false;
         bool preload = false;
+        bool mutedMarkedSound = false;
         soundowner::Family family = soundowner::Family::Owned;
         soundowner::Taker taker = soundowner::Taker::Generic;
         std::vector<std::uint32_t> adjusts; // indices into Track::adjusts, time order
@@ -373,6 +418,7 @@ namespace replay::soundgeneric::player
         std::uint32_t yielded = 0;
         std::uint32_t missed = 0;
         std::uint32_t jumped = 0;
+        std::uint32_t mutedMarkedSound = 0;
         std::uint32_t skippedSpecific = 0;
         std::uint32_t skippedPuppet = 0;
         std::uint32_t adjusts = 0;      // adjust packets applied
@@ -582,6 +628,19 @@ namespace replay::soundgeneric::player
         bool doubled = false;
     };
 
+    struct WindowPacket
+    {
+        std::uint32_t timeMs = 0;
+        std::uint32_t owner = census::kNoOwner;
+        soundowner::Family family = soundowner::Family::World;
+        soundowner::Taker taker = soundowner::Taker::Generic;
+        std::uint64_t stableId = 0;
+        std::uint64_t rawRef = 0;
+        std::uint32_t caller = 0;
+        Outcome outcome = Outcome::None;
+        bool mutedMarkedSound = false;
+    };
+
     struct WindowReport
     {
         std::uint32_t fromMs = 0;
@@ -592,9 +651,11 @@ namespace replay::soundgeneric::player
         std::vector<WindowFamily> families; // only families with packets, in family order
         std::vector<WindowOwner> owners;    // (owner, family) rows, most packets first, at most kWindowOwners
         std::vector<WindowFailure> failures; // refused, missed and doubled packets in time order, at most kWindowFailures
+        std::vector<WindowPacket> packetsDetailed; // exact refs and outcomes for QA attribution, capped
     };
     constexpr std::size_t kWindowOwners = 16;
     constexpr std::size_t kWindowFailures = 64;
+    constexpr std::size_t kWindowPacketDetails = 128;
 
     // The init variables of a clip recorded before SGEN v3, from the full
     // params the other tracks keep (sound requests, entity sounds, the
@@ -1209,6 +1270,11 @@ namespace replay::soundgeneric::player
                 soundowner::NameCaller(key, m_config.callers);
                 plan.family = soundowner::FamilyOf(key, cover, shots);
                 plan.taker = soundowner::TakerOf(plan.family, overrides);
+                plan.mutedMarkedSound = IsMarkedSweepingSound(c) &&
+                    ((plan.family == soundowner::Family::World && plan.taker == soundowner::Taker::Generic) ||
+                        (c.ownerClass == census::OwnerClass::Ped && plan.family == soundowner::Family::EntitySound));
+                if (plan.mutedMarkedSound)
+                    ++m_stats.mutedMarkedSound;
                 if (plan.family == soundowner::Family::Owned && soundowner::OffShot(key, shots))
                 {
                     plan.offShot = true;
@@ -1357,6 +1423,11 @@ namespace replay::soundgeneric::player
             WindowReport out;
             out.fromMs = fromMs;
             out.toMs = toMs;
+            // QA windows are 8 s before and 2 s after the marked playhead.
+            // Keep packet details nearest the mark, with ownerless world
+            // sounds first; a chronological cap loses the event being heard.
+            const std::uint32_t markMs = fromMs + static_cast<std::uint32_t>(
+                static_cast<std::uint64_t>(toMs - fromMs) * 4u / 5u);
             WindowFamily families[soundowner::kFamilyCount];
             for (std::uint8_t n = 0; n < soundowner::kFamilyCount; ++n)
             {
@@ -1373,6 +1444,38 @@ namespace replay::soundgeneric::player
                     break; // time order
                 const CreatePacket& c = m_track->creates[plan.create];
                 const std::uint8_t outcome = static_cast<std::uint8_t>(plan.lastOutcome);
+                WindowPacket detail;
+                detail.timeMs = plan.startMs;
+                detail.owner = c.owner;
+                detail.family = plan.family;
+                detail.taker = plan.taker;
+                detail.stableId = c.stableId;
+                detail.rawRef = c.rawRef;
+                detail.caller = c.caller;
+                detail.outcome = plan.lastOutcome;
+                detail.mutedMarkedSound = plan.mutedMarkedSound;
+                if (out.packetsDetailed.size() < kWindowPacketDetails)
+                    out.packetsDetailed.push_back(detail);
+                else
+                {
+                    const auto priority = [](const WindowPacket& p) {
+                        return p.family == soundowner::Family::World ? 0 :
+                            p.family == soundowner::Family::EntitySound ? 1 : 2;
+                    };
+                    const auto distance = [markMs](std::uint32_t time) {
+                        return time > markMs ? time - markMs : markMs - time;
+                    };
+                    std::size_t worst = 0;
+                    for (std::size_t d = 1; d < out.packetsDetailed.size(); ++d)
+                        if (priority(out.packetsDetailed[d]) > priority(out.packetsDetailed[worst]) ||
+                            (priority(out.packetsDetailed[d]) == priority(out.packetsDetailed[worst]) &&
+                                distance(out.packetsDetailed[d].timeMs) > distance(out.packetsDetailed[worst].timeMs)))
+                            worst = d;
+                    if (priority(detail) < priority(out.packetsDetailed[worst]) ||
+                        (priority(detail) == priority(out.packetsDetailed[worst]) &&
+                            distance(detail.timeMs) < distance(out.packetsDetailed[worst].timeMs)))
+                        out.packetsDetailed[worst] = detail;
+                }
                 ++out.packets;
                 ++out.counts[outcome];
                 out.doubles += plan.doubled ? 1 : 0;
@@ -1421,6 +1524,8 @@ namespace replay::soundgeneric::player
                     out.families.push_back(family);
             std::stable_sort(out.owners.begin(), out.owners.end(),
                 [](const WindowOwner& a, const WindowOwner& b) { return a.packets > b.packets; });
+            std::stable_sort(out.packetsDetailed.begin(), out.packetsDetailed.end(),
+                [](const WindowPacket& a, const WindowPacket& b) { return a.timeMs < b.timeMs; });
             if (out.owners.size() > kWindowOwners)
                 out.owners.resize(kWindowOwners);
             return out;
@@ -1631,6 +1736,7 @@ namespace replay::soundgeneric::player
             case SkipReason::Missed: ++m_stats.missed; ++family.missed; break;
             case SkipReason::Jumped: ++m_stats.jumped; ++family.jumped; break;
             case SkipReason::Unplaced: ++m_stats.unplaced; ++family.unplaced; break;
+            case SkipReason::MutedMarkedSound: ++family.skipped; break;
             case SkipReason::None: break;
             }
         }
@@ -1679,6 +1785,14 @@ namespace replay::soundgeneric::player
                     plan.kept = false;
                     continue;
                 }
+                // Muted world ambience must stay muted after a scrub or
+                // replay restart. Long-lived plans otherwise get requeued
+                // here without passing through SkipForTaker/Preload policy.
+                if (plan.mutedMarkedSound)
+                {
+                    Skip(plan, SkipReason::MutedMarkedSound);
+                    continue;
+                }
                 // Behind the playhead.
                 const bool alive = plan.endMs > nowMs;
                 if (alive && plan.Long(m_config.loopMs))
@@ -1698,6 +1812,11 @@ namespace replay::soundgeneric::player
 
         bool SkipForTaker(SoundPlan& plan)
         {
+            if (plan.mutedMarkedSound)
+            {
+                Skip(plan, SkipReason::MutedMarkedSound);
+                return true;
+            }
             if (!m_config.enabled)
             {
                 Skip(plan, SkipReason::Disabled);
@@ -2326,7 +2445,7 @@ namespace replay::soundgeneric::player
             Num(s.packets) + ",generic=" + Num(s.generic) + ",played=" + Num(s.played) + ",preloaded=" + Num(s.preloaded) +
             ",resumed=" + Num(s.resumed) + ",refused=" + Num(s.refused) + ",unplaced=" + Num(s.unplaced) + ",yielded=" + Num(s.yielded) + ",missed=" +
             Num(s.missed) + ",jumped=" + Num(s.jumped) + ",specific=" + Num(s.skippedSpecific) + ",puppet=" +
-            Num(s.skippedPuppet) + ",adjusts=" + Num(s.adjusts) + ",stops=" + Num(s.stops) + ",forgets=" + Num(s.forgets) +
+            Num(s.skippedPuppet) + ",muted_marked_sound=" + Num(s.mutedMarkedSound) + ",adjusts=" + Num(s.adjusts) + ",stops=" + Num(s.stops) + ",forgets=" + Num(s.forgets) +
             ",releases=" + Num(s.releases) + ",ended_by_engine=" + Num(s.endedByEngine) + ",doubles=" + Num(s.doubles) +
             ",stop_all=" + Num(s.stopAll) + ",from_tracks=" + Num(s.fromTracks) + ",entity_driven=" + Num(s.entityDriven) + ",off_step=" + Num(s.offStep) +
             ",ended_at_once=" + Num(s.endedAtOnce) + ",ended_early=" + Num(s.endedEarly) + ",live=" + Num(live) + ",pending=" + Num(pending) + ",live_peak=" + Num(s.livePeak) +

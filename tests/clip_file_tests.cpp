@@ -931,6 +931,22 @@ namespace
             rec.environment.track.push_back(e);
         }
         {
+            // The lightning track (LGTN, personal build): a strike with the
+            // manager's position, then one without.
+            LightningStrike strike;
+            strike.timeMs = 1200;
+            strike.type = lighttrack::kStrike;
+            strike.positionKnown = true;
+            strike.position[0] = 11.5f;
+            strike.position[1] = -22.25f;
+            strike.position[2] = 33.75f;
+            rec.environment.lightning.push_back(strike);
+            strike.timeMs = 2600;
+            strike.type = lighttrack::kCloud;
+            strike.positionKnown = false;
+            rec.environment.lightning.push_back(strike);
+        }
+        {
             // The timecycle track (TCMD): a modifier with a transition, then a
             // blizzard variation.
             TimecycleSample t;
@@ -1565,6 +1581,12 @@ namespace
                   b.environment.track[1].transitionTotalMs == 40000.0f && b.environment.track[1].transitionLeftMs == 12500.0f &&
                   b.environment.track[1].transitionFlag == 1 && !b.environment.track[0].transitionKnown,
             "environment track v2: the weather transition (task 42)");
+        Check(b.environment.lightning.size() == 2 && b.environment.lightning[0].timeMs == 1200 &&
+                  b.environment.lightning[0].type == lighttrack::kStrike && b.environment.lightning[0].positionKnown &&
+                  b.environment.lightning[0].position[0] == 11.5f && b.environment.lightning[0].position[1] == -22.25f &&
+                  b.environment.lightning[0].position[2] == 33.75f && b.environment.lightning[1].timeMs == 2600 &&
+                  b.environment.lightning[1].type == lighttrack::kCloud && !b.environment.lightning[1].positionKnown,
+            "lightning track (LGTN, personal build)");
         Check(b.environment.timecycle.size() == 2 && b.environment.timecycle[0].modifierKey == 0x2A5D4C1Bu &&
                   b.environment.timecycle[0].modifierIndex == 812 && b.environment.timecycle[0].strength == 0.8f &&
                   b.environment.timecycle[0].transitionKey == 0x0B1E07C3u && b.environment.timecycle[0].transitionIndex == 1401 &&
@@ -3753,8 +3775,8 @@ namespace
         std::vector<std::uint8_t> bytes;
         std::string error;
         clipfile::Encode(clip.recording, clip.poses, clip.camera, 1000, kBase, kImageSize, bytes, error);
-        Check(clipfile::Sections().size() == 91,
-            "91 sections (WGPU retired; VDOR, WFXI, FMOV, FXSS, RGSS, CATS, FSEV, PSPD, SHVR, WNDA, MIXS, OLOK, LSTN, RTGT, MIXP, CFXE, MOON, SPRQ, SCHT, SBLV, FPCE, SCCH, FVAR, TCMD, PVIS, EQRY, SCNY, MPED, SGEN, ENVO, SKYT, ENVT, VEHL, WCND, RFXA, CUTS, SPAN, SCOR, AANI, WINF, WRLD, VWIN, "
+        Check(clipfile::Sections().size() == 92,
+            "92 sections (WGPU retired; LGTN, VDOR, WFXI, FMOV, FXSS, RGSS, CATS, FSEV, PSPD, SHVR, WNDA, MIXS, OLOK, LSTN, RTGT, MIXP, CFXE, MOON, SPRQ, SCHT, SBLV, FPCE, SCCH, FVAR, TCMD, PVIS, EQRY, SCNY, MPED, SGEN, ENVO, SKYT, ENVT, VEHL, WCND, RFXA, CUTS, SPAN, SCOR, AANI, WINF, WRLD, VWIN, "
             "APPC, VPRT, VBRN, BLVL, FREC, ESND, TRNC, "
             "SCEN and GSND among them)");
         {

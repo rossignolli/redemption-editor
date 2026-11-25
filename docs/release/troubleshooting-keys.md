@@ -57,6 +57,7 @@ points at it.
 | `SpeechReplayRules` | `1` | Letting the replay's speech lines through the game's speech rules. `0`: some lines are dropped. | A crash in speech playback, or speech that plays when it should not. |
 | `SpeechDuckReplay` | `1` | Ducking the world's sound under replayed conversations as the game did. `0`: no duck. | The world stays quiet (ducked) after a conversation in a replay, or after the replay ends. |
 | `SpeechConversationLive` | `1` | Replaying human lines with their recorded sound set and duck. `0`: lines can sound flat or too loud. | Wrong or garbled voices in conversations, or a crash while a conversation replays. |
+| `SpeechBankReplay` | `0` | Replaying recorded bank-backed ambient NPC lines (source 3, single-wave). `0` mutes background barks while scripted conversation and player speech remain. | Camp or other ambient NPC chatter overwhelms a replay. |
 | `PuppetOwnSpeech` | `1` | Refusing the puppets' own speech. `0`: puppets can say lines that were never recorded. | Recorded lines missing in a replay (the refusal is catching them). |
 | `RefusePuppetOwnPersistent` | `1` | Refusing the puppets' own looping sounds. `0`: sounds that were never recorded can play. | Recorded looping sounds (breathing, tack, vehicles) missing in a replay. |
 | `ListenerMicReplay` | `1` | Putting the recorded microphone back when the replay uses the game camera. `0`: the sound can come from another place. | Sound that seems to come from the wrong place or fades out with the game camera. |

@@ -714,6 +714,7 @@ namespace
         if (STREAMING::IS_LOAD_SCENE_ACTIVE())
             STREAMING::LOAD_SCENE_STOP();
         STREAMING::CLEAR_FOCUS();
+        STREAMING::CLEAR_HD_AREA();
         if (!CAM::IS_SCREEN_FADED_IN())
             CAM::DO_SCREEN_FADE_IN(500);
         LogFile() << "CLIP_WORLD,phase=restored_after_reload\n";
@@ -841,6 +842,51 @@ namespace
             if (ReadMoonNow(moon))
                 LogFile() << ",moon_angle=" << moon.angle << ",moon_orbit=" << moon.orbit << ",live_date=" << MoonDateText(moon);
             LogFile() << '\n';
+        }
+    }
+
+    // The clip's lightnings at the playhead (personal build, section LGTN): each
+    // strike whose time the playhead passed is fired again through the engine's
+    // own port, _FORCE_LIGHTNING_FLASH_AT_COORDS with the recorded position or
+    // FORCE_LIGHTNING_FLASH without one, so the flash and its thunder are the
+    // game's own. A seek (a jump forward past kSeekMs, or any jump back) moves
+    // the cursor to the playhead instead of firing every strike it passed; the
+    // transport pausing leaves the cursor alone.
+    void FireLightning(const replay::LightningStrike& strike)
+    {
+        if (strike.positionKnown)
+            MISC::_FORCE_LIGHTNING_FLASH_AT_COORDS(strike.position[0], strike.position[1], strike.position[2], -1.0f);
+        else
+            MISC::FORCE_LIGHTNING_FLASH();
+    }
+
+    void ApplyClipLightning(ClipWorld& world)
+    {
+        const std::vector<replay::LightningStrike>& track = g_clip.environment.lightning;
+        if (track.empty())
+        {
+            world.lightningPlayheadValid = false;
+            return;
+        }
+        const std::uint32_t playheadMs = static_cast<std::uint32_t>(g_transport.PlayheadMs());
+        const bool seek = !world.lightningPlayheadValid || playheadMs < world.lightningPlayheadMs ||
+            playheadMs > world.lightningPlayheadMs + replay::lighttrack::kSeekMs;
+        if (seek)
+            world.lightningNext = replay::lighttrack::IndexAt(track, playheadMs);
+        world.lightningPlayheadMs = playheadMs;
+        world.lightningPlayheadValid = true;
+        while (world.lightningNext < track.size() && track[world.lightningNext].timeMs <= playheadMs)
+        {
+            const replay::LightningStrike& strike = track[world.lightningNext++];
+            FireLightning(strike);
+            ++world.lightningFired;
+            if (world.lightningLogs < 60)
+            {
+                ++world.lightningLogs;
+                LogFile() << "LIGHTNING,phase=play,playhead_ms=" << playheadMs << ",time_ms=" << strike.timeMs
+                          << ",type=" << static_cast<int>(strike.type) << ",at=" << (strike.positionKnown ? 1 : 0)
+                          << ",seek=" << (seek ? 1 : 0) << ",strikes=" << track.size() << '\n';
+            }
         }
     }
 
@@ -1421,6 +1467,7 @@ namespace
             ApplyClipEnvironment(world, now); // the track at the playhead
             ApplyClipMoon(world, now); // after the clock
         }
+        ApplyClipLightning(world); // the personal build's lightnings at the playhead
         // Clouds "Live" in the editor leaves them to the engine.
         if (!g_clip.environment.sky.empty() && !g_clip.environment.edit.cloudsLive)
             ApplyClipSky(world, now); // the clouds at the playhead
