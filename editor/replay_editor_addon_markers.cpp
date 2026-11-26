@@ -1356,6 +1356,7 @@ namespace
             dof.help = isLast ? TR("marker.dof.last", "The last marker uses the depth of field of the one before it.") : TR("marker.dof.help", "Focus and background blur from this marker on.");
             rows.push_back(dof);
             MenuRow lighting{TR("marker.lighting", "Lighting"), ">", true, 1};
+            lighting.icon = ui_art::Art::ToolLantern;
             lighting.enter = [markerId = k.id] { OpenLightsForMarker(markerId); };
             lighting.help = TR("marker.lighting.help", "Add and edit lights for this marker. The clip timeline stays visible while you work.");
             rows.push_back(lighting);

@@ -149,7 +149,7 @@
     void Brush(ImDrawList* draw, float x, float y, float width, float height, ImU32 color, bool useArtwork = true);
     constexpr ImU32 kRowInkGrey = IM_COL32(206, 200, 190, 235);
     void TitleBanner(ImDrawList* draw, float x, float y, float minWidth, float extra, float height, float textX, float textY, float size,
-        const char* title, ImU32 accent = kRed);
+        const char* title, ImU32 accent = kRed, ui_art::Art mark = ui_art::Art::ReelMark);
     void OrnamentDivider(ImDrawList* draw, float x, float y, float width, ImU32 accent = kGold);
     void SectionTitle(ImDrawList* draw, float x, float y, float width, const char* title, ImU32 accent = kGold);
     ImU32 WithAlpha(ImU32 color, float alpha);

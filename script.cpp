@@ -406,6 +406,16 @@ namespace
         }
         else if (error.empty())
             ok = replay::clipfile::Load(path, base, size, loaded, poses, camera, durationMs, error, &loadInfo);
+        const std::vector<std::uint32_t> poseTransitionTimes = ok
+            ? replay::CutscenePoseTransitionTimes(loaded)
+            : std::vector<std::uint32_t>{};
+        if (ok)
+            for (replay::pose::PoseRecordExport& record : poses)
+                for (const std::uint32_t timeMs : poseTransitionTimes)
+                {
+                    replay::pose::MarkNoInterpolationImmediatelyBefore(record.track, timeMs);
+                    replay::pose::MarkNoInterpolationAtOrAfter(record.track, timeMs);
+                }
         // The deadband smoothing (pose_deadband_smooth.h): done on the read
         // thread for a preloaded read, here for a direct one. A queued save's
         // snapshot holds the session's tracks (already fine or smoothed).
@@ -431,7 +441,7 @@ namespace
                       << ",spike_records=" << summary.spikeRecords << ",ms=" << smoothMs
                       << ",thread=" << (onThread ? "read" : "script") << '\n';
         }
-        ok = ok && replay::pose::capture::ImportRecords(poses, error);
+        ok = ok && replay::pose::capture::ImportRecords(poses, error, &poseTransitionTimes);
         replay::clipcompress::worker::SetHold(SavePending() || ClipReadPending());
         if (loadInfo.compressed)
             LogFile() << "CLIP_DECOMPRESS,ms=" << loadInfo.decompressMs << ",bytes=" << loadInfo.clipBytes

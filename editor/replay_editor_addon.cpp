@@ -780,9 +780,57 @@ namespace
             draw->AddRect(P(x0 - 1.0f, y0 - 1.0f), P(x1 + 1.0f, y1 + 1.0f), ink, 0.0f, 0, S(2.0f));
     }
 
-    // The room the reel mark takes before a banner's title of `height` units
-    // (0 without its art).
-    float ReelMarkRoom(float height) { return ui_art::Get(ui_art::Art::ReelMark) ? height * 0.74f + 12.0f : 0.0f; }
+    // The room a banner's mark takes before its title of `height` units.
+    float TitleMarkRoom(float height, ui_art::Art mark)
+    {
+        return mark == ui_art::Art::ToolLantern || ui_art::Get(mark) ? height * 0.74f + 12.0f : 0.0f;
+    }
+
+    // A small line-art lantern, drawn in layout units so it stays crisp at the
+    // menu icon and title sizes. The selected menu row uses the same mark in
+    // white; at rest it is warm brass like the supplied lantern reference.
+    void DrawLanternMark(ImDrawList* draw, float cx, float cy, float size, ImU32 color)
+    {
+        const auto p = [&](float x, float y) { return P(cx + x * size, cy + y * size); };
+        const float stroke = S(std::max(0.9f, size * 0.052f));
+        const auto line = [&](float x0, float y0, float x1, float y1, float weight = 1.0f) {
+            draw->AddLine(p(x0, y0), p(x1, y1), color, stroke * weight);
+        };
+        const auto path = [&](const ImVec2* points, int count, bool closed = false) {
+            ImVec2 screen[10]{};
+            const int used = std::min(count, static_cast<int>(std::size(screen)));
+            for (int i = 0; i < used; ++i)
+                screen[i] = p(points[i].x, points[i].y);
+            draw->AddPolyline(screen, used, color, closed ? ImDrawFlags_Closed : ImDrawFlags_None, stroke);
+        };
+
+        const ImVec2 handle[] = {{-0.21f, -0.29f}, {-0.20f, -0.43f}, {-0.12f, -0.50f}, {0.0f, -0.53f},
+            {0.12f, -0.50f}, {0.20f, -0.43f}, {0.21f, -0.29f}};
+        path(handle, static_cast<int>(std::size(handle)));
+        line(-0.10f, -0.44f, 0.10f, -0.44f, 1.2f);
+        line(0.0f, -0.53f, 0.0f, -0.59f, 1.2f);
+        draw->AddCircle(p(0.0f, -0.61f), S(size * 0.025f), color, 12, stroke * 0.8f);
+
+        const ImVec2 cap[] = {{-0.25f, -0.30f}, {0.25f, -0.30f}, {0.22f, -0.23f}, {0.15f, -0.20f},
+            {-0.15f, -0.20f}, {-0.22f, -0.23f}};
+        path(cap, static_cast<int>(std::size(cap)), true);
+        line(-0.28f, -0.18f, 0.28f, -0.18f, 1.2f);
+
+        const ImVec2 cage[] = {{-0.25f, -0.17f}, {-0.31f, -0.06f}, {-0.31f, 0.20f}, {-0.24f, 0.30f},
+            {0.24f, 0.30f}, {0.31f, 0.20f}, {0.31f, -0.06f}, {0.25f, -0.17f}};
+        path(cage, static_cast<int>(std::size(cage)), true);
+        line(-0.25f, -0.14f, -0.25f, 0.23f, 0.8f);
+        line(0.25f, -0.14f, 0.25f, 0.23f, 0.8f);
+        line(-0.25f, -0.12f, 0.25f, -0.12f, 0.9f);
+        line(-0.25f, 0.21f, 0.25f, 0.21f, 0.9f);
+        const ImVec2 flame[] = {{0.0f, -0.06f}, {-0.07f, 0.04f}, {-0.04f, 0.12f}, {0.0f, 0.17f},
+            {0.05f, 0.10f}, {0.07f, 0.03f}, {0.0f, -0.06f}};
+        path(flame, static_cast<int>(std::size(flame)));
+
+        const ImVec2 base[] = {{-0.25f, 0.30f}, {-0.20f, 0.37f}, {0.20f, 0.37f}, {0.25f, 0.30f}};
+        path(base, static_cast<int>(std::size(base)));
+        line(-0.22f, 0.39f, 0.22f, 0.39f, 1.2f);
+    }
 }
 
 ImU32 WithAlpha(ImU32 color, float alpha)
@@ -796,11 +844,16 @@ ImU32 WithAlpha(ImU32 color, float alpha)
     // (textX, textY), `size` units. Painted, the Cylinder Reel stands at the
     // title's start and the title and the brush move right by its room.
     void TitleBanner(ImDrawList* draw, float x, float y, float minWidth, float extra, float height, float textX, float textY, float size,
-        const char* title, ImU32 accent)
+        const char* title, ImU32 accent, ui_art::Art mark)
     {
-        const float room = ReelMarkRoom(height);
+        const float room = TitleMarkRoom(height, mark);
         Brush(draw, x, y, std::max(minWidth, TextWidth(size, title) / g_scale + extra + room), height, accent, accent == kRed);
-        if (const ImTextureID reel = ui_art::Get(ui_art::Art::ReelMark))
+        if (mark == ui_art::Art::ToolLantern)
+        {
+            const float side = height * 0.74f, cy = y + height * 0.5f;
+            DrawLanternMark(draw, textX - 2.0f + side * 0.5f, cy, side, kGold);
+        }
+        else if (const ImTextureID reel = ui_art::Get(mark))
         {
             const float side = height * 0.74f, cy = y + height * 0.5f;
             draw->AddImage(ImTextureRef(reel), P(textX - 2.0f, cy - side * 0.5f), P(textX - 2.0f + side, cy + side * 0.5f), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), kText);
@@ -1043,6 +1096,12 @@ namespace
     {
         if (art == ui_art::Art::Count)
             return;
+        if (art == ui_art::Art::ToolLantern || art == ui_art::Art::ToolLanternWhite)
+        {
+            const ImU32 color = !enabled ? IM_COL32(233, 178, 64, 80) : onBrush ? kText : kGold;
+            DrawLanternMark(draw, x, y, size, color);
+            return;
+        }
         const ui_art::Art shown = onBrush && enabled && ui_art::Get(ui_art::IconWhite(art)) ? ui_art::IconWhite(art) : art;
         Icon(draw, shown, x, y, size, enabled ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 255, 255, 80));
     }
@@ -3059,7 +3118,7 @@ namespace
         TitleBanner(draw, x + 10.0f, top, width - 20.0f, 44.0f, 54.0f, x + 20.0f, top + 11.0f, 34.0f,
             g_lightSplineDefaultsOpen ? "LIGHT SPLINE DEFAULTS" : g_lightSplineOpen ? "LIGHT SPLINE OPTIONS" :
             g_lightAdvancedOpen ? "ADVANCED LIGHT SETTINGS" : lightRigPage ? "LIGHT RIG LIBRARY" :
-            lightPresetPage ? "LIGHT MENU LOOKS" : "LIGHTING", lightBannerAccent);
+            lightPresetPage ? "LIGHT MENU LOOKS" : "LIGHTING", lightBannerAccent, ui_art::Art::ToolLantern);
         char countLabel[32]{};
         if (lightPresetPage)
             std::snprintf(countLabel, sizeof(countLabel), "LOOK %d / 6", g_lightMenuPreset + 1);

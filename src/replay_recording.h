@@ -41,6 +41,7 @@
 #include "weapon_observer.h"
 #include "object_look_core.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <utility>
@@ -1017,4 +1018,41 @@ namespace replay
             return nullptr;
         }
     };
+
+    // The camera track already treats these samples as hard shot changes.
+    // Carry the same boundaries into pose playback, but only during a recorded
+    // cutscene. The small margin covers the gate's per-tick span detection at
+    // the opening and closing frames.
+    inline std::vector<std::uint32_t> CutscenePoseTransitionTimes(const Recording& recording)
+    {
+        std::vector<std::uint32_t> times;
+        if (recording.gameCamera.size() < 2 || recording.spans.empty())
+            return times;
+
+        const std::uint64_t margin = camera::kGameCutMaxGapMs;
+        for (std::size_t index = 1; index < recording.gameCamera.size(); ++index)
+        {
+            const camera::GameSample& before = recording.gameCamera[index - 1];
+            const camera::GameSample& after = recording.gameCamera[index];
+            if (!camera::IsGameCameraCut(before, after))
+                continue;
+
+            bool duringCutscene = false;
+            for (const gate::Span& span : recording.spans)
+            {
+                if (span.kind != gate::SpanKind::Cutscene)
+                    continue;
+                const std::uint64_t spanStart = span.startMs > margin ? span.startMs - margin : 0;
+                const std::uint64_t spanEnd = static_cast<std::uint64_t>(span.endMs) + margin;
+                if (after.timeMs >= spanStart && before.timeMs <= spanEnd)
+                {
+                    duringCutscene = true;
+                    break;
+                }
+            }
+            if (duringCutscene && (times.empty() || times.back() != after.timeMs))
+                times.push_back(after.timeMs);
+        }
+        return times;
+    }
 }

@@ -8,11 +8,9 @@
 
 namespace replay::cutsceneaudio
 {
-    // Loose files are read under CutsceneAudio/<mission>/<cutscene>/ first,
-    // then CutsceneAudio/<cutscene>/ for audio shared by mission variants.
-    // Arthur.wav or John.wav, when present, takes priority based on the clip's
-    // recorded player model; main.wav is the fallback full-voice master.
-    // Echo streams are intentionally omitted from replay playback.
+    // Cutscene master tracks are streamed from the installed RDR2 audio
+    // archives. The editor includes only the scene, soundset, track hash, and
+    // duration metadata; it does not include extracted audio files.
     void Update(const std::vector<gate::Span>& spans, std::uint32_t playerModel,
         std::uint64_t playheadMs, bool playing, bool paused, bool scrubbing,
         double rate, std::ostream& log);

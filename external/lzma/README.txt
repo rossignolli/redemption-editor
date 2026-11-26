@@ -1,0 +1,25 @@
+Redemption Editor LZMA SDK source subset
+
+Source: Igor Pavlov, 7-Zip repository tag 24.09, C/ directory.
+https://github.com/ip7z/7zip/tree/24.09/C
+License: public domain, as stated in the source file headers and the upstream DOC/License.txt.
+
+These files are the compile-time dependency closure for the LZMA encoder/decoder used by src/clip_pack.cpp and ReplayProbe.vcxproj.
+SHA-256 values below identify the exact source files present in this checkout.
+
+5de943c886d5d7bbcf16203e9b292a9e7be327b43fe3dfd9f4ad07d6d0870ef6  7zTypes.h
+8e7d4ed4f6599ca599514d5c1710668a61865f0c11c44b47994aede33f4cac16  7zWindows.h
+959dac87ac7109502f6467e910d0722b932176e243153bf8c663479aa8c29b20  Compiler.h
+9f215eaf12eaafdb6e83755bb3ac82fe3629905fcd9d257880a89ef2edd67755  CpuArch.c
+051d8a61373d9b6c90eb3b80f2aa1d932126fec7091242b085276e0bbd9bec03  CpuArch.h
+31a37be10f8f2e61cd4b7ca8e4b3ca8b13dc9299baa601aaacda8e01325d35b3  LzFind.c
+42732b38df9bb18f82866d7deaa8663f6c6f9cb10e2a2cdfa9e6f420c2e2f239  LzFind.h
+7c83ec6465a836fc1a43b5294daad1be3b96560709e6c9f72e03033d719e4efc  LzFindMt.h
+c8ac04141e38d825e74984e924842e76fc903d74472dd8354470f23ecbfd853a  LzFindOpt.c
+42d146d2130dfe49d0b21d15cc6f0fe9d79ac0ebb629985fe3aedde7b2bee80e  LzHash.h
+b9ca2b8707400347c75d6fef288d1354a3b4cf93e8da42f26207b8bd4c4d5e59  LzmaDec.c
+3aaf07b4ae4173a2d103179455dc7089b5ddbc7fc3db3c0e40964a7499c69266  LzmaDec.h
+fa65b37f683394743d3ca0498ba3f936e8f51fe58f4dc0dfe1bc8f9658ef23e7  LzmaEnc.c
+f390a1d9bf5a4bb0222f3aba6c62e4a1fb36a9811594266800a4ccd196eb294b  LzmaEnc.h
+fea249c753dfbbdd69d9397e91497205452b784279f70cad4658dc567cd2f85f  Precomp.h
+0fb6fad0c67d7bf2134bee6da572546d5a15d4fdba7da5eb6e9d64fa10a0bdf5  Threads.h

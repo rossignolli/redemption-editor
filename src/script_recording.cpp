@@ -216,6 +216,17 @@ namespace
             {
                 raw->ok = replay::clipfile::Load(raw->path, base, size, raw->recording, raw->poses, raw->camera,
                     raw->durationMs, raw->error, &raw->info);
+                if (raw->ok)
+                {
+                    const std::vector<std::uint32_t> poseTransitionTimes =
+                        replay::CutscenePoseTransitionTimes(raw->recording);
+                    for (replay::pose::PoseRecordExport& record : raw->poses)
+                        for (const std::uint32_t timeMs : poseTransitionTimes)
+                        {
+                            replay::pose::MarkNoInterpolationImmediatelyBefore(record.track, timeMs);
+                            replay::pose::MarkNoInterpolationAtOrAfter(record.track, timeMs);
+                        }
+                }
                 if (raw->ok && replay::pose::smooth::LoadSmoothing())
                 {
                     const ULONGLONG smoothStart = GetTickCount64();
@@ -1466,9 +1477,13 @@ namespace
         std::vector<replay::pose::PoseRecordExport> cutPoses;
         replay::window::Result result;
         std::string error;
-        const bool ok = replay::window::Cut(g_clip, replay::pose::capture::ExportRecords(), durationMs, headMs,
-                            static_cast<std::uint32_t>(durationMs), cut, cutPoses, result) &&
-            replay::pose::capture::ImportRecords(cutPoses, error);
+        bool ok = replay::window::Cut(g_clip, replay::pose::capture::ExportRecords(), durationMs, headMs,
+            static_cast<std::uint32_t>(durationMs), cut, cutPoses, result);
+        if (ok)
+        {
+            const std::vector<std::uint32_t> poseTransitionTimes = replay::CutscenePoseTransitionTimes(cut);
+            ok = replay::pose::capture::ImportRecords(cutPoses, error, &poseTransitionTimes);
+        }
         if (ok)
         {
             g_clip = std::move(cut);
