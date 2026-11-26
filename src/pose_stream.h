@@ -400,6 +400,13 @@ namespace replay::pose
         TrackStats stats;
     };
 
+    // Prevent interpolation (and deadband smoothing) into the first recorded
+    // frame at or after a known discontinuity.
+    bool MarkNoInterpolationAtOrAfter(TrackExport& track, std::uint32_t timeMs);
+    // On cutscene cuts, also protect the final recorded frame before the cut
+    // from interpolation and deadband smoothing.
+    bool MarkNoInterpolationImmediatelyBefore(TrackExport& track, std::uint32_t timeMs);
+
     // One pose record of a recording (the packed ReplayId of its entity, or
     // a pose segment record) with its track.
     struct PoseRecordExport
@@ -421,6 +428,11 @@ namespace replay::pose
         // interpolated between the surrounding frames unless the later frame
         // is flagged kFrameNoInterpolation.
         bool Sample(std::uint32_t timeMs, PoseSample& sample);
+        // Add a known transition time. When it lies between recorded frames,
+        // sampling holds the last stable pose through the final pre-cut sample
+        // and uses the first post-cut pose at/after it. Source timestamps stay
+        // unchanged.
+        bool MarkHardTransitionAt(std::uint32_t timeMs);
 
         const TrackStats& Stats() const { return m_stats; }
         // Replay buffer: drops the leading chunks that end before
@@ -511,6 +523,14 @@ namespace replay::pose
         StreamConfig m_config;
         PoseEncoder m_encoder;
         std::deque<Chunk> m_chunks;
+        struct PreCutHold
+        {
+            std::uint32_t fromMs = 0;
+            std::uint32_t untilMs = 0;
+            std::uint32_t poseTimeMs = 0;
+        };
+        std::vector<PreCutHold> m_preCutHolds;
+        std::vector<std::uint32_t> m_hardTransitionTimes;
         std::size_t m_totalBytes = 0;
         TrackStats m_stats;
 

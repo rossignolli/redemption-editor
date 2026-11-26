@@ -449,8 +449,10 @@ namespace replay::pose::capture
     // Replaces the records with loaded ones: the reset of BeginRecording,
     // then one disarmed record per entry, played through TrackSpan and
     // SampleTrack like a finished recording. Script thread, nothing armed.
+    // Optional hard transition times prevent interpolation across known cuts.
     // On failure the current records stay and `error` names the record.
-    bool ImportRecords(const std::vector<PoseRecordExport>& records, std::string& error);
+    bool ImportRecords(const std::vector<PoseRecordExport>& records, std::string& error,
+        const std::vector<std::uint32_t>* hardTransitionTimes = nullptr);
 
     // Playback override. The detour writes the published pose into the armed
     // skeleton's pose buffer (locals then objects) right after the engine

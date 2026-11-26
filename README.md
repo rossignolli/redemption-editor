@@ -94,6 +94,8 @@ It's free software under GPL-3.0. Read it, learn from it, break it, improve it.
 - Recorded peds are kept at full animation detail while recording, even off camera, so nobody freezes in a pose.
 - Horse muscles and sweat are recorded from the engine's own shader variables and given back to each horse.
 - Speech, pain sounds, footsteps, shots, effects and decals are replayed through the engine's own systems.
+- Cutscene voice tracks can play from locally extracted WAVs; the release includes only scene and track metadata,
+  and stops each track at the cutscene's end or its matching No Control boundary.
 
 <p align="center"><img src="docs/img/rhodes-1.gif" alt="A fist fight in Rhodes, played back" width="640"></p>
 
@@ -150,9 +152,15 @@ The editor in game, at 4K (click for full size).
 3. Set the game to **Vulkan** (Settings > Graphics > Graphics API).
 4. Start Story Mode, press **Shift+F4** to save the last 60 seconds, then **F2** to open the editor.
 
-That's all: **ReShade is optional.** The editor draws itself on Vulkan through its own overlay
-(`RedemptionEditor\host\`, a Vulkan layer the mod turns on for the game only: nothing goes in the registry or
-outside the game folder). Your ReShade effects, if you use them, still show and still end up in the exported video.
+That's all. **Choose one of the two ZIPs and install only that one:**
+
+- **ReShade edition:** uses the ReShade add-on to draw the editor. Install ReShade with full add-on support.
+- **No-ReShade edition:** includes the editor's own Vulkan overlay in `RedemptionEditor\host\`; it does not need
+  ReShade. Nothing is registered outside the game folder. ReShade effects still show in the game and exports if you
+  already use ReShade.
+
+The default `Host=auto` setting uses the overlay included in the ZIP. The ReShade edition contains the add-on; the
+No-ReShade edition contains the built-in overlay. Do not combine files from the two ZIPs.
 
 **Who draws the editor** is the `Host` line of `RedemptionEditor.ini`:
 
@@ -191,6 +199,15 @@ the same). If you use ReShade for the editor, `ReShade.log` in the game folder s
 | nothing about it | ReShade is not running for `RDR2.exe`, or is set to the wrong API. Reinstall it for `RDR2.exe` with the API the game uses. |
 
 Turned it off in the ReShade menu (Home > Add-ons)? Tick Redemption Editor again and restart the game.
+
+### Optional cutscene voice audio
+
+The release contains the editor's map for 646 supported cutscene tracks, but it does **not** contain game audio.
+To hear cutscene voices, extract the supported AWC tracks from your own RDR2 installation, export them as WAV files,
+and copy them under `%LOCALAPPDATA%\RedemptionEditor\CutsceneAudio\`. The [track list](docs/cutscene-audio-tracks.csv)
+gives each scene, source container, track hash, and destination filename. The editor matches the audio automatically;
+you do not need to edit an INI file. See [Optional cutscene audio](docs/cutscene-audio.md) for extraction and folder
+steps. Without these local WAVs, the editor still works, but cutscene voices may be silent.
 
 **Requirements**
 

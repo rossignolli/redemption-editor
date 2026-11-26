@@ -7,6 +7,7 @@
 #include "mod_identity.h"
 #include "module_lifetime.h"
 #include "profiler.h"
+#include "qa_bundle.h"
 #include "thread_names.h"
 #include "version.generated.h"
 
@@ -139,6 +140,11 @@ namespace replay::captureprobe
         constexpr double kReportEveryS = 60.0;
         constexpr float kLightRadius = 40.0f;
         constexpr float kVehicleRadius = 30.0f;
+        // RDR2.asl mission/cutscene globals, build 1.0.1491.50.
+        constexpr std::uintptr_t kMissionNameRva = 0x528DDC0;
+        constexpr std::uintptr_t kCutsceneContextRva = 0x49F8648;
+        constexpr std::uintptr_t kCutsceneFlagOffset = 0xB208;
+        constexpr std::uintptr_t kCutsceneNameOffset = 0xB210;
 
         using Fn4 = std::uint64_t(__fastcall*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
         using Fn8 = std::uint64_t(__fastcall*)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
@@ -210,6 +216,14 @@ namespace replay::captureprobe
             std::uint64_t due30 = 0, due10 = 0, due4 = 0, due2 = 0, due1 = 0;
             std::string started;
             std::wstring reportPath;
+            std::string sceneIdentityStatus = "not_checked";
+            std::vector<SceneIdentityRow> sceneIdentity;
+            std::string lastSceneIdentityStatus;
+            std::string lastMissionName;
+            std::string lastCutsceneName;
+            int lastInCutscene = -1;
+            bool haveLastSceneIdentity = false;
+            bool sceneIdentitySupported = false;
         };
 
         struct Lock
@@ -288,6 +302,20 @@ namespace replay::captureprobe
             }
             out[63] = 0;
             return true;
+        }
+
+        std::string SceneToken(const char* text)
+        {
+            std::string token;
+            for (const unsigned char c : std::string(text ? text : ""))
+            {
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+                    c == '.')
+                    token.push_back(static_cast<char>(c));
+                else
+                    token.push_back('_');
+            }
+            return token;
         }
 
         std::size_t CurrentMode() { return g_mode.load(std::memory_order_relaxed); }
@@ -897,6 +925,8 @@ namespace replay::captureprobe
                 data.modeS[mode] = ToSeconds(state.modeTicks[mode]);
             data.frames = state.frames;
             data.build = state.mismatches.empty() ? std::string("1491.50") : "differs:" + state.mismatches;
+            data.sceneIdentityStatus = state.sceneIdentityStatus;
+            data.sceneIdentity = state.sceneIdentity;
             data.sites = state.sites;
             std::vector<std::uint32_t> threads;
             for (const PortInfo& info : kPorts)
@@ -994,6 +1024,49 @@ namespace replay::captureprobe
             void Native(int count = 1) { state.pollNatives += count; }
 
             bool Site(Site site) const { return state.siteOk[site]; }
+
+            // Build 1491.50 exposes the mission and active cutscene names in
+            // globals used by the RDR2 speedrun tracker. Read them guarded,
+            // and keep only transitions so the probe report stays compact.
+            void SceneIdentity()
+            {
+                if (!state.sceneIdentitySupported)
+                    return;
+
+                char missionText[64] = {};
+                char cutsceneText[64] = {};
+                std::uintptr_t context = 0;
+                std::uint8_t active = 0;
+                const bool missionOk = ReadCString(g_base + kMissionNameRva, missionText);
+                const bool contextOk = ReadGlobal(kCutsceneContextRva, context);
+                const bool flagOk = contextOk && context && ReadAny(context + kCutsceneFlagOffset, active);
+                const bool nameOk = contextOk && context && ReadCString(context + kCutsceneNameOffset, cutsceneText);
+
+                const std::string status = !missionOk ? "mission_unreadable" :
+                    !contextOk ? "context_unreadable" : !context ? "context_null" :
+                    !(flagOk && nameOk) ? "scene_fields_unreadable" : "ok";
+                const int inCutscene = flagOk ? (active ? 1 : 0) : -1;
+                const std::string mission = missionOk ? SceneToken(missionText) : "";
+                const std::string cutscene = nameOk ? SceneToken(cutsceneText) : "";
+
+                if (state.haveLastSceneIdentity && status == state.lastSceneIdentityStatus && mission == state.lastMissionName &&
+                    cutscene == state.lastCutsceneName && inCutscene == state.lastInCutscene)
+                    return;
+
+                SceneIdentityRow row;
+                row.elapsedS = ToSeconds(Ticks() - state.startTicks);
+                row.mode = ModeName(mode);
+                row.status = status;
+                row.inCutscene = inCutscene;
+                row.mission = mission;
+                row.cutscene = cutscene;
+                state.sceneIdentity.push_back(std::move(row));
+                state.lastSceneIdentityStatus = status;
+                state.lastMissionName = mission;
+                state.lastCutsceneName = cutscene;
+                state.lastInCutscene = inCutscene;
+                state.haveLastSceneIdentity = true;
+            }
 
             // Series that only read globals are not sampled when their site
             // check failed (the status already says why).
@@ -1508,6 +1581,9 @@ namespace replay::captureprobe
             return false;
         }
         State* state = new State();
+        const std::string gameVersion = replay::qa::bundle::GameExeVersion();
+        state->sceneIdentitySupported = gameVersion == "1.0.1491.50";
+        state->sceneIdentityStatus = state->sceneIdentitySupported ? "supported_build" : "unsupported_build";
         // The read sites: every global the polls touch, behind the bytes
         // that proved it.
         int sitesOk = 0;
@@ -1598,6 +1674,7 @@ namespace replay::captureprobe
         {
             poll.Camera();
             poll.Timecycle();
+            poll.SceneIdentity();
         }
         if (due4)
             poll.WaterAndVehicle();

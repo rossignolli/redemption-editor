@@ -14,6 +14,7 @@
 #include "entity_lifecycle.h"
 #include "entity_transform.h"
 #include "environment_track.h"
+#include "lightning_track.h"
 #include "sky_track.h"
 #include "timecycle_track.h"
 #include "moon_track.h"
@@ -40,6 +41,7 @@
 #include "weapon_observer.h"
 #include "object_look_core.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <utility>
@@ -650,6 +652,11 @@ namespace replay
         // the date as evidence (moon_track.h, section MOON); empty in an older clip
         // (the session's moon is kept, and given back when the clip ends).
         std::vector<MoonSample> moon;
+        // The lightnings the weather manager started over time (lightning_track.h,
+        // section LGTN); empty in an older clip and in a clip that saw none (the
+        // section is then omitted). Personal build: replayed through the engine's
+        // own lightning port so the flash and its thunder play as recorded.
+        std::vector<LightningStrike> lightning;
         // The editor's settings over the recorded state (env_override.h); all
         // Recorded by default. Saved in section ENVO; a cut copies them with the
         // rest.
@@ -1011,4 +1018,41 @@ namespace replay
             return nullptr;
         }
     };
+
+    // The camera track already treats these samples as hard shot changes.
+    // Carry the same boundaries into pose playback, but only during a recorded
+    // cutscene. The small margin covers the gate's per-tick span detection at
+    // the opening and closing frames.
+    inline std::vector<std::uint32_t> CutscenePoseTransitionTimes(const Recording& recording)
+    {
+        std::vector<std::uint32_t> times;
+        if (recording.gameCamera.size() < 2 || recording.spans.empty())
+            return times;
+
+        const std::uint64_t margin = camera::kGameCutMaxGapMs;
+        for (std::size_t index = 1; index < recording.gameCamera.size(); ++index)
+        {
+            const camera::GameSample& before = recording.gameCamera[index - 1];
+            const camera::GameSample& after = recording.gameCamera[index];
+            if (!camera::IsGameCameraCut(before, after))
+                continue;
+
+            bool duringCutscene = false;
+            for (const gate::Span& span : recording.spans)
+            {
+                if (span.kind != gate::SpanKind::Cutscene)
+                    continue;
+                const std::uint64_t spanStart = span.startMs > margin ? span.startMs - margin : 0;
+                const std::uint64_t spanEnd = static_cast<std::uint64_t>(span.endMs) + margin;
+                if (after.timeMs >= spanStart && before.timeMs <= spanEnd)
+                {
+                    duringCutscene = true;
+                    break;
+                }
+            }
+            if (duringCutscene && (times.empty() || times.back() != after.timeMs))
+                times.push_back(after.timeMs);
+        }
+        return times;
+    }
 }

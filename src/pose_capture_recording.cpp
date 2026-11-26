@@ -681,7 +681,8 @@ namespace replay::pose::capture
         return out;
     }
 
-    bool ImportRecords(const std::vector<PoseRecordExport>& records, std::string& error)
+    bool ImportRecords(const std::vector<PoseRecordExport>& records, std::string& error,
+        const std::vector<std::uint32_t>* hardTransitionTimes)
     {
         std::vector<std::unique_ptr<Record>> loaded;
         for (const PoseRecordExport& exported : records)
@@ -693,6 +694,9 @@ namespace replay::pose::capture
                 error = "record_" + std::to_string(exported.recordId) + "_" + trackError;
                 return false;
             }
+            if (hardTransitionTimes)
+                for (const std::uint32_t timeMs : *hardTransitionTimes)
+                    track->MarkHardTransitionAt(timeMs);
             auto record = std::make_unique<Record>();
             record->id = exported.recordId;
             record->boneCount = exported.boneCount;

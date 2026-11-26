@@ -12,12 +12,16 @@ namespace replay::editor
 {
     // Shared memory protocol between the core and the editor add-on. Both
     // versions are raised whenever the Command or Snapshot layout changes.
-    constexpr std::uint32_t kApiVersion = 28;
+    constexpr std::uint32_t kApiVersion = 42;
     constexpr std::uint32_t kMaxCameraKeyframesInSnapshot = 512; // a directed clip has hundreds
     constexpr std::uint32_t kSharedTransportMagic = 0x42504552u; // REPB
-    constexpr std::uint32_t kSharedTransportVersion = 27;
+    constexpr std::uint32_t kSharedTransportVersion = 38;
     constexpr std::uint32_t kMaxClipsInSnapshot = 64;
-    constexpr std::uint32_t kMaxTargetsInSnapshot = 32;
+    constexpr std::uint32_t kMaxTargetsInSnapshot = 512;
+    // A light can have a separate authored state at each camera marker. Keep a
+    // larger clip-wide budget so inherited light states do not run out after a
+    // handful of markers.
+    constexpr std::uint32_t kMaxAuthoredLights = 256;
     constexpr std::uint32_t kTargetLabelCapacity = 64; // a model name and " #n"
     constexpr std::size_t kClipNameCapacity = 64;
     constexpr std::size_t kSharedCommandCapacity = 256;
@@ -471,9 +475,16 @@ namespace replay::editor
         SetLoadingCue = 71,
         // enabled: the pose detail of the recording (pose_deadband_smooth.h
         // Detail: 1 standard, 2 maximum; saved to the ini as PoseDetail).
-        SetPoseDetail = 72
+        SetPoseDetail = 72,
+        LightAdd = 73,
+        LightUpdate = 74,
+        LightDelete = 75,
+        LightClear = 76,
+        LightCopyMarker = 77,
+        SetLightEditorState = 78, // enabled: lighting menu open; target bit 0: gizmos
+        RefreshTargets = 79,      // rebuild the character/attachment catalog from the clip's full create history
+        LightRotateMarker = 80    // keyframeId: marker; camera.rotation: pitch, roll, yaw delta in degrees
     };
-
 
     // SetFreeCamOption's field (Snapshot::freeCamValues index).
     enum class FreeCamField : std::uint32_t
@@ -666,6 +677,42 @@ namespace replay::editor
         float x;
         float y;
         float z;
+    };
+
+    // Editable lights. RDR2's exposed dynamic-light native only supports point
+    // lights; coneEnabled uses a point-light stack to approximate a beam. The
+    // reflector fields below are retained only for compatibility with older clips.
+    struct AuthoredLight
+    {
+        // 0 is a world light that is always on; otherwise this is the camera
+        // marker ID whose interval owns the light.
+        std::uint32_t markerId;
+        Vec3 position;
+        float range;
+        float intensity; // CAMR v17 supports 0..300; older clip versions retain the 0..100 limit.
+        std::uint32_t colorR;
+        std::uint32_t colorG;
+        std::uint32_t colorB;
+        std::uint32_t enabled;
+        float aimPitch;
+        float aimYaw;
+        float beamAngle;
+        std::uint32_t coneEnabled;
+        float aimRoll;
+        std::uint32_t reflectorEnabled;
+        std::uint32_t reflectorHidden;
+        // 0 is world-space; otherwise a packed replay entity id. position
+        // becomes an entity-local offset while this is set.
+        std::uint32_t attachedTarget;
+        // Stable across marker copies so light properties can blend between
+        // matching marker states. attachBone uses camera_bones.h references.
+        std::uint32_t id;
+        std::uint32_t attachedBone;
+        std::uint32_t attachType; // AttachType: rigid/default/flexible
+        std::uint32_t blend;      // Blend: none/linear/smooth/spline
+        SplineTuning spline;      // Light spline overrides over the camera marker/default tuning
+        char name[32];
+        std::uint32_t lookAtTarget; // packed replay ped id, 0 = manual beam aim
     };
 
     struct Vec2
@@ -910,6 +957,7 @@ namespace replay::editor
     {
         std::uint32_t id; // packed replay id
         std::uint32_t kind; // entity::EntityKind
+        std::uint32_t active; // nonzero when this entity exists at the current playhead
         char label[kTargetLabelCapacity];
     };
 
@@ -1073,6 +1121,9 @@ namespace replay::editor
         // 1 standard, 2 maximum; 0 the dev key's old codec).
         std::uint32_t poseDetail;
         std::uint32_t reservedAfterPoseDetail; // keeps the snapshot 8 byte sized
+        std::uint32_t authoredLightCount;
+        std::uint32_t authoredLightSelected;
+        AuthoredLight authoredLights[kMaxAuthoredLights];
     };
 
     // Snapshot::seekLoadState.
@@ -1115,6 +1166,7 @@ namespace replay::editor
         SplineTuning spline;
         // SetCameraKeyframeOptions with CameraOptionExtra.
         CameraMarkerExtra extra;
+        AuthoredLight authoredLight; // LightAdd / LightUpdate
     };
 
     struct SharedCommandSlot
@@ -1474,6 +1526,8 @@ namespace replay::editor
     static_assert(std::is_standard_layout_v<CameraMarkerExtra> && std::is_trivially_copyable_v<CameraMarkerExtra> &&
         sizeof(CameraMarkerExtra) == 48, "marker extra layout (API 22)");
     static_assert(std::is_standard_layout_v<CameraLiveInfo> && sizeof(CameraLiveInfo) == 48, "camera live layout (API 22)");
+    static_assert(std::is_standard_layout_v<AuthoredLight> && std::is_trivially_copyable_v<AuthoredLight>);
+    static_assert(sizeof(AuthoredLight) == 144, "authored light layout (API 39)");
     static_assert(std::is_standard_layout_v<Snapshot> &&
         std::is_trivially_copyable_v<Snapshot>);
     static_assert(std::is_standard_layout_v<Command> &&

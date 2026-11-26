@@ -5,8 +5,37 @@
 
 namespace
 {
+    int AuthoredLightBoneIndex(Entity entity, std::uint32_t ref);
+    Vector3 RotateAuthoredLightVector(const Vector3& rotation, std::uint32_t mount, float x, float y, float z);
+    Vector3 UnrotateAuthoredLightVector(const Vector3& rotation, std::uint32_t mount, float x, float y, float z);
+    bool AuthoredLightWorldPosition(const replay::editor::AuthoredLight& light, Entity parent, replay::editor::Vec3& world);
+    bool AuthoredLightLocalPosition(const replay::editor::AuthoredLight& light, Entity parent,
+        const replay::editor::Vec3& world, replay::editor::Vec3& local);
+    bool CachedAuthoredLightWorldPosition(std::uint32_t id, std::uint32_t target, std::uint32_t markerId,
+        replay::editor::Vec3& world);
+
+    float WrapLightDegrees(float value)
+    {
+        // Keep the slider's explicit 360-degree endpoint so it doesn't snap
+        // back to zero while editing. Values outside the range still wrap.
+        if (std::isfinite(value) && value >= 0.0f && value <= 360.0f)
+            return value;
+        value = std::fmod(value, 360.0f);
+        return value < 0.0f ? value + 360.0f : value;
+    }
+
+    std::uint32_t NextAuthoredLightId(const std::vector<replay::editor::AuthoredLight>& lights)
+    {
+        std::uint32_t next = 1;
+        for (const replay::editor::AuthoredLight& light : lights)
+            if (light.id >= next && light.id != 0xFFFFFFFFu)
+                next = light.id + 1;
+        return next ? next : 1;
+    }
+
     std::uint64_t g_loggedEditorBridgeEpoch = 0;
     bool g_editorQueueOverflowed = false;
+    bool g_refreshTargetCatalog = false;
     // The editor's window over the sorted list (the snapshot holds 64 clips; the
     // folder holds hundreds) and its sort.
     std::uint32_t g_clipWindowFirst = 0;
@@ -1364,6 +1393,323 @@ namespace
                     LogFile() << "EDITOR_LOADING_CUE,editor_draws=" << (EditorDrawsLoadingCue() ? 1 : 0) << '\n';
                 continue;
             }
+            if (command.type == replay::editor::CommandType::LightAdd ||
+                command.type == replay::editor::CommandType::LightUpdate ||
+                command.type == replay::editor::CommandType::LightDelete ||
+                command.type == replay::editor::CommandType::LightClear ||
+                command.type == replay::editor::CommandType::LightCopyMarker ||
+                command.type == replay::editor::CommandType::LightRotateMarker)
+            {
+                using replay::editor::CommandType;
+                replay::camera::Track markersBefore;
+                if (g_transport.Playing())
+                    markersBefore = g_cameraTrack;
+                std::vector<replay::editor::AuthoredLight>& lights = g_cameraTrack.AuthoredLights();
+                bool changed = false;
+                const auto normalize = [](replay::editor::AuthoredLight& light) {
+                    light.range = std::clamp(light.range, 0.5f, 250.0f);
+                    light.intensity = std::clamp(light.intensity, 0.0f, 300.0f);
+                    light.aimPitch = std::clamp(light.aimPitch, -180.0f, 180.0f);
+                    light.aimYaw = WrapLightDegrees(light.aimYaw);
+                    light.beamAngle = std::clamp(light.beamAngle, 0.0f, 360.0f);
+                    light.aimRoll = WrapLightDegrees(light.aimRoll);
+                    light.colorR = std::min(light.colorR, 255u);
+                    light.colorG = std::min(light.colorG, 255u);
+                    light.colorB = std::min(light.colorB, 255u);
+                    light.enabled = light.enabled ? 1u : 0u;
+                    light.coneEnabled = light.coneEnabled ? 1u : 0u;
+                    light.reflectorEnabled = light.reflectorEnabled ? 1u : 0u;
+                    light.reflectorHidden = light.reflectorHidden ? 1u : 0u;
+                    light.blend = static_cast<std::uint32_t>(replay::editor::Blend::Spline);
+                    if (light.attachType > 2u)
+                        light.attachType = static_cast<std::uint32_t>(replay::editor::AttachType::Default);
+                    if (light.blend > 3u)
+                        light.blend = static_cast<std::uint32_t>(replay::editor::Blend::None);
+                    if (!replay::camera::bones::Valid(light.attachedBone))
+                        light.attachedBone = 0;
+                    light.spline = replay::camera::spline::Clamped(light.spline);
+                    light.name[sizeof(light.name) - 1] = '\0';
+                };
+                if (command.type == CommandType::LightAdd && lights.size() < replay::editor::kMaxAuthoredLights)
+                {
+                    replay::editor::AuthoredLight light = command.authoredLight;
+                    if (std::isfinite(light.position.x) && std::isfinite(light.position.y) && std::isfinite(light.position.z) &&
+                        std::isfinite(light.range) && std::isfinite(light.intensity) &&
+                        std::isfinite(light.aimPitch) && std::isfinite(light.aimYaw) && std::isfinite(light.beamAngle) &&
+                        std::isfinite(light.aimRoll) &&
+                        (light.markerId == 0 || g_cameraTrack.Find(light.markerId)))
+                    {
+                        normalize(light);
+                        if (!light.id)
+                            light.id = NextAuthoredLightId(lights);
+                        if (!light.name[0])
+                            std::snprintf(light.name, sizeof(light.name), "Light %02u", static_cast<unsigned>(lights.size() + 1));
+                        lights.push_back(light);
+                        changed = true;
+                    }
+                }
+                else if (command.type == CommandType::LightUpdate && command.keyframeId < lights.size())
+                {
+                    replay::editor::AuthoredLight light = command.authoredLight;
+                    if (std::isfinite(light.position.x) && std::isfinite(light.position.y) && std::isfinite(light.position.z) &&
+                        std::isfinite(light.range) && std::isfinite(light.intensity) &&
+                        std::isfinite(light.aimPitch) && std::isfinite(light.aimYaw) && std::isfinite(light.beamAngle) &&
+                        std::isfinite(light.aimRoll) &&
+                        (light.markerId == 0 || g_cameraTrack.Find(light.markerId)))
+                    {
+                        normalize(light);
+                        const replay::editor::AuthoredLight& previous = lights[command.keyframeId];
+                        light.id = previous.id;
+                        if (!light.name[0])
+                            std::snprintf(light.name, sizeof(light.name), "Light %02u", static_cast<unsigned>(command.keyframeId + 1));
+                        if (light.attachedTarget != previous.attachedTarget)
+                        {
+                            const auto targetHandle = [](std::uint32_t packed) -> Entity {
+                                const replay::playback::Puppet* puppet = packed
+                                    ? g_puppets.Find(replay::entity::ReplayId::FromPacked(packed)) : nullptr;
+                                return puppet && puppet->packet.kind == replay::entity::EntityKind::Ped ? puppet->clone : 0;
+                            };
+                            const Entity oldParent = targetHandle(previous.attachedTarget);
+                            const Entity newParent = targetHandle(light.attachedTarget);
+                            replay::editor::Vec3 world{};
+                            bool canConvert = true;
+                            if (previous.attachedTarget)
+                            {
+                                canConvert = AuthoredLightWorldPosition(previous, oldParent, world) ||
+                                    CachedAuthoredLightWorldPosition(previous.id, previous.attachedTarget, previous.markerId, world);
+                            }
+                            else
+                                world = previous.position;
+
+                            if (canConvert && light.attachedTarget)
+                            {
+                                canConvert = AuthoredLightLocalPosition(light, newParent, world, light.position);
+                            }
+                            else if (canConvert)
+                                light.position = world;
+
+                            if (!canConvert)
+                            {
+                                // Never store a world-space position as an attachment offset. That
+                                // turns a light near (-140, -30, 96) into an offset of hundreds of
+                                // metres when the character clone is not available yet.
+                                light.attachedTarget = previous.attachedTarget;
+                                light.attachedBone = previous.attachedBone;
+                                light.attachType = previous.attachType;
+                                light.position = previous.position;
+                                LogFile() << "LIGHT_ATTACH,action=rejected,target=" << command.authoredLight.attachedTarget
+                                    << ",reason=parent_unavailable\n";
+                            }
+                        }
+                        const auto same = [](const replay::editor::AuthoredLight& a, const replay::editor::AuthoredLight& b) {
+                            return a.markerId == b.markerId && a.position.x == b.position.x && a.position.y == b.position.y &&
+                                a.position.z == b.position.z && a.range == b.range && a.intensity == b.intensity &&
+                                a.colorR == b.colorR && a.colorG == b.colorG && a.colorB == b.colorB && a.enabled == b.enabled &&
+                                a.aimPitch == b.aimPitch && a.aimYaw == b.aimYaw && a.beamAngle == b.beamAngle &&
+                                a.coneEnabled == b.coneEnabled && a.aimRoll == b.aimRoll && a.reflectorEnabled == b.reflectorEnabled &&
+                                a.reflectorHidden == b.reflectorHidden && a.attachedTarget == b.attachedTarget &&
+                                a.lookAtTarget == b.lookAtTarget &&
+                                a.id == b.id && a.attachedBone == b.attachedBone && a.attachType == b.attachType && a.blend == b.blend &&
+                                replay::camera::spline::Same(a.spline, b.spline) &&
+                                std::strncmp(a.name, b.name, sizeof(a.name)) == 0;
+                        };
+                        changed = !same(lights[command.keyframeId], light);
+                        lights[command.keyframeId] = light;
+                    }
+                }
+                else if (command.type == CommandType::LightDelete && command.keyframeId < lights.size())
+                {
+                    lights.erase(lights.begin() + command.keyframeId);
+                    changed = true;
+                }
+                else if (command.type == CommandType::LightClear)
+                {
+                    changed = !lights.empty();
+                    lights.clear();
+                }
+                else if (command.type == CommandType::LightCopyMarker && command.keyframeId != command.target &&
+                    g_cameraTrack.Find(command.keyframeId) && g_cameraTrack.Find(command.target))
+                {
+                    std::vector<replay::editor::AuthoredLight> sourceLights;
+                    std::size_t destinationCount = 0;
+                    for (const replay::editor::AuthoredLight& light : lights)
+                    {
+                        if (light.markerId == command.keyframeId)
+                            sourceLights.push_back(light);
+                        if (light.markerId == command.target)
+                            ++destinationCount;
+                    }
+                    const std::size_t capacityAfterReplace = replay::editor::kMaxAuthoredLights - (lights.size() - destinationCount);
+                    if (sourceLights.size() <= capacityAfterReplace)
+                    {
+                        const auto sameSettings = [](const replay::editor::AuthoredLight& a, const replay::editor::AuthoredLight& b) {
+                            return a.position.x == b.position.x && a.position.y == b.position.y && a.position.z == b.position.z &&
+                                a.range == b.range && a.intensity == b.intensity && a.colorR == b.colorR &&
+                                a.colorG == b.colorG && a.colorB == b.colorB && a.enabled == b.enabled &&
+                                a.aimPitch == b.aimPitch && a.aimYaw == b.aimYaw && a.beamAngle == b.beamAngle &&
+                                a.coneEnabled == b.coneEnabled && a.aimRoll == b.aimRoll && a.reflectorEnabled == b.reflectorEnabled &&
+                                a.reflectorHidden == b.reflectorHidden && a.attachedTarget == b.attachedTarget &&
+                                a.lookAtTarget == b.lookAtTarget && a.id == b.id &&
+                                a.attachedBone == b.attachedBone && a.attachType == b.attachType && a.blend == b.blend &&
+                                replay::camera::spline::Same(a.spline, b.spline) &&
+                                std::strncmp(a.name, b.name, sizeof(a.name)) == 0;
+                        };
+                        std::vector<replay::editor::AuthoredLight> oldDestination;
+                        for (const replay::editor::AuthoredLight& light : lights)
+                            if (light.markerId == command.target)
+                                oldDestination.push_back(light);
+                        bool same = oldDestination.size() == sourceLights.size();
+                        for (std::size_t n = 0; same && n < sourceLights.size(); ++n)
+                            same = sameSettings(oldDestination[n], sourceLights[n]);
+                        if (!same)
+                        {
+                            lights.erase(std::remove_if(lights.begin(), lights.end(), [&](const replay::editor::AuthoredLight& light) {
+                                return light.markerId == command.target;
+                            }), lights.end());
+                            for (replay::editor::AuthoredLight light : sourceLights)
+                            {
+                                light.markerId = command.target;
+                                lights.push_back(light);
+                            }
+                            changed = true;
+                        }
+                    }
+                }
+                else if (command.type == CommandType::LightRotateMarker && g_cameraTrack.Find(command.keyframeId))
+                {
+                    constexpr float kDegreesToRadians = 0.01745329251994329577f;
+                    constexpr float kRadiansToDegrees = 57.295779513082320876f;
+                    const float pitch = command.camera.rotation.x * kDegreesToRadians;
+                    const float roll = command.camera.rotation.y * kDegreesToRadians;
+                    const float yaw = command.camera.rotation.z * kDegreesToRadians;
+                    const auto rotate = [&](float x, float y, float z) {
+                        // Apply roll, then pitch, then yaw to the whole rig.
+                        const float x1 = std::cos(roll) * x + std::sin(roll) * z;
+                        const float y1 = y;
+                        const float z1 = -std::sin(roll) * x + std::cos(roll) * z;
+                        const float x2 = x1;
+                        const float y2 = std::cos(pitch) * y1 - std::sin(pitch) * z1;
+                        const float z2 = std::sin(pitch) * y1 + std::cos(pitch) * z1;
+                        return Vector3{std::cos(yaw) * x2 - std::sin(yaw) * y2,
+                            std::sin(yaw) * x2 + std::cos(yaw) * y2, z2};
+                    };
+                    struct RigPose
+                    {
+                        std::size_t index = 0;
+                        Entity parent = 0;
+                        Vector3 parentRotation{};
+                        replay::editor::Vec3 world{};
+                    };
+                    std::vector<RigPose> poses;
+                    bool resolvedAll = true;
+                    double centerX = 0.0, centerY = 0.0, centerZ = 0.0;
+                    for (std::size_t i = 0; i < lights.size(); ++i)
+                    {
+                        const replay::editor::AuthoredLight& light = lights[i];
+                        if (light.markerId != command.keyframeId)
+                            continue;
+                        RigPose pose{};
+                        pose.index = i;
+                        if (light.attachedTarget)
+                        {
+                            const replay::playback::Puppet* puppet = g_puppets.Find(
+                                replay::entity::ReplayId::FromPacked(light.attachedTarget));
+                            if (!puppet || !puppet->clone || !ENTITY::DOES_ENTITY_EXIST(puppet->clone) ||
+                                !AuthoredLightWorldPosition(light, puppet->clone, pose.world))
+                            {
+                                resolvedAll = false;
+                                break;
+                            }
+                            pose.parent = puppet->clone;
+                            pose.parentRotation = ENTITY::GET_ENTITY_ROTATION(pose.parent, 2);
+                        }
+                        else
+                            pose.world = light.position;
+                        centerX += pose.world.x;
+                        centerY += pose.world.y;
+                        centerZ += pose.world.z;
+                        poses.push_back(pose);
+                    }
+                    if (resolvedAll && !poses.empty())
+                    {
+                        const float inverseCount = 1.0f / static_cast<float>(poses.size());
+                        const Vector3 center{static_cast<float>(centerX) * inverseCount,
+                            static_cast<float>(centerY) * inverseCount, static_cast<float>(centerZ) * inverseCount};
+                        std::vector<replay::editor::AuthoredLight> rotated;
+                        rotated.reserve(poses.size());
+                        for (const RigPose& pose : poses)
+                        {
+                            replay::editor::AuthoredLight light = lights[pose.index];
+                            const Vector3 relative{pose.world.x - center.x, pose.world.y - center.y, pose.world.z - center.z};
+                            const Vector3 rotatedRelative = rotate(relative.x, relative.y, relative.z);
+                            const replay::editor::Vec3 world{center.x + rotatedRelative.x,
+                                center.y + rotatedRelative.y, center.z + rotatedRelative.z};
+                            if (pose.parent)
+                            {
+                                if (!AuthoredLightLocalPosition(light, pose.parent, world, light.position))
+                                {
+                                    resolvedAll = false;
+                                    break;
+                                }
+                            }
+                            else
+                                light.position = world;
+
+                            const float lightPitch = light.aimPitch * kDegreesToRadians;
+                            const float lightYaw = light.aimYaw * kDegreesToRadians;
+                            const float lightRoll = light.aimRoll * kDegreesToRadians;
+                            const float localRightX = std::cos(lightYaw), localRightY = std::sin(lightYaw);
+                            const float localUpX = std::sin(lightYaw) * std::sin(lightPitch);
+                            const float localUpY = -std::cos(lightYaw) * std::sin(lightPitch);
+                            const float localUpZ = std::cos(lightPitch);
+                            Vector3 forward{-std::sin(lightYaw) * std::cos(lightPitch),
+                                std::cos(lightYaw) * std::cos(lightPitch), std::sin(lightPitch)};
+                            Vector3 up{localUpX * std::cos(lightRoll) - localRightX * std::sin(lightRoll),
+                                localUpY * std::cos(lightRoll) - localRightY * std::sin(lightRoll),
+                                localUpZ * std::cos(lightRoll)};
+                            if (pose.parent)
+                            {
+                                forward = RotateAuthoredLightVector(pose.parentRotation, light.attachType, forward.x, forward.y, forward.z);
+                                up = RotateAuthoredLightVector(pose.parentRotation, light.attachType, up.x, up.y, up.z);
+                            }
+                            forward = rotate(forward.x, forward.y, forward.z);
+                            up = rotate(up.x, up.y, up.z);
+                            if (pose.parent)
+                            {
+                                forward = UnrotateAuthoredLightVector(pose.parentRotation, light.attachType, forward.x, forward.y, forward.z);
+                                up = UnrotateAuthoredLightVector(pose.parentRotation, light.attachType, up.x, up.y, up.z);
+                            }
+                            const float horizontal = std::sqrt(forward.x * forward.x + forward.y * forward.y);
+                            const float nextPitch = std::atan2(forward.z, horizontal);
+                            const float nextYaw = std::atan2(-forward.x, forward.y);
+                            const float rightX = std::cos(nextYaw), rightY = std::sin(nextYaw);
+                            const float baseUpX = std::sin(nextYaw) * std::sin(nextPitch);
+                            const float baseUpY = -std::cos(nextYaw) * std::sin(nextPitch);
+                            const float baseUpZ = std::cos(nextPitch);
+                            const float alongRight = up.x * rightX + up.y * rightY;
+                            const float alongUp = up.x * baseUpX + up.y * baseUpY + up.z * baseUpZ;
+                            light.aimPitch = nextPitch * kRadiansToDegrees;
+                            light.aimYaw = WrapLightDegrees(nextYaw * kRadiansToDegrees);
+                            light.aimRoll = WrapLightDegrees(std::atan2(-alongRight, alongUp) * kRadiansToDegrees);
+                            rotated.push_back(light);
+                        }
+                        if (resolvedAll)
+                        {
+                            for (std::size_t i = 0; i < poses.size(); ++i)
+                                lights[poses[i].index] = rotated[i];
+                            changed = true;
+                        }
+                    }
+                    if (!resolvedAll)
+                        LogFile() << "LIGHT_RIG_ROTATE,ok=0,marker=" << command.keyframeId << ",reason=attachment_unavailable\n";
+                }
+                if (changed && g_transport.Playing() && !replay::camera::SameMarkers(markersBefore, g_cameraTrack))
+                {
+                    g_clipEdited = true;
+                    PushMarkerHistory(static_cast<std::uint32_t>(command.type), command.keyframeId, &markersBefore);
+                }
+                continue;
+            }
             // The fields too.
             LogFile() << "EDITOR_COMMAND,type=" << static_cast<std::uint32_t>(command.type) << ",marker=" << command.keyframeId
                       << ",time_ms=" << command.timeMs << ",enabled=" << command.enabled << ",direction=" << command.direction
@@ -1538,6 +1884,15 @@ namespace
 
             case replay::editor::CommandType::SetEditorOpen:
                 g_editorCoversScreen = command.enabled != 0;
+                break;
+
+            case replay::editor::CommandType::SetLightEditorState:
+                g_lightEditorOpen = command.enabled != 0;
+                g_lightGizmosVisible = (command.target & 1u) != 0;
+                break;
+
+            case replay::editor::CommandType::RefreshTargets:
+                g_refreshTargetCatalog = true;
                 break;
 
             // A clip renamed from the gallery (R); its thumbnail too, and the open clip's
@@ -2294,6 +2649,10 @@ namespace
         else if (g_recording && g_manualInBuffer)
             snapshot.recordingMs = replay::pose::capture::NowMs() - g_manualStartMs;
         snapshot.savedClipMs = g_savedClipMs;
+        const std::vector<replay::editor::AuthoredLight>& authoredLights = g_cameraTrack.AuthoredLights();
+        snapshot.authoredLightCount = static_cast<std::uint32_t>(std::min<std::size_t>(authoredLights.size(), replay::editor::kMaxAuthoredLights));
+        snapshot.authoredLightSelected = 0;
+        std::copy_n(authoredLights.begin(), snapshot.authoredLightCount, snapshot.authoredLights);
         snapshot.sessionResetSequence = g_sessionResets + g_safeExitEditorCloses; // the add-on closes when it grows (session reset or safe exit)
         snapshot.editingMarker = g_editingMarker;
         if (g_editingMarker)
@@ -2476,58 +2835,127 @@ namespace
         snapshot.splineDefaults = g_splineDefaults;
         snapshot.splineWeightActive = SplineWeightActive() ? 1u : 0u;
 
-        // Keyframe targets: the clip's peds, horses and vehicles, named by the game's
-        // model name (a_m_m_valtownfolk_01, player_zero; the hash in hex when unknown),
-        // the main character first, not by the replay id.
+        // Keyframe targets are the entities alive at this playhead, taken from
+        // the clip's lifecycle track rather than the asynchronously loaded puppet
+        // list. The latter can briefly omit a valid character while a seek settles.
+        // Names use the game's model name (a_m_m_valtownfolk_01, player_zero; the
+        // hash in hex when unknown), with the main character first.
         snapshot.targetCount = 0;
         {
-            const std::uint32_t main = MainCharacterId();
-            // Numbered in replay id order, so a label stays with its character while
-            // others come and go.
-            std::vector<const replay::playback::Puppet*> ordered;
-            for (const replay::playback::Puppet& puppet : g_puppets.list)
-                ordered.push_back(&puppet);
-            std::sort(ordered.begin(), ordered.end(), [](const replay::playback::Puppet* a, const replay::playback::Puppet* b) {
-                return a->packet.id.Packed() < b->packet.id.Packed();
+            const std::uint32_t targetTime = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                g_transport.PlayheadMs(), 0xFFFFFFFFull));
+            static std::vector<replay::entity::CreatePacket> alivePackets;
+            static std::uint32_t targetClipSequence = ~0u;
+            static std::uint64_t targetAliveStamp = replay::entity::LifecycleTrack::kNoAliveStamp;
+            static std::size_t targetAliveBlocks = static_cast<std::size_t>(-1);
+            static std::size_t targetCreatedCount = static_cast<std::size_t>(-1);
+            const std::uint64_t aliveStamp = g_clip.lifecycle.AliveStamp(targetTime);
+            const std::size_t aliveBlocks = g_clip.lifecycle.BlockCount();
+            const std::size_t createdCount = g_clip.created.size();
+            if (g_refreshTargetCatalog || targetClipSequence != g_clipLoadSequence || targetAliveStamp != aliveStamp ||
+                targetAliveBlocks != aliveBlocks || targetCreatedCount != createdCount)
+            {
+                targetClipSequence = g_clipLoadSequence;
+                targetAliveStamp = aliveStamp;
+                targetAliveBlocks = aliveBlocks;
+                targetCreatedCount = createdCount;
+                g_refreshTargetCatalog = false;
+                g_clip.lifecycle.AliveAt(targetTime, alivePackets);
+            }
+            const std::uint32_t liveMain = MainCharacterId();
+            static const Hash arthur = MISC::GET_HASH_KEY("player_zero");
+            static const Hash john = MISC::GET_HASH_KEY("player_three");
+            std::vector<const replay::entity::CreatePacket*> ordered;
+            ordered.reserve(alivePackets.size());
+            for (const replay::entity::CreatePacket& packet : alivePackets)
+                ordered.push_back(&packet);
+            std::sort(ordered.begin(), ordered.end(), [](const replay::entity::CreatePacket* a, const replay::entity::CreatePacket* b) {
+                return a->id.Packed() < b->id.Packed();
             });
+            ordered.erase(std::unique(ordered.begin(), ordered.end(), [](const replay::entity::CreatePacket* a,
+                const replay::entity::CreatePacket* b) { return a->id.Packed() == b->id.Packed(); }), ordered.end());
             const auto listed = [](replay::entity::EntityKind kind) {
                 return kind == replay::entity::EntityKind::Ped || kind == replay::entity::EntityKind::Horse ||
                     kind == replay::entity::EntityKind::Vehicle || kind == replay::entity::EntityKind::Weapon;
             };
+            std::unordered_set<std::uint32_t> activeIds;
+            activeIds.reserve(ordered.size());
+            for (const replay::entity::CreatePacket* packet : ordered)
+                activeIds.insert(packet->id.Packed());
+            std::uint32_t main = liveMain;
+            if (!main)
+                for (const replay::entity::CreatePacket* packet : ordered)
+                    if (packet->modelHash == arthur || packet->modelHash == john)
+                    {
+                        main = packet->id.Packed();
+                        break;
+                    }
+            // Include the whole clip's create catalog after the live entities, so
+            // targets which enter later remain selectable. Active entries stay first.
+            std::vector<const replay::entity::CreatePacket*> catalog;
+            catalog.reserve(std::min<std::size_t>(replay::editor::kMaxTargetsInSnapshot,
+                ordered.size() + g_clip.created.size()));
+            std::unordered_set<std::uint32_t> catalogIds;
+            catalogIds.reserve(catalog.capacity());
             // Entities of the same model get a number (#1, #2); a model seen once none.
             std::unordered_map<std::uint32_t, int> sameModel, numbered;
-            for (const replay::playback::Puppet* entry : ordered)
-                if (listed(entry->packet.kind))
-                    ++sameModel[entry->packet.modelHash];
             // A third pass lists the weapons (attach to a muzzle or a grip), after the
             // characters, horses, animals and vehicles.
             for (int pass = 0; pass < 3; ++pass)
-                for (const replay::playback::Puppet* entry : ordered)
+                for (const replay::entity::CreatePacket* packet : ordered)
                 {
-                    const replay::playback::Puppet& puppet = *entry;
-                    if (snapshot.targetCount >= replay::editor::kMaxTargetsInSnapshot)
+                    if (catalog.size() >= replay::editor::kMaxTargetsInSnapshot)
                         break;
-                    const replay::entity::EntityKind kind = puppet.packet.kind;
+                    const replay::entity::EntityKind kind = packet->kind;
                     const bool weapon = kind == replay::entity::EntityKind::Weapon;
                     if (!listed(kind))
                         continue;
                     if (weapon != (pass == 2))
                         continue;
-                    const bool isMain = puppet.packet.id.Packed() == main;
+                    const bool isMain = packet->id.Packed() == main;
                     if (pass < 2 && (pass == 0) != isMain)
                         continue;
+                    if (catalog.size() >= replay::editor::kMaxTargetsInSnapshot)
+                        break;
+                    if (!catalogIds.insert(packet->id.Packed()).second)
+                        continue;
+                    catalog.push_back(packet);
+                }
+            std::vector<const replay::entity::CreatePacket*> createdOrdered;
+            createdOrdered.reserve(g_clip.created.size());
+            for (const replay::entity::CreatePacket& packet : g_clip.created)
+                if (listed(packet.kind) && catalogIds.find(packet.id.Packed()) == catalogIds.end())
+                    createdOrdered.push_back(&packet);
+            std::sort(createdOrdered.begin(), createdOrdered.end(), [](const replay::entity::CreatePacket* a,
+                const replay::entity::CreatePacket* b) { return a->id.Packed() < b->id.Packed(); });
+            for (const replay::entity::CreatePacket* packet : createdOrdered)
+            {
+                if (catalog.size() >= replay::editor::kMaxTargetsInSnapshot)
+                    break;
+                if (catalogIds.insert(packet->id.Packed()).second)
+                    catalog.push_back(packet);
+            }
+            for (const replay::entity::CreatePacket* packet : catalog)
+                ++sameModel[packet->modelHash];
+            for (const replay::entity::CreatePacket* packet : catalog)
+            {
+                if (snapshot.targetCount >= replay::editor::kMaxTargetsInSnapshot)
+                    break;
                     const std::uint32_t slot = snapshot.targetCount;
-                    const CamTargetBones& bones = TargetBonesFor(puppet);
+                    replay::playback::Puppet metadata{};
+                    metadata.packet = *packet;
+                    const CamTargetBones& bones = TargetBonesFor(metadata);
                     snapshot.targetFamily[slot] = bones.family;
                     snapshot.targetBoneMask[slot] = static_cast<std::uint32_t>(bones.mask);
                     snapshot.targetBoneMaskHigh[slot] = static_cast<std::uint32_t>(bones.mask >> 32);
                     snapshot.targetBoneCount[slot] = bones.count;
                     replay::editor::TargetInfo& info = snapshot.targets[snapshot.targetCount++];
-                    info.id = puppet.packet.id.Packed();
-                    info.kind = static_cast<std::uint32_t>(kind);
-                    const std::uint32_t model = puppet.packet.modelHash;
+                    info.id = packet->id.Packed();
+                    info.kind = static_cast<std::uint32_t>(packet->kind);
+                    info.active = activeIds.find(info.id) != activeIds.end() ? 1u : 0u;
+                    const std::uint32_t model = packet->modelHash;
                     replay::models::Label(model, sameModel[model] > 1 ? ++numbered[model] : 0, info.label, sizeof(info.label));
-                }
+            }
         }
 
         if (g_recording)
@@ -2574,3 +3002,796 @@ namespace
             log.flush();
         }
     }
+
+namespace
+{
+    float LightAngleDelta(float from, float to)
+    {
+        float delta = std::fmod(to - from + 540.0f, 360.0f) - 180.0f;
+        if (delta < -180.0f)
+            delta += 360.0f;
+        return delta;
+    }
+
+    float LightCatmull(float p0, float p1, float p2, float p3, float t)
+    {
+        const float t2 = t * t, t3 = t2 * t;
+        return 0.5f * ((2.0f * p1) + (-p0 + p2) * t +
+            (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2 +
+            (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
+    }
+
+    float InterpolateLightValue(float p0, float p1, float p2, float p3, float t, replay::editor::Blend blend,
+        bool angle = false)
+    {
+        if (angle)
+        {
+            p0 = p1 + LightAngleDelta(p1, p0);
+            p2 = p1 + LightAngleDelta(p1, p2);
+            p3 = p1 + LightAngleDelta(p1, p3);
+        }
+        float value = p1;
+        if (blend == replay::editor::Blend::Linear || blend == replay::editor::Blend::Smooth)
+            value = p1 + (p2 - p1) * t;
+        else if (blend == replay::editor::Blend::Spline)
+            value = LightCatmull(p0, p1, p2, p3, t);
+        return angle ? WrapLightDegrees(value) : value;
+    }
+
+    float SampleLightSplineValue(float p0, float p1, float p2, float p3, double hBefore, double h0, double hAfter,
+        float phase, const replay::editor::SplineTuning& fromTuning, const replay::editor::SplineTuning& toTuning,
+        bool hasPrevious, bool hasAfter, std::uint8_t channel, bool angle, bool monotone)
+    {
+        if (!hasPrevious)
+            p0 = 2.0f * p1 - p2;
+        if (!hasAfter)
+            p3 = 2.0f * p2 - p1;
+        if (angle)
+        {
+            p0 = p1 + LightAngleDelta(p1, p0);
+            p2 = p1 + LightAngleDelta(p1, p2);
+            p3 = p1 + LightAngleDelta(p1, p3);
+        }
+        const auto linear = [&]() { return p1 + (p2 - p1) * phase; };
+        if ((fromTuning.channels & channel) == 0 || h0 <= 1e-9)
+            return angle ? WrapLightDegrees(linear()) : linear();
+
+        const double d0 = (static_cast<double>(p2) - p1) / h0;
+        double m1 = d0, m2 = d0;
+        if (monotone)
+        {
+            const double dBefore = hasPrevious && hBefore > 1e-9 ? (static_cast<double>(p1) - p0) / hBefore : 0.0;
+            const double dAfter = hasAfter && hAfter > 1e-9 ? (static_cast<double>(p3) - p2) / hAfter : 0.0;
+            m1 = hasPrevious ? replay::camera::spline::MonotoneInner(hBefore, h0, dBefore, d0)
+                : hasAfter ? replay::camera::spline::MonotoneEnd(h0, hAfter, d0, dAfter) : d0;
+            m2 = hasAfter ? replay::camera::spline::MonotoneInner(h0, hAfter, d0, dAfter)
+                : hasPrevious ? replay::camera::spline::MonotoneEnd(h0, hBefore, d0, dBefore) : d0;
+        }
+        else
+        {
+            if (hasPrevious && hBefore > 1e-9)
+                m1 = (static_cast<double>(p2) - p0) / (hBefore + h0);
+            if (hasAfter && hAfter > 1e-9)
+                m2 = (static_cast<double>(p3) - p1) / (h0 + hAfter);
+            if (!hasPrevious && hasAfter)
+                m1 = replay::camera::spline::NaturalEnd(d0, m2);
+            else if (hasPrevious && !hasAfter)
+                m2 = replay::camera::spline::NaturalEnd(d0, m1);
+        }
+
+        const double easedTime = static_cast<double>(phase) * h0;
+        double value = replay::camera::spline::Hermite(p1, p2, m1, m2, h0, easedTime / h0);
+        const double weight = SplineWeightActive()
+            ? replay::camera::spline::WeightBetween(fromTuning.weight, toTuning.weight, phase) : 0.0;
+        if (weight > 0.0f)
+        {
+            // Same time-aware B-spline pull as camera spline markers. The
+            // outer knots are mirrored at the ends of a spline run.
+            const double k0 = hasPrevious && hBefore > 1e-9 ? -hBefore : -h0;
+            const double k1 = 0.0;
+            const double k2 = h0;
+            const double k3 = hasAfter && hAfter > 1e-9 ? h0 + hAfter : 2.0 * h0;
+            const double knots[6] = {2.0 * k0 - k1, k0, k1, k2, k3, 2.0 * k3 - k2};
+            double weights[4]{};
+            replay::camera::spline::BSplineWeights(knots, easedTime, weights);
+            const double curve = weights[0] * p0 + weights[1] * p1 + weights[2] * p2 + weights[3] * p3;
+            value += static_cast<double>(weight) * (curve - value);
+        }
+        const float result = static_cast<float>(value);
+        return angle ? WrapLightDegrees(result) : result;
+    }
+
+    int AuthoredLightBoneIndex(Entity entity, std::uint32_t ref)
+    {
+        if (!ref)
+            return -1;
+        const std::uint32_t mode = replay::camera::bones::ModeOf(ref);
+        const std::uint32_t value = replay::camera::bones::ValueOf(ref);
+        if (mode == replay::camera::bones::kModeIndex)
+            return static_cast<int>(value);
+        if (mode == replay::camera::bones::kModeNamed && value < replay::camera::bones::kNamedCount)
+            for (const char* name : replay::camera::bones::kNamed[value].names)
+            {
+                if (!name)
+                    break;
+                const int index = ENTITY::GET_ENTITY_BONE_INDEX_BY_NAME(entity, const_cast<char*>(name));
+                if (index >= 0)
+                    return index;
+            }
+        return -1;
+    }
+
+    Vector3 RotateAuthoredLightVector(const Vector3& rotation, std::uint32_t mount, float x, float y, float z)
+    {
+        float pitch = 0.0f, roll = 0.0f, heading = 0.0f;
+        if (mount == static_cast<std::uint32_t>(replay::editor::AttachType::Rigid))
+        {
+            pitch = rotation.x;
+            roll = rotation.y;
+            heading = rotation.z;
+        }
+        else if (mount == static_cast<std::uint32_t>(replay::editor::AttachType::Default))
+            heading = rotation.z;
+        constexpr float kRad = 0.01745329251994329577f;
+        const float p = pitch * kRad, r = roll * kRad, h = heading * kRad;
+        const float cp = std::cos(p), sp = std::sin(p);
+        const float cr = std::cos(r), sr = std::sin(r);
+        const float ch = std::cos(h), sh = std::sin(h);
+        return {
+            (ch * cr - sh * sp * sr) * x + (-sh * cp) * y + (ch * sr + sh * sp * cr) * z,
+            (sh * cr + ch * sp * sr) * x + (ch * cp) * y + (sh * sr - ch * sp * cr) * z,
+            (-cp * sr) * x + sp * y + (cp * cr) * z
+        };
+    }
+
+    Vector3 UnrotateAuthoredLightVector(const Vector3& rotation, std::uint32_t mount, float x, float y, float z)
+    {
+        float pitch = 0.0f, roll = 0.0f, heading = 0.0f;
+        if (mount == static_cast<std::uint32_t>(replay::editor::AttachType::Rigid))
+        {
+            pitch = rotation.x;
+            roll = rotation.y;
+            heading = rotation.z;
+        }
+        else if (mount == static_cast<std::uint32_t>(replay::editor::AttachType::Default))
+            heading = rotation.z;
+        constexpr float kRad = 0.01745329251994329577f;
+        const float p = pitch * kRad, r = roll * kRad, h = heading * kRad;
+        const float cp = std::cos(p), sp = std::sin(p);
+        const float cr = std::cos(r), sr = std::sin(r);
+        const float ch = std::cos(h), sh = std::sin(h);
+        const float r00 = ch * cr - sh * sp * sr;
+        const float r01 = -sh * cp;
+        const float r02 = ch * sr + sh * sp * cr;
+        const float r10 = sh * cr + ch * sp * sr;
+        const float r11 = ch * cp;
+        const float r12 = sh * sr - ch * sp * cr;
+        const float r20 = -cp * sr;
+        const float r21 = sp;
+        const float r22 = cp * cr;
+        return {
+            r00 * x + r10 * y + r20 * z,
+            r01 * x + r11 * y + r21 * z,
+            r02 * x + r12 * y + r22 * z
+        };
+    }
+
+    bool AuthoredLightParentFrame(const replay::editor::AuthoredLight& light, Entity parent,
+        Vector3& origin, Vector3& rotation)
+    {
+        if (!parent || !ENTITY::DOES_ENTITY_EXIST(parent))
+            return false;
+        origin = ENTITY::GET_ENTITY_COORDS(parent, TRUE, FALSE);
+        if (light.attachedBone)
+        {
+            const int bone = AuthoredLightBoneIndex(parent, light.attachedBone);
+            if (bone >= 0)
+                origin = ENTITY::GET_WORLD_POSITION_OF_ENTITY_BONE(parent, bone);
+        }
+        rotation = ENTITY::GET_ENTITY_ROTATION(parent, 2);
+        return std::isfinite(origin.x) && std::isfinite(origin.y) && std::isfinite(origin.z) &&
+            std::isfinite(rotation.x) && std::isfinite(rotation.y) && std::isfinite(rotation.z);
+    }
+    bool AuthoredLightWorldPosition(const replay::editor::AuthoredLight& light, Entity parent,
+        replay::editor::Vec3& world)
+    {
+        Vector3 origin{}, rotation{};
+        if (!AuthoredLightParentFrame(light, parent, origin, rotation))
+            return false;
+        const Vector3 offset = RotateAuthoredLightVector(rotation, light.attachType,
+            light.position.x, light.position.y, light.position.z);
+        world = {origin.x + offset.x, origin.y + offset.y, origin.z + offset.z};
+        return std::isfinite(world.x) && std::isfinite(world.y) && std::isfinite(world.z);
+    }
+
+    bool AuthoredLightLocalPosition(const replay::editor::AuthoredLight& light, Entity parent,
+        const replay::editor::Vec3& world, replay::editor::Vec3& local)
+    {
+        Vector3 origin{}, rotation{};
+        if (!AuthoredLightParentFrame(light, parent, origin, rotation))
+            return false;
+        const Vector3 offset = UnrotateAuthoredLightVector(rotation, light.attachType,
+            world.x - origin.x, world.y - origin.y, world.z - origin.z);
+        local = {offset.x, offset.y, offset.z};
+        return std::isfinite(local.x) && std::isfinite(local.y) && std::isfinite(local.z);
+    }
+
+    struct CachedAuthoredLightAttachment
+    {
+        std::uint32_t target = 0;
+        std::uint32_t markerId = 0;
+        replay::editor::Vec3 position{};
+    };
+
+    std::unordered_map<std::uint32_t, CachedAuthoredLightAttachment> g_authoredLightAttachmentCache;
+
+    bool CachedAuthoredLightWorldPosition(std::uint32_t id, std::uint32_t target, std::uint32_t markerId,
+        replay::editor::Vec3& world)
+    {
+        const auto cached = g_authoredLightAttachmentCache.find(id);
+        if (!id || cached == g_authoredLightAttachmentCache.end() || cached->second.target != target ||
+            cached->second.markerId != markerId)
+            return false;
+        world = cached->second.position;
+        return std::isfinite(world.x) && std::isfinite(world.y) && std::isfinite(world.z);
+    }
+
+    struct EffectiveAuthoredLight
+    {
+        replay::editor::Vec3 position{};
+        float aimPitch = 0.0f;
+        float aimYaw = 0.0f;
+        float aimRoll = 0.0f;
+    };
+
+    bool ResolveAuthoredLight(const replay::editor::AuthoredLight& light, EffectiveAuthoredLight& effective)
+    {
+        effective.position = light.position;
+        effective.aimPitch = light.aimPitch;
+        effective.aimYaw = light.aimYaw;
+        effective.aimRoll = light.aimRoll;
+        if (light.attachedTarget)
+        {
+            const replay::playback::Puppet* puppet = g_puppets.Find(
+                replay::entity::ReplayId::FromPacked(light.attachedTarget));
+            if (!puppet || !puppet->clone || !ENTITY::DOES_ENTITY_EXIST(puppet->clone) ||
+                puppet->packet.kind != replay::entity::EntityKind::Ped)
+            {
+                const auto cached = g_authoredLightAttachmentCache.find(light.id);
+                if (light.id && cached != g_authoredLightAttachmentCache.end() &&
+                    cached->second.target == light.attachedTarget && cached->second.markerId == light.markerId)
+                    effective.position = cached->second.position;
+                else
+                    effective.position = light.position;
+            }
+            else
+            {
+                const Entity parent = puppet->clone;
+                Vector3 origin = ENTITY::GET_ENTITY_COORDS(parent, TRUE, FALSE);
+                if (light.attachedBone)
+                {
+                    const int bone = AuthoredLightBoneIndex(parent, light.attachedBone);
+                    if (bone >= 0)
+                        origin = ENTITY::GET_WORLD_POSITION_OF_ENTITY_BONE(parent, bone);
+                }
+                const Vector3 parentRotation = ENTITY::GET_ENTITY_ROTATION(parent, 2);
+                const Vector3 offset = RotateAuthoredLightVector(parentRotation, light.attachType,
+                    light.position.x, light.position.y, light.position.z);
+                effective.position = {origin.x + offset.x, origin.y + offset.y, origin.z + offset.z};
+                if (light.id)
+                {
+                    if (g_authoredLightAttachmentCache.size() > replay::editor::kMaxAuthoredLights * 2)
+                        g_authoredLightAttachmentCache.clear();
+                    g_authoredLightAttachmentCache[light.id] = {light.attachedTarget, light.markerId, effective.position};
+                }
+
+                constexpr float kDegreesToRadians = 0.01745329251994329577f;
+                constexpr float kRadiansToDegrees = 57.295779513082320876f;
+                const float pitch = light.aimPitch * kDegreesToRadians;
+                const float yaw = light.aimYaw * kDegreesToRadians;
+                const float localX = -std::sin(yaw) * std::cos(pitch);
+                const float localY = std::cos(yaw) * std::cos(pitch);
+                const float localZ = std::sin(pitch);
+                const Vector3 axis = RotateAuthoredLightVector(parentRotation, light.attachType, localX, localY, localZ);
+                const float dx = axis.x;
+                const float dy = axis.y;
+                const float dz = axis.z;
+                effective.aimPitch = std::atan2(dz, std::sqrt(dx * dx + dy * dy)) * kRadiansToDegrees;
+                effective.aimYaw = std::atan2(-dx, dy) * kRadiansToDegrees;
+                const float localRightX = std::cos(yaw), localRightY = std::sin(yaw);
+                const float localUpX = std::sin(yaw) * std::sin(pitch), localUpY = -std::cos(yaw) * std::sin(pitch);
+                const float roll = light.aimRoll * kDegreesToRadians;
+                const Vector3 localUp = RotateAuthoredLightVector(parentRotation, light.attachType,
+                    localUpX * std::cos(roll) - localRightX * std::sin(roll),
+                    localUpY * std::cos(roll) - localRightY * std::sin(roll), std::cos(pitch) * std::cos(roll));
+                const float worldPitch = effective.aimPitch * kDegreesToRadians;
+                const float worldYaw = effective.aimYaw * kDegreesToRadians;
+                const float rightX = std::cos(worldYaw), rightY = std::sin(worldYaw);
+                const float upX = std::sin(worldYaw) * std::sin(worldPitch);
+                const float upY = -std::cos(worldYaw) * std::sin(worldPitch);
+                const float alongRight = localUp.x * rightX + localUp.y * rightY;
+                const float alongUp = localUp.x * upX + localUp.y * upY + localUp.z * std::cos(worldPitch);
+                effective.aimRoll = std::atan2(-alongRight, alongUp) * kRadiansToDegrees;
+            }
+        }
+        else if (light.id)
+            g_authoredLightAttachmentCache.erase(light.id);
+
+        if (light.lookAtTarget)
+        {
+            const replay::playback::Puppet* target = g_puppets.Find(
+                replay::entity::ReplayId::FromPacked(light.lookAtTarget));
+            if (target && target->clone && ENTITY::DOES_ENTITY_EXIST(target->clone) &&
+                target->packet.kind == replay::entity::EntityKind::Ped)
+            {
+                Vector3 point = ENTITY::GET_ENTITY_COORDS(target->clone, TRUE, FALSE);
+                const int head = ENTITY::GET_ENTITY_BONE_INDEX_BY_NAME(target->clone, const_cast<char*>("SKEL_Head"));
+                if (head >= 0)
+                    point = ENTITY::GET_WORLD_POSITION_OF_ENTITY_BONE(target->clone, head);
+                const float dx = point.x - effective.position.x;
+                const float dy = point.y - effective.position.y;
+                const float dz = (head >= 0 ? point.z : point.z + replay::camera::kLookAtAimHeight) - effective.position.z;
+                constexpr float kRadiansToDegrees = 57.295779513082320876f;
+                effective.aimPitch = std::atan2(dz, std::sqrt(dx * dx + dy * dy)) * kRadiansToDegrees;
+                effective.aimYaw = std::atan2(-dx, dy) * kRadiansToDegrees;
+            }
+        }
+        return true;
+    }
+}
+
+void DrawAuthoredLights()
+{
+    const std::vector<replay::camera::Keyframe>& markers = g_cameraTrack.Keyframes();
+    std::uint64_t lightTimeMs = g_transport.PlayheadMs();
+    // The camera and light passes both sample this tick's transport playhead.
+    // Advancing the lights by another rendered frame makes marker cuts lead the
+    // camera by one frame, so sample the exact playhead here.
+    std::uint32_t activeMarkerId = 0;
+    std::size_t activeMarkerIndex = markers.size();
+    std::size_t previousMarkerIndex = markers.size();
+    std::size_t nextMarkerIndex = markers.size();
+    std::size_t afterNextMarkerIndex = markers.size();
+    for (std::size_t n = 0; n < markers.size(); ++n)
+    {
+        if (markers[n].timeMs > lightTimeMs)
+        {
+            if (markers[n].markerType != replay::editor::MarkerType::Anchor && nextMarkerIndex == markers.size())
+                nextMarkerIndex = n;
+            else if (markers[n].markerType != replay::editor::MarkerType::Anchor && afterNextMarkerIndex == markers.size())
+                afterNextMarkerIndex = n;
+            continue;
+        }
+        if (markers[n].markerType == replay::editor::MarkerType::Anchor)
+            continue;
+        previousMarkerIndex = activeMarkerIndex;
+        activeMarkerId = markers[n].id;
+        activeMarkerIndex = n;
+    }
+    const replay::camera::Keyframe* currentMarker = activeMarkerIndex < markers.size() ? &markers[activeMarkerIndex] : nullptr;
+    const replay::camera::Keyframe* previousMarker = previousMarkerIndex < markers.size() ? &markers[previousMarkerIndex] : nullptr;
+    const replay::camera::Keyframe* nextMarker = nextMarkerIndex < markers.size() ? &markers[nextMarkerIndex] : nullptr;
+    const replay::camera::Keyframe* afterNextMarker = afterNextMarkerIndex < markers.size() ? &markers[afterNextMarkerIndex] : nullptr;
+    const bool showLightGizmos = g_lightEditorOpen && g_lightGizmosVisible;
+        if (showLightGizmos)
+    {
+        // Keep the source locator visible whenever the user asks for gizmos,
+        // including while editing markers without Free Cam enabled.
+        constexpr Hash kLightLocatorMarker = 0x94FDAE17;
+        const auto drawLocator = [&](float x, float y, float z, float radius, float height,
+            int red, int green, int blue, int alpha) {
+            GRAPHICS::_DRAW_MARKER(kLightLocatorMarker, x, y, z,
+                0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                radius, radius, height,
+                red, green, blue, alpha,
+                FALSE, FALSE, 2, FALSE, nullptr, nullptr, TRUE);
+        };
+        for (const replay::editor::AuthoredLight& light : g_cameraTrack.AuthoredLights())
+        {
+            if (light.markerId != 0 && light.markerId != activeMarkerId)
+                continue;
+            EffectiveAuthoredLight effective{};
+            if (!ResolveAuthoredLight(light, effective))
+                continue;
+
+            // A black shell and gold core make the 3D beacon readable against
+            // both sunlit and dark scenes. Its center marks the actual source.
+            drawLocator(effective.position.x, effective.position.y, effective.position.z,
+                0.62f, 1.45f, 8, 7, 5, 245);
+            drawLocator(effective.position.x, effective.position.y, effective.position.z,
+                0.38f, 1.08f, 255, 220, 32, 255);
+
+            float screenX = 0.0f, screenY = 0.0f;
+            if (GRAPHICS::GET_SCREEN_COORD_FROM_WORLD_COORD(effective.position.x, effective.position.y,
+                    effective.position.z, &screenX, &screenY) &&
+                screenX >= 0.0f && screenX <= 1.0f && screenY >= 0.0f && screenY <= 1.0f)
+            {
+                // Screen-space crosshair stays crisp even when the world marker
+                // is small or blends into the scene.
+                GRAPHICS::DRAW_RECT(screenX, screenY, 0.024f, 0.0032f, 8, 7, 5, 245, FALSE, FALSE);
+                GRAPHICS::DRAW_RECT(screenX, screenY, 0.0032f, 0.024f, 8, 7, 5, 245, FALSE, FALSE);
+                GRAPHICS::DRAW_RECT(screenX, screenY, 0.018f, 0.0014f, 255, 220, 32, 255, FALSE, FALSE);
+                GRAPHICS::DRAW_RECT(screenX, screenY, 0.0014f, 0.018f, 255, 220, 32, 255, FALSE, FALSE);
+                GRAPHICS::DRAW_RECT(screenX, screenY, 0.0044f, 0.0044f, 8, 7, 5, 255, FALSE, FALSE);
+                GRAPHICS::DRAW_RECT(screenX, screenY, 0.0020f, 0.0020f, 255, 255, 235, 255, FALSE, FALSE);
+            }
+
+            if ((light.coneEnabled || light.reflectorEnabled) && light.beamAngle < 359.0f)
+            {
+                constexpr float kDegreesToRadians = 0.01745329251994329577f;
+                const float pitch = effective.aimPitch * kDegreesToRadians;
+                const float yaw = effective.aimYaw * kDegreesToRadians;
+                const float directionX = -std::sin(yaw) * std::cos(pitch);
+                const float directionY = std::cos(yaw) * std::cos(pitch);
+                const float directionZ = std::sin(pitch);
+                const float guideLength = std::clamp(light.range, 1.0f, 18.0f);
+                for (int step = 1; step <= 4; ++step)
+                {
+                    const float distance = guideLength * static_cast<float>(step) / 4.0f;
+                    const float size = 0.18f - 0.025f * static_cast<float>(step);
+                    drawLocator(effective.position.x + directionX * distance,
+                        effective.position.y + directionY * distance,
+                        effective.position.z + directionZ * distance,
+                        size, size * 1.35f, 255, 105, 28, 235);
+                }
+            }
+        }
+    }
+    const std::vector<replay::editor::AuthoredLight>& authoredLights = g_cameraTrack.AuthoredLights();
+    const auto lightAtMarker = [&](std::uint32_t markerId, const replay::editor::AuthoredLight& reference,
+        std::size_t ordinal) -> const replay::editor::AuthoredLight* {
+        const replay::editor::AuthoredLight* byId = nullptr;
+        const replay::editor::AuthoredLight* byName = nullptr;
+        const replay::editor::AuthoredLight* byOrdinal = nullptr;
+        std::size_t at = 0;
+        for (const replay::editor::AuthoredLight& candidate : authoredLights)
+        {
+            if (candidate.markerId != markerId)
+                continue;
+            if (candidate.id == reference.id)
+                byId = &candidate;
+            if (reference.name[0] && std::strncmp(candidate.name, reference.name, sizeof(reference.name)) == 0)
+                byName = &candidate;
+            if (at++ == ordinal)
+                byOrdinal = &candidate;
+        }
+        return byId ? byId : byName ? byName : byOrdinal;
+    };
+    replay::editor::Blend segmentBlend = currentMarker ? currentMarker->blend : replay::editor::Blend::None;
+    bool segmentCut = false;
+    if (currentMarker && nextMarker)
+        for (const std::uint32_t cut : g_clip.cuts)
+            if (cut > currentMarker->timeMs && cut <= nextMarker->timeMs)
+            {
+                segmentCut = true;
+                break;
+            }
+    if (!nextMarker || segmentCut)
+        segmentBlend = replay::editor::Blend::None;
+    const float rawSegmentPhase = currentMarker && nextMarker && nextMarker->timeMs > currentMarker->timeMs
+        ? std::clamp(static_cast<float>(static_cast<double>(lightTimeMs - currentMarker->timeMs) /
+            static_cast<double>(nextMarker->timeMs - currentMarker->timeMs)), 0.0f, 1.0f) : 0.0f;
+    replay::editor::SplineTuning segmentSplineFrom = replay::editor::DefaultSplineTuning();
+    replay::editor::SplineTuning segmentSplineTo = segmentSplineFrom;
+    if (currentMarker && nextMarker)
+    {
+        segmentSplineFrom = replay::camera::spline::Effective(currentMarker->spline, g_splineDefaults);
+        segmentSplineTo = replay::camera::spline::Effective(nextMarker->spline, g_splineDefaults);
+    }
+    const auto phaseForBlend = [&](replay::editor::Blend blend) {
+        if (!currentMarker || !nextMarker || blend == replay::editor::Blend::None)
+            return rawSegmentPhase;
+        if (blend == replay::editor::Blend::Spline)
+            return static_cast<float>(replay::camera::spline::Ease(rawSegmentPhase,
+                segmentSplineFrom.easeIn, segmentSplineFrom.easeOut));
+        float phase = replay::camera::ApplyEase(
+            replay::camera::ChainEase(previousMarker, *currentMarker, nextMarker, true), rawSegmentPhase);
+        if (blend == replay::editor::Blend::Smooth)
+            phase = phase * phase * (3.0f - 2.0f * phase);
+        return phase;
+    };
+    const auto authoredLightOrdinal = [&](std::size_t lightIndex, std::uint32_t markerId) {
+        std::size_t ordinal = 0;
+        for (std::size_t n = 0; n < lightIndex; ++n)
+            ordinal += authoredLights[n].markerId == markerId ? 1u : 0u;
+        return ordinal;
+    };
+    const int clockMinutes = CLOCK::GET_CLOCK_HOURS() * 60 + CLOCK::GET_CLOCK_MINUTES();
+    const float daylight = std::clamp((clockMinutes - 330.0f) / 90.0f, 0.0f, 1.0f) *
+        std::clamp((1110.0f - clockMinutes) / 90.0f, 0.0f, 1.0f);
+    // Sunlit scenes wash out the native point light quickly. Increase the
+    // contribution through the daytime arc while leaving night lighting at
+    // the same authored intensity.
+    // The editor's point-light native contributes little against direct sun.
+    // Scale only the daylight arc, leaving night scenes at authored intensity.
+    const float daylightGain = 1.0f + 59.0f * daylight;
+    for (std::size_t n = 0; n < authoredLights.size() && n < replay::editor::kMaxAuthoredLights; ++n)
+    {
+        const replay::editor::AuthoredLight& light = authoredLights[n];
+        replay::editor::AuthoredLight sampled = light;
+        EffectiveAuthoredLight effective{};
+        bool resolved = false;
+        bool active = false;
+        if (light.markerId == 0)
+        {
+            active = light.enabled && light.intensity > 0.0f;
+            resolved = ResolveAuthoredLight(sampled, effective);
+        }
+        else if (light.markerId == activeMarkerId && currentMarker)
+        {
+            const std::size_t ordinal = authoredLightOrdinal(n, light.markerId);
+            // A camera cut always wins. Otherwise authored lights consistently
+            // use spline interpolation, independent of older per-light values.
+            const replay::editor::Blend markerBlend = segmentBlend == replay::editor::Blend::None
+                ? replay::editor::Blend::None
+                : replay::editor::Blend::Spline;
+            const bool lightBlending = currentMarker && nextMarker && markerBlend != replay::editor::Blend::None;
+            const replay::editor::AuthoredLight* nextState = lightBlending
+                ? lightAtMarker(nextMarker->id, light, ordinal) : nullptr;
+            const replay::editor::SplineTuning lightSplineFrom = replay::camera::spline::Effective(
+                light.spline, segmentSplineFrom);
+            const replay::editor::SplineTuning lightSplineTo = nextState
+                ? replay::camera::spline::Effective(nextState->spline, segmentSplineTo) : segmentSplineTo;
+            const float lightPhase = markerBlend == replay::editor::Blend::Spline
+                ? static_cast<float>(replay::camera::spline::Ease(rawSegmentPhase,
+                    lightSplineFrom.easeIn, lightSplineFrom.easeOut))
+                : phaseForBlend(markerBlend);
+            if (nextState && lightBlending && nextMarker->timeMs > currentMarker->timeMs)
+            {
+                const float amount = lightPhase;
+                const auto cutBetween = [&](std::uint64_t from, std::uint64_t to) {
+                    for (const std::uint32_t cut : g_clip.cuts)
+                        if (cut > from && cut <= to)
+                            return true;
+                    return false;
+                };
+                const replay::camera::Keyframe* afterMarker = afterNextMarker;
+                const auto effectiveBlendAt = [](const replay::editor::AuthoredLight* state,
+                    const replay::camera::Keyframe* marker) {
+                    if (!state || !marker || marker->blend == replay::editor::Blend::None)
+                        return replay::editor::Blend::None;
+                    return replay::editor::Blend::Spline;
+                };
+                const auto previousCandidate = previousMarker
+                    ? lightAtMarker(previousMarker->id, light, ordinal) : nullptr;
+                const auto afterCandidate = afterMarker
+                    ? lightAtMarker(afterMarker->id, *nextState, ordinal) : nullptr;
+                const bool hasPreviousLink = previousMarker && previousCandidate &&
+                    effectiveBlendAt(previousCandidate, previousMarker) == replay::editor::Blend::Spline &&
+                    !previousMarker->legacyCurve && !cutBetween(previousMarker->timeMs, currentMarker->timeMs);
+                const bool hasAfterLink = afterMarker && afterCandidate &&
+                    effectiveBlendAt(nextState, nextMarker) == replay::editor::Blend::Spline &&
+                    !nextMarker->legacyCurve && !cutBetween(nextMarker->timeMs, afterMarker->timeMs);
+                const replay::editor::AuthoredLight* previousState = hasPreviousLink ? previousCandidate : nullptr;
+                const replay::editor::AuthoredLight* afterNextState = hasAfterLink ? afterCandidate : nullptr;
+                const replay::editor::SplineTuning fromTuning = lightSplineFrom;
+                const replay::editor::SplineTuning toTuning = lightSplineTo;
+                const double hBefore = hasPreviousLink
+                    ? static_cast<double>(currentMarker->timeMs - previousMarker->timeMs) / 1000.0 : 0.0;
+                const double h0 = static_cast<double>(nextMarker->timeMs - currentMarker->timeMs) / 1000.0;
+                const double hAfter = hasAfterLink
+                    ? static_cast<double>(afterMarker->timeMs - nextMarker->timeMs) / 1000.0 : 0.0;
+                const auto positionDistance = [](const replay::editor::AuthoredLight* a,
+                    const replay::editor::AuthoredLight* b) {
+                    if (!a || !b)
+                        return 0.0;
+                    const double x = static_cast<double>(b->position.x) - a->position.x;
+                    const double y = static_cast<double>(b->position.y) - a->position.y;
+                    const double z = static_cast<double>(b->position.z) - a->position.z;
+                    return std::sqrt(x * x + y * y + z * z);
+                };
+                double positionHBefore = hBefore, positionH0 = h0, positionHAfter = hAfter;
+                if (static_cast<replay::editor::SplinePacing>(fromTuning.pacing) != replay::editor::SplinePacing::Natural)
+                {
+                    const auto spacing = [&](double distance) {
+                        return std::pow(std::max(1e-3, distance), static_cast<double>(fromTuning.alpha));
+                    };
+                    positionHBefore = hasPreviousLink ? spacing(positionDistance(previousState, &light)) : 0.0;
+                    positionH0 = spacing(positionDistance(&light, nextState));
+                    positionHAfter = hasAfterLink ? spacing(positionDistance(nextState, afterNextState)) : 0.0;
+                }
+                const auto getScalar = [&](const replay::editor::AuthoredLight* state, float replay::editor::AuthoredLight::*field) {
+                    return state ? state->*field : light.*field;
+                };
+                const auto sample = [&](float p0, float p1, float p2, float p3, std::uint8_t channel,
+                    bool angle, bool monotone, float samplePhase, double sampleHBefore, double sampleH0, double sampleHAfter) {
+                    if (markerBlend == replay::editor::Blend::Spline)
+                        return SampleLightSplineValue(p0, p1, p2, p3, sampleHBefore, sampleH0, sampleHAfter, samplePhase,
+                            fromTuning, toTuning, previousState != nullptr, afterNextState != nullptr,
+                            channel, angle, monotone);
+                    return InterpolateLightValue(p0, p1, p2, p3, samplePhase, markerBlend, angle);
+                };
+                const auto interpolate = [&](float replay::editor::AuthoredLight::*field,
+                    std::uint8_t channel = replay::editor::SplineChannelFov, bool angle = false, bool monotone = false) {
+                    return sample(getScalar(previousState, field), light.*field, nextState->*field,
+                        getScalar(afterNextState, field), channel, angle, monotone, amount, hBefore, h0, hAfter);
+                };
+                const auto positionValue = [&](const replay::editor::AuthoredLight* state, int axis) {
+                    const replay::editor::AuthoredLight& value = state ? *state : light;
+                    return axis == 0 ? value.position.x : axis == 1 ? value.position.y : value.position.z;
+                };
+                const auto colorValue = [&](const replay::editor::AuthoredLight* state, int channel) {
+                    const replay::editor::AuthoredLight& value = state ? *state : light;
+                    return static_cast<float>(channel == 0 ? value.colorR : channel == 1 ? value.colorG : value.colorB);
+                };
+                const auto sampleAxis = [&](int axis, float phase) {
+                    return sample(positionValue(previousState, axis), positionValue(&light, axis),
+                        positionValue(nextState, axis), positionValue(afterNextState, axis), replay::editor::SplineChannelPosition,
+                        false, false, phase, positionHBefore, positionH0, positionHAfter);
+                };
+                const auto samplePosition = [&](float phase) {
+                    return std::array<float, 3>{sampleAxis(0, phase), sampleAxis(1, phase), sampleAxis(2, phase)};
+                };
+                float positionPhase = amount;
+                if (markerBlend == replay::editor::Blend::Spline &&
+                    static_cast<replay::editor::SplinePacing>(fromTuning.pacing) != replay::editor::SplinePacing::Natural)
+                {
+                    constexpr int kArcSteps = 32;
+                    std::array<double, kArcSteps + 1> arc{};
+                    std::array<std::array<float, 3>, kArcSteps + 1> points{};
+                    for (int step = 0; step <= kArcSteps; ++step)
+                    {
+                        points[step] = samplePosition(static_cast<float>(step) / kArcSteps);
+                        if (step > 0)
+                        {
+                            const double dx = static_cast<double>(points[step][0]) - points[step - 1][0];
+                            const double dy = static_cast<double>(points[step][1]) - points[step - 1][1];
+                            const double dz = static_cast<double>(points[step][2]) - points[step - 1][2];
+                            arc[step] = arc[step - 1] + std::sqrt(dx * dx + dy * dy + dz * dz);
+                        }
+                    }
+                    const double length = arc[kArcSteps];
+                    double distance = amount * length;
+                    if (static_cast<replay::editor::SplinePacing>(fromTuning.pacing) == replay::editor::SplinePacing::Continuous && length > 1e-9)
+                    {
+                        const double beforeLength = hasPreviousLink ? positionDistance(previousState, &light) : 0.0;
+                        const double afterLength = hasAfterLink ? positionDistance(nextState, afterNextState) : 0.0;
+                        const double d0 = length / std::max(1e-6, h0);
+                        const double dBefore = hasPreviousLink && hBefore > 1e-9 ? beforeLength / hBefore : 0.0;
+                        const double dAfter = hasAfterLink && hAfter > 1e-9 ? afterLength / hAfter : 0.0;
+                        const double slopeStart = hasPreviousLink ? replay::camera::spline::MonotoneInner(hBefore, h0, dBefore, d0)
+                            : hasAfterLink ? replay::camera::spline::MonotoneEnd(h0, hAfter, d0, dAfter) : d0;
+                        const double slopeEnd = hasAfterLink ? replay::camera::spline::MonotoneInner(h0, hAfter, d0, dAfter)
+                            : hasPreviousLink ? replay::camera::spline::MonotoneEnd(h0, hBefore, d0, dBefore) : d0;
+                        distance = replay::camera::spline::Hermite(0.0, length, slopeStart, slopeEnd, h0, amount * h0);
+                    }
+                    distance = std::clamp(distance, 0.0, length);
+                    if (length > 1e-9)
+                    {
+                        const auto upper = std::lower_bound(arc.begin(), arc.end(), distance);
+                        const int hi = static_cast<int>(upper - arc.begin());
+                        const int lo = std::max(0, hi - 1);
+                        const double span = arc[hi] - arc[lo];
+                        const float fraction = span > 1e-9 ? static_cast<float>((distance - arc[lo]) / span) : 0.0f;
+                        positionPhase = (static_cast<float>(lo) + fraction) / kArcSteps;
+                    }
+                }
+                const auto sampleColor = [&](int channel) {
+                    return sample(colorValue(previousState, channel), colorValue(&light, channel),
+                        colorValue(nextState, channel), colorValue(afterNextState, channel), replay::editor::SplineChannelFov,
+                        false, true, amount, hBefore, h0, hAfter);
+                };
+                const auto enabledIntensity = [](const replay::editor::AuthoredLight* state) {
+                    return state && state->enabled ? state->intensity : 0.0f;
+                };
+                const auto intensityAt = [&](const replay::editor::AuthoredLight* state) {
+                    return state ? enabledIntensity(state) : enabledIntensity(&light);
+                };
+                const float p0Intensity = intensityAt(previousState);
+                const float p1Intensity = light.enabled ? light.intensity : 0.0f;
+                const float p2Intensity = enabledIntensity(nextState);
+                const float p3Intensity = afterNextState ? enabledIntensity(afterNextState) : p2Intensity;
+                sampled.intensity = sample(p0Intensity, p1Intensity, p2Intensity, p3Intensity,
+                    replay::editor::SplineChannelFov, false, true, amount, hBefore, h0, hAfter);
+                sampled.range = interpolate(&replay::editor::AuthoredLight::range, replay::editor::SplineChannelFov, false, true);
+                sampled.beamAngle = interpolate(&replay::editor::AuthoredLight::beamAngle, replay::editor::SplineChannelFov, false, true);
+                sampled.position.x = sampleAxis(0, positionPhase);
+                sampled.position.y = sampleAxis(1, positionPhase);
+                sampled.position.z = sampleAxis(2, positionPhase);
+                sampled.aimPitch = interpolate(&replay::editor::AuthoredLight::aimPitch, replay::editor::SplineChannelRotation, true);
+                sampled.aimYaw = interpolate(&replay::editor::AuthoredLight::aimYaw, replay::editor::SplineChannelRotation, true);
+                sampled.aimRoll = interpolate(&replay::editor::AuthoredLight::aimRoll, replay::editor::SplineChannelRotation, true);
+                sampled.colorR = static_cast<std::uint32_t>(std::clamp(sampleColor(0), 0.0f, 255.0f));
+                sampled.colorG = static_cast<std::uint32_t>(std::clamp(sampleColor(1), 0.0f, 255.0f));
+                sampled.colorB = static_cast<std::uint32_t>(std::clamp(sampleColor(2), 0.0f, 255.0f));
+                sampled.enabled = (light.enabled || (amount > 0.0f && nextState->enabled)) ? 1u : 0u;
+                const bool sameAttachment = light.attachedTarget == nextState->attachedTarget &&
+                    light.attachedBone == nextState->attachedBone && light.attachType == nextState->attachType &&
+                    light.lookAtTarget == nextState->lookAtTarget;
+                if (sameAttachment)
+                    resolved = ResolveAuthoredLight(sampled, effective);
+                else
+                {
+                    EffectiveAuthoredLight from{}, to{};
+                    const bool haveFrom = ResolveAuthoredLight(light, from);
+                    const bool haveTo = ResolveAuthoredLight(*nextState, to);
+                    resolved = haveFrom && haveTo;
+                    if (resolved)
+                    {
+                        effective.position = {from.position.x + (to.position.x - from.position.x) * amount,
+                            from.position.y + (to.position.y - from.position.y) * amount,
+                            from.position.z + (to.position.z - from.position.z) * amount};
+                        effective.aimPitch = InterpolateLightValue(from.aimPitch, from.aimPitch, to.aimPitch, to.aimPitch,
+                            amount, replay::editor::Blend::Linear, true);
+                        effective.aimYaw = InterpolateLightValue(from.aimYaw, from.aimYaw, to.aimYaw, to.aimYaw,
+                            amount, replay::editor::Blend::Linear, true);
+                        effective.aimRoll = InterpolateLightValue(from.aimRoll, from.aimRoll, to.aimRoll, to.aimRoll,
+                            amount, replay::editor::Blend::Linear, true);
+                    }
+                }
+                active = sampled.enabled && sampled.intensity > 0.0f;
+            }
+            else
+            {
+                if (lightBlending)
+                {
+                    sampled.intensity = light.enabled ? light.intensity * (1.0f - lightPhase) : 0.0f;
+                    sampled.enabled = sampled.intensity > 0.0f ? 1u : 0u;
+                }
+                active = sampled.enabled && sampled.intensity > 0.0f;
+                resolved = ResolveAuthoredLight(sampled, effective);
+            }
+        }
+        if (!active && !resolved)
+            continue;
+        if (!resolved)
+            resolved = ResolveAuthoredLight(sampled, effective);
+        if (!active || !resolved)
+            continue;
+        const int red = static_cast<int>(std::min(sampled.colorR, 255u));
+        const int green = static_cast<int>(std::min(sampled.colorG, 255u));
+        const int blue = static_cast<int>(std::min(sampled.colorB, 255u));
+        // Legacy reflector clips are rendered as beams; new edits use only the
+        // point or beam modes. POINT lights stay omnidirectional.
+        const bool directional = sampled.coneEnabled || sampled.reflectorEnabled;
+        if (!directional || sampled.beamAngle >= 359.0f)
+        {
+            GRAPHICS::DRAW_LIGHT_WITH_RANGE(effective.position.x, effective.position.y, effective.position.z,
+                red, green, blue, sampled.range, sampled.intensity * daylightGain);
+            continue;
+        }
+        // RDR2 exposes only omnidirectional DRAW_LIGHT_WITH_RANGE. Stack five
+        // smaller point lights along an aimed axis, increasing their radius
+        // toward the end, to suggest a tapered beam. This remains an
+        // approximation and can illuminate objects outside the beam.
+        constexpr int kBeamSamples = 5;
+        constexpr float kDegreesToRadians = 0.01745329251994329577f;
+        const float pitch = effective.aimPitch * kDegreesToRadians;
+        const float yaw = effective.aimYaw * kDegreesToRadians;
+        const float roll = effective.aimRoll * kDegreesToRadians;
+        const float directionX = -std::sin(yaw) * std::cos(pitch);
+        const float directionY = std::cos(yaw) * std::cos(pitch);
+        const float directionZ = std::sin(pitch);
+        const float baseRightX = std::cos(yaw);
+        const float baseRightY = std::sin(yaw);
+        const float baseUpX = std::sin(yaw) * std::sin(pitch);
+        const float baseUpY = -std::cos(yaw) * std::sin(pitch);
+        const float baseUpZ = std::cos(pitch);
+        const float upX = baseUpX * std::cos(roll) - baseRightX * std::sin(roll);
+        const float upY = baseUpY * std::cos(roll) - baseRightY * std::sin(roll);
+        const float upZ = baseUpZ * std::cos(roll);
+        const float step = sampled.range / static_cast<float>(kBeamSamples);
+        const float halfAngle = std::clamp(sampled.beamAngle * 0.5f, 0.5f, 89.5f) * kDegreesToRadians;
+        const float tangent = std::tan(halfAngle);
+        for (int sample = 0; sample < kBeamSamples; ++sample)
+        {
+            const float distance = step * (static_cast<float>(sample) + 0.5f);
+            const float coneRadius = distance * tangent;
+            const float overlap = step * 0.18f;
+            const float sampleRange = std::clamp(coneRadius + overlap, std::min(1.0f, sampled.range), sampled.range);
+            const float centerX = effective.position.x + directionX * distance;
+            const float centerY = effective.position.y + directionY * distance;
+            const float centerZ = effective.position.z + directionZ * distance;
+            const float rollSpread = std::max(coneRadius * 0.45f, step * 0.12f);
+            GRAPHICS::DRAW_LIGHT_WITH_RANGE(centerX, centerY, centerZ,
+                red, green, blue, sampleRange, sampled.intensity * daylightGain * 0.20f);
+            // A narrow fan gives roll a visible effect: it rotates the beam's
+            // asymmetric cross-section around its aim axis. The native lights
+            // remain point sources, so this is still an approximation.
+            GRAPHICS::DRAW_LIGHT_WITH_RANGE(centerX + upX * rollSpread, centerY + upY * rollSpread,
+                centerZ + upZ * rollSpread, red, green, blue, sampleRange, sampled.intensity * daylightGain * 0.10f);
+            GRAPHICS::DRAW_LIGHT_WITH_RANGE(centerX - upX * rollSpread, centerY - upY * rollSpread,
+                centerZ - upZ * rollSpread, red, green, blue, sampleRange, sampled.intensity * daylightGain * 0.10f);
+        }
+    }
+}

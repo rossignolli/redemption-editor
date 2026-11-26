@@ -419,6 +419,46 @@ namespace replay::clipfile
                 track.push_back(s);
             }
         }
+        void WriteLightning(Writer& w, const SaveContext& c)
+        {
+            constexpr std::uint8_t kPositionKnownBit = 1;
+            const std::vector<LightningStrike>& strikes = c.recording.environment.lightning;
+            w.Count(strikes.size());
+            for (const LightningStrike& s : strikes)
+            {
+                w.Put(s.timeMs);
+                w.Put(s.type);
+                w.Put(static_cast<std::uint8_t>(s.positionKnown ? kPositionKnownBit : 0));
+                // A row is a fixed size even without a position: the reader
+                // skips the three floats by the flag.
+                for (float v : s.position)
+                    w.Put(v);
+            }
+        }
+        void ReadLightning(Reader& r, LoadContext& c)
+        {
+            constexpr std::uint8_t kPositionKnownBit = 1;
+            // 4 + 1 + 1 + 3 * 4
+            const std::size_t count = r.Count(18);
+            std::vector<LightningStrike>& strikes = c.recording.environment.lightning;
+            std::uint32_t lastMs = 0;
+            for (std::size_t n = 0; n < count; ++n)
+            {
+                LightningStrike s;
+                s.timeMs = r.Get<std::uint32_t>();
+                s.type = r.Get<std::uint8_t>();
+                const std::uint8_t flags = r.Get<std::uint8_t>();
+                if (flags & ~kPositionKnownBit)
+                    r.Fail();
+                s.positionKnown = (flags & kPositionKnownBit) != 0;
+                for (float& v : s.position)
+                    v = r.Get<float>();
+                if (!lighttrack::Valid(s) || s.timeMs < lastMs)
+                    r.Fail();
+                lastMs = s.timeMs;
+                strikes.push_back(s);
+            }
+        }
         void WriteSkyTrack(Writer& w, const SaveContext& c)
         {
             const Environment& e = c.recording.environment;
@@ -828,17 +868,29 @@ namespace replay::clipfile
                 w.Put(span.startMs);
                 w.Put(span.endMs);
                 w.Enum(span.kind);
+                w.Put(span.audioOffsetMs);
+                w.Raw(reinterpret_cast<const std::uint8_t*>(span.mission), sizeof(span.mission));
+                w.Raw(reinterpret_cast<const std::uint8_t*>(span.cutscene), sizeof(span.cutscene));
             }
         }
         void ReadSpans(Reader& r, LoadContext& c)
         {
-            const std::size_t count = r.Count(9);
+            const bool hasCutsceneIdentity = c.sectionVersion >= 2;
+            const std::size_t count = r.Count(hasCutsceneIdentity ? 141 : 9);
             for (std::size_t n = 0; n < count; ++n)
             {
                 gate::Span span;
                 span.startMs = r.Get<std::uint32_t>();
                 span.endMs = r.Get<std::uint32_t>();
                 span.kind = r.Enum<gate::SpanKind>(static_cast<std::uint32_t>(gate::SpanKind::ControlsOff));
+                if (hasCutsceneIdentity)
+                {
+                    span.audioOffsetMs = r.Get<std::uint32_t>();
+                    r.Raw(reinterpret_cast<std::uint8_t*>(span.mission), sizeof(span.mission));
+                    r.Raw(reinterpret_cast<std::uint8_t*>(span.cutscene), sizeof(span.cutscene));
+                    span.mission[sizeof(span.mission) - 1] = '\0';
+                    span.cutscene[sizeof(span.cutscene) - 1] = '\0';
+                }
                 if (span.endMs < span.startMs)
                     r.Fail();
                 c.recording.spans.push_back(span);

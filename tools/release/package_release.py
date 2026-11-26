@@ -5,7 +5,8 @@ Windows Python, standard library only. From the repository root, after building
 RedemptionEditor.sln (or ReplayProbe, ReplayEditorLoader and ReplayEditor) in
 Release x64:
 
-    py -3 tools\\release\\package_release.py [--bin DIR] [--asi-dir DIR] [--editor-dir DIR] [--host-dir DIR]
+    py -3 tools\\release\\package_release.py [--variant reshade|no-reshade]
+        [--bin DIR] [--asi-dir DIR] [--editor-dir DIR] [--host-dir DIR]
         [--ffmpeg-root DIR] [--out DIR] [--zip-name NAME]
 
 --bin is the output folder of the build (default bin\\Release); --asi-dir and
@@ -24,10 +25,11 @@ RDR2.exe:
     RedemptionEditor\\fonts\\   the editor's title font
     RedemptionEditor\\ui\\      the editor's painted art
     RedemptionEditor\\lang\\    the languages (en.lang, the translators' template, and each translation)
-    RedemptionEditor\\host\\    with --host-dir: RedemptionEditorHost.dll and its Vulkan layer
+    RedemptionEditor\\host\\    for --variant no-reshade: RedemptionEditorHost.dll and its Vulkan layer
                                manifest RedemptionEditorHost.json (the editor's own overlay)
     RedemptionEditor.ini       the default settings (dist\\RedemptionEditor.ini)
-    README.md, LICENSE, THIRD_PARTY_NOTICES.md
+    README.md, CHANGELOG.md, LICENSE, THIRD_PARTY_NOTICES.md
+    docs\\cutscene-audio.md and docs\\cutscene-audio-tracks.csv
     THIRD_PARTY_LICENSES\\      the licences of the FFmpeg build (a GPL build)
     SHA256SUMS.txt
 
@@ -56,7 +58,8 @@ INI = "RedemptionEditor.ini"
 HOST_FOLDER = "RedemptionEditor/host"
 HOST_DLL = "RedemptionEditorHost.dll"
 HOST_JSON = "RedemptionEditorHost.json"
-DOCS = ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md")
+AUDIO_DOCS = ("docs/cutscene-audio.md", "docs/cutscene-audio-tracks.csv")
+DOCS = ("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md")
 FFMPEG_ROOT = ROOT / "external" / "ffmpeg" / "installed" / "x64-windows-release"
 # vcpkg helper and build-tool ports: none of their code ships.
 FFMPEG_TOOL_PORTS = ("vcpkg-", "pkgconf", "ffmpeg-bin2c")
@@ -78,6 +81,8 @@ def fail(code: str, **fields: object) -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--variant", choices=("reshade", "no-reshade"), default="reshade",
+                        help="package the ReShade add-on edition or the built-in overlay edition")
     parser.add_argument("--bin", type=Path, default=ROOT / "bin" / "Release")
     parser.add_argument("--asi-dir", type=Path)
     parser.add_argument("--editor-dir", type=Path)
@@ -99,10 +104,15 @@ def main(argv: list[str]) -> int:
         return fail("asi_version_mismatch", version=version, path=asi)
     if b"flavor=dev\x00" in asi_bytes or b"flavor=public\x00" not in asi_bytes:
         return fail("asi_not_public_build", path=asi, hint="build without /p:RedemptionDev=true")
-    for name in (ADDON, CORE):
+    required_editor_files = (CORE,) if args.variant == "no-reshade" else (ADDON, CORE)
+    for name in required_editor_files:
         if not (editor_dir / name).is_file():
             return fail("editor_missing", path=editor_dir / name)
-    zip_name = args.zip_name or f"RedemptionEditor-{version}.zip"
+    if args.variant == "no-reshade" and args.host_dir is None:
+        return fail("host_required", hint="build RedemptionEditorHost.vcxproj and pass --host-dir")
+    if args.variant == "reshade" and args.host_dir is not None:
+        return fail("host_wrong_variant", hint="--host-dir is only used by --variant no-reshade")
+    zip_name = args.zip_name or f"RedemptionEditor-{version}-{'No-ReShade' if args.variant == 'no-reshade' else 'ReShade'}.zip"
     if not zip_name.lower().endswith(".zip") or "/" in zip_name or "\\" in zip_name:
         return fail("zip_name_invalid", name=zip_name)
     if args.host_dir is not None:
@@ -141,12 +151,14 @@ def main(argv: list[str]) -> int:
     readme = ROOT / "public" / "README.md"
     if not readme.is_file():
         readme = ROOT / "README.md"
-    for name in DOCS + (INI,):
+    for name in DOCS + AUDIO_DOCS + (INI,):
         source = readme if name == "README.md" else ROOT / ("dist" if name == INI else "") / name
         if not source.is_file():
             return fail("file_missing", path=source)
 
-    files: dict[str, Path] = {ASI: asi, ADDON: editor_dir / ADDON, CORE: editor_dir / CORE}
+    files: dict[str, Path] = {ASI: asi, CORE: editor_dir / CORE}
+    if args.variant == "reshade":
+        files[ADDON] = editor_dir / ADDON
     for dll in dlls:
         files[f"RedemptionEditor/dlls/{dll.name}"] = dll
     for name in fonts:
@@ -155,12 +167,14 @@ def main(argv: list[str]) -> int:
         files[f"RedemptionEditor/ui/{name}"] = bundle / "ui" / name
     for name in langs:
         files[f"RedemptionEditor/lang/{name}"] = bundle / "lang" / name
-    if args.host_dir is not None:
+    if args.variant == "no-reshade" and args.host_dir is not None:
         for name in (HOST_DLL, HOST_JSON):
             files[f"{HOST_FOLDER}/{name}"] = args.host_dir / name
     files[INI] = ROOT / "dist" / INI
     for name in DOCS:
         files[name] = readme if name == "README.md" else ROOT / name
+    for name in AUDIO_DOCS:
+        files[name] = ROOT / name
     for port in sorted(ffmpeg_share.iterdir()):
         if (port / "copyright").is_file() and not port.name.startswith(FFMPEG_TOOL_PORTS):
             files[f"THIRD_PARTY_LICENSES/{port.name}.txt"] = port / "copyright"
@@ -174,7 +188,7 @@ def main(argv: list[str]) -> int:
             archive.write(path, name)
         archive.writestr("SHA256SUMS.txt", sums)
     temporary.replace(target)
-    print(f"PACKAGE_RELEASE,ok=1,version={version},host={1 if args.host_dir is not None else 0},files={len(files) + 1},"
+    print(f"PACKAGE_RELEASE,ok=1,version={version},variant={args.variant},files={len(files) + 1},"
           f"zip={target},sha256={sha256(target)}")
     return 0
 

@@ -206,6 +206,8 @@ namespace replay::camera
             return false;
         const std::size_t index = static_cast<std::size_t>(iterator - keyframes_.begin());
         keyframes_.erase(iterator);
+        authoredLights_.erase(std::remove_if(authoredLights_.begin(), authoredLights_.end(),
+            [id](const editor::AuthoredLight& light) { return light.markerId == id; }), authoredLights_.end());
         if (index > 0)
             SyncFromLegacy(index - 1, false);
         legacyBlendAnyMode_ = true;
@@ -386,6 +388,7 @@ namespace replay::camera
         effects_.Clear();
         migration_ = {};
         keyframes_.clear();
+        authoredLights_.clear();
         nextId_ = 1;
         legacyBlendAnyMode_ = false;
     }
@@ -988,6 +991,8 @@ namespace replay::camera
         if (index >= keyframes_.size() || IsClipBound(*this, id))
             return false;
         keyframes_.erase(keyframes_.begin() + static_cast<std::ptrdiff_t>(index));
+        authoredLights_.erase(std::remove_if(authoredLights_.begin(), authoredLights_.end(),
+            [id](const editor::AuthoredLight& light) { return light.markerId == id; }), authoredLights_.end());
         ApplyLastMarkerRule(*this);
         return true;
     }
@@ -1300,8 +1305,22 @@ namespace replay::camera
         };
         const std::vector<Keyframe>& x = a.Keyframes();
         const std::vector<Keyframe>& y = b.Keyframes();
-        if (x.size() != y.size() || a.LegacyBlendAnyMode() != b.LegacyBlendAnyMode() || a.LegacyEffects() != b.LegacyEffects())
+        const std::vector<editor::AuthoredLight>& lightX = a.AuthoredLights();
+        const std::vector<editor::AuthoredLight>& lightY = b.AuthoredLights();
+        const auto sameLight = [](const editor::AuthoredLight& p, const editor::AuthoredLight& q) {
+            return p.markerId == q.markerId && p.position.x == q.position.x && p.position.y == q.position.y &&
+                p.position.z == q.position.z && p.range == q.range && p.intensity == q.intensity &&
+                p.colorR == q.colorR && p.colorG == q.colorG && p.colorB == q.colorB && p.enabled == q.enabled &&
+                p.aimPitch == q.aimPitch && p.aimYaw == q.aimYaw && p.beamAngle == q.beamAngle && p.coneEnabled == q.coneEnabled &&
+                p.aimRoll == q.aimRoll && p.reflectorEnabled == q.reflectorEnabled && p.reflectorHidden == q.reflectorHidden &&
+                p.attachedTarget == q.attachedTarget && p.id == q.id && p.attachedBone == q.attachedBone &&
+                p.attachType == q.attachType && p.blend == q.blend && std::strncmp(p.name, q.name, sizeof(p.name)) == 0;
+        };
+        if (x.size() != y.size() || lightX.size() != lightY.size() || a.LegacyBlendAnyMode() != b.LegacyBlendAnyMode() || a.LegacyEffects() != b.LegacyEffects())
             return false;
+        for (std::size_t n = 0; n < lightX.size(); ++n)
+            if (!sameLight(lightX[n], lightY[n]))
+                return false;
         for (std::size_t n = 0; n < x.size(); ++n)
             if (!same(x[n], y[n]))
                 return false;

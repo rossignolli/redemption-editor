@@ -7,6 +7,10 @@ namespace
 {
     // The recording gate's state (UpdateRecording).
     replay::gate::Gate g_recordGate;
+    char g_sceneMission[64]{};
+    std::uint32_t g_sceneMissionStartMs = 0;
+    bool g_sceneMissionKnown = false;
+    bool g_cutsceneIdentityWarningLogged = false;
     replay::gate::Hysteresis g_spanScriptCam;
     replay::gate::Hysteresis g_spanControlsOff;
     std::uint32_t g_gatePauseReasons = 0; // every reason seen while the clock stands
@@ -29,6 +33,66 @@ namespace
     std::uint64_t g_bufferLimitChanges = 0;
     std::vector<replay::window::PlaceSample> g_bufferPlaces; // the place over the ring
     constexpr std::uint32_t kBufferBlockMs = 2000; // the lifecycle block and pose keyframe interval
+
+    // The lightning manager as the last tick saw it (personal build). A new
+    // lightning is a non-zero type that left zero or changed, or the request
+    // flag rising while the type is non-zero (the force native only sets that
+    // flag; natural lightning is a type change). RecordLightning appends each
+    // one to the clip's track; ResetLightningWatch seeds the state at a
+    // recording's start so a lightning already running is not one of the clip.
+    std::int32_t g_lastLightningType = 0;
+    bool g_lastLightningRequest = false;
+    bool g_lightningResolveLogged = false;
+    replay::log::LogLimit g_lightningRecordLogs; // per session
+
+    void ResetLightningWatch()
+    {
+        g_lastLightningType = 0;
+        g_lastLightningRequest = false;
+        std::string error;
+        if (!replay::lightningstate::Resolve(error))
+            return;
+        replay::lightningstate::Snapshot snapshot;
+        if (!replay::lightningstate::Read(snapshot))
+            return;
+        g_lastLightningType = snapshot.type;
+        g_lastLightningRequest = snapshot.request;
+    }
+
+    void RecordLightning(std::uint32_t nowMs)
+    {
+        std::string error;
+        if (!replay::lightningstate::Resolve(error))
+        {
+            if (!g_lightningResolveLogged)
+            {
+                g_lightningResolveLogged = true;
+                LogFile() << "LIGHTNING_TRACK,phase=resolve,ok=0,error=" << error.c_str() << '\n';
+            }
+            return;
+        }
+        replay::lightningstate::Snapshot snapshot;
+        if (!replay::lightningstate::Read(snapshot))
+            return;
+        const bool started = snapshot.type != 0 &&
+            (snapshot.type != g_lastLightningType || (snapshot.request && !g_lastLightningRequest));
+        g_lastLightningType = snapshot.type;
+        g_lastLightningRequest = snapshot.request;
+        if (!started)
+            return;
+        replay::LightningStrike strike;
+        strike.timeMs = nowMs;
+        strike.type = static_cast<std::uint8_t>(snapshot.type);
+        strike.positionKnown = snapshot.positionKnown;
+        for (int n = 0; n < 3; ++n)
+            strike.position[n] = snapshot.position[n];
+        std::vector<replay::LightningStrike>& track = g_clip.environment.lightning;
+        if (!replay::lighttrack::Add(track, strike))
+            return;
+        if (g_lightningRecordLogs.Take(40))
+            LogFile() << "LIGHTNING_TRACK,phase=record,time_ms=" << nowMs << ",type=" << static_cast<int>(strike.type)
+                      << ",at=" << (strike.positionKnown ? 1 : 0) << ",strikes=" << track.size() << '\n';
+    }
 }
 
     void ImageRange(std::uintptr_t& base, std::size_t& size)
@@ -152,6 +216,17 @@ namespace
             {
                 raw->ok = replay::clipfile::Load(raw->path, base, size, raw->recording, raw->poses, raw->camera,
                     raw->durationMs, raw->error, &raw->info);
+                if (raw->ok)
+                {
+                    const std::vector<std::uint32_t> poseTransitionTimes =
+                        replay::CutscenePoseTransitionTimes(raw->recording);
+                    for (replay::pose::PoseRecordExport& record : raw->poses)
+                        for (const std::uint32_t timeMs : poseTransitionTimes)
+                        {
+                            replay::pose::MarkNoInterpolationImmediatelyBefore(record.track, timeMs);
+                            replay::pose::MarkNoInterpolationAtOrAfter(record.track, timeMs);
+                        }
+                }
                 if (raw->ok && replay::pose::smooth::LoadSmoothing())
                 {
                     const ULONGLONG smoothStart = GetTickCount64();
@@ -1402,9 +1477,13 @@ namespace
         std::vector<replay::pose::PoseRecordExport> cutPoses;
         replay::window::Result result;
         std::string error;
-        const bool ok = replay::window::Cut(g_clip, replay::pose::capture::ExportRecords(), durationMs, headMs,
-                            static_cast<std::uint32_t>(durationMs), cut, cutPoses, result) &&
-            replay::pose::capture::ImportRecords(cutPoses, error);
+        bool ok = replay::window::Cut(g_clip, replay::pose::capture::ExportRecords(), durationMs, headMs,
+            static_cast<std::uint32_t>(durationMs), cut, cutPoses, result);
+        if (ok)
+        {
+            const std::vector<std::uint32_t> poseTransitionTimes = replay::CutscenePoseTransitionTimes(cut);
+            ok = replay::pose::capture::ImportRecords(cutPoses, error, &poseTransitionTimes);
+        }
         if (ok)
         {
             g_clip = std::move(cut);
@@ -1477,6 +1556,9 @@ namespace
         log.flush();
         replay::recorder::Start();
         replay::doors::BeginRecording(g_clip);
+        // The lightning manager's state at this frame is not a lightning of the
+        // clip (one already running began before it).
+        ResetLightningWatch();
         // The clip's world: clock and weather at the start.
         g_clip.environment.clockStartS = static_cast<std::uint32_t>(
             CLOCK::GET_CLOCK_HOURS() * 3600 + CLOCK::GET_CLOCK_MINUTES() * 60 + CLOCK::GET_CLOCK_SECONDS());
@@ -2020,6 +2102,10 @@ namespace
     void ResetRecordGate()
     {
         g_recordGate.Reset();
+        g_sceneMission[0] = '\0';
+        g_sceneMissionStartMs = 0;
+        g_sceneMissionKnown = false;
+        g_cutsceneIdentityWarningLogged = false;
         g_spanScriptCam.Reset();
         g_spanControlsOff.Reset();
         g_gateReasons = g_gatePauseReasons = g_gateSignals = 0;
@@ -2054,6 +2140,23 @@ namespace
         if (decision.paused != wasPaused)
             replay::pose::capture::SetClockPaused(decision.paused);
         const std::uint32_t nowMs = replay::pose::capture::NowMs();
+        replay::cutsceneidentity::Snapshot identity{};
+        const bool identityRead = replay::cutsceneidentity::Read(identity);
+        if (identityRead && identity.mission[0])
+        {
+            if (!g_sceneMissionKnown || std::strcmp(g_sceneMission, identity.mission) != 0)
+            {
+                std::memcpy(g_sceneMission, identity.mission, sizeof(g_sceneMission));
+                g_sceneMission[sizeof(g_sceneMission) - 1] = '\0';
+                g_sceneMissionStartMs = nowMs;
+                g_sceneMissionKnown = true;
+            }
+        }
+        else if (identityRead && !identity.inCutscene)
+        {
+            g_sceneMission[0] = '\0';
+            g_sceneMissionKnown = false;
+        }
         if (decision.paused != wasPaused || decision.reasons != g_gateReasons || !g_gateLogged)
         {
             g_gateLogged = true;
@@ -2091,7 +2194,35 @@ namespace
         g_spanControlsOff.Update((signals & SignalControlOff) != 0);
         if (!decision.paused)
         {
-            UpdateSpan(g_clip.spans, SpanKind::Cutscene, decision.cutscene && g_recConfig.recordCutscenes, nowMs);
+            const bool cutsceneActive = decision.cutscene && g_recConfig.recordCutscenes;
+            bool hadOpenCutscene = false;
+            for (const Span& span : g_clip.spans)
+                hadOpenCutscene = hadOpenCutscene || (span.open && span.kind == SpanKind::Cutscene);
+            UpdateSpan(g_clip.spans, SpanKind::Cutscene, cutsceneActive, nowMs);
+            if (cutsceneActive && !hadOpenCutscene)
+            {
+                Span* opened = nullptr;
+                for (Span& span : g_clip.spans)
+                    if (span.open && span.kind == SpanKind::Cutscene)
+                        opened = &span;
+                if (opened && identityRead && identity.inCutscene && identity.cutscene[0])
+                {
+                    std::memcpy(opened->mission, identity.mission, sizeof(opened->mission));
+                    opened->mission[sizeof(opened->mission) - 1] = '\0';
+                    std::memcpy(opened->cutscene, identity.cutscene, sizeof(opened->cutscene));
+                    opened->cutscene[sizeof(opened->cutscene) - 1] = '\0';
+                    opened->audioOffsetMs = g_sceneMissionKnown && nowMs >= g_sceneMissionStartMs
+                        ? nowMs - g_sceneMissionStartMs : 0;
+                    log << "CUTSCENE_AUDIO_IDENTITY,mission=" << opened->mission << ",cutscene=" << opened->cutscene
+                        << ",span_start_ms=" << opened->startMs << ",audio_offset_ms=" << opened->audioOffsetMs << '\n';
+                }
+                else if (!g_cutsceneIdentityWarningLogged)
+                {
+                    g_cutsceneIdentityWarningLogged = true;
+                    log << "CUTSCENE_AUDIO_IDENTITY,ok=0,reason="
+                        << (identityRead ? "scene_not_active_or_empty" : "unsupported_build_or_read_failed") << '\n';
+                }
+            }
             UpdateSpan(g_clip.spans, SpanKind::ScriptCamera, g_spanScriptCam.active, nowMs);
             UpdateSpan(g_clip.spans, SpanKind::ControlsOff, g_spanControlsOff.active, nowMs);
         }
@@ -2186,6 +2317,9 @@ namespace
             }
             RecordAbilities(replay::pose::capture::NowMs());
             RecordEnvironment(replay::pose::capture::NowMs(), false);
+            // Every tick: a lightning lasts a few frames, so the environment's
+            // 4 Hz gate would miss it.
+            RecordLightning(replay::pose::capture::NowMs());
 
             // The rendered camera, one sample per captured frame: the clip's game camera.
             const std::uint32_t cameraMs = replay::pose::capture::NowMs();

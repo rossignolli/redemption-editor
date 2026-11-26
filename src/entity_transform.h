@@ -108,6 +108,11 @@ namespace replay::entity
         bool Span(std::uint32_t& firstMs, std::uint32_t& lastMs) const;
         std::size_t Size() const { return m_samples.size(); }
         std::uint64_t Dropped() const { return m_dropped; }
+        void SetAllVisible(bool visible)
+        {
+            for (TransformSample& sample : m_samples)
+                sample.visible = visible;
+        }
         // Replay buffer: drops the samples before timeMs but the last one of
         // them (the pose in force at timeMs).
         std::size_t DropBefore(std::uint32_t timeMs)

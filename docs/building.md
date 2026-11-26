@@ -163,11 +163,19 @@ Run these from the repository root.
 
 ## 6. Packaging
 
-`py tools\release\package_release.py --bin <OutDir> [--ffmpeg-root <FfmpegRoot>] [--out <folder>]` makes `RedemptionEditor-<VERSION>.zip` from a
-public build: `RedemptionEditor.asi`, `RedemptionEditor.addon64`, `RedemptionEditorCore.dll`, the
-`RedemptionEditor\dlls`, `fonts` and `ui` folders, `RedemptionEditor.ini` (from `dist/`), `README.md`, `LICENSE`,
-`THIRD_PARTY_NOTICES.md`, the licences of the FFmpeg build (`THIRD_PARTY_LICENSES\`) and `SHA256SUMS.txt`. It
-refuses a developer build and an ASI whose version is not the one in `VERSION`.
+Create both public variants after building `ReplayProbe`, `ReplayEditorLoader`, `ReplayEditor`, and
+`RedemptionEditorHost` in Release x64:
+
+```
+py -3 tools\release\package_release.py --variant reshade --bin bin\Release --ffmpeg-root <FfmpegRoot>
+py -3 tools\release\package_release.py --variant no-reshade --bin bin\Release --host-dir bin\Release\host --ffmpeg-root <FfmpegRoot>
+```
+
+The ReShade ZIP includes `RedemptionEditor.addon64`. The No-ReShade ZIP includes the host layer under
+`RedemptionEditor\host\` instead. Both contain the core, FFmpeg DLLs, fonts, UI art, languages, settings, README,
+changelog, cutscene audio setup and track list, third-party notices/licenses, and a SHA-256 manifest. The package tool
+refuses developer builds, an ASI version that does not match `VERSION`, incomplete host files, or a core with normal
+FFmpeg imports instead of delay-loaded ones.
 
 ## 7. Running your build
 

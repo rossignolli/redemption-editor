@@ -467,6 +467,70 @@ namespace
             "sampling between frames interpolates with the frame pair");
     }
 
+    void TestHardTransitionSampling()
+    {
+        Recorded recorded = MakeRecording(12);
+        PoseTrack track;
+        track.Begin(recorded.layout, {});
+        float world[16] = {};
+        world[0] = world[5] = world[10] = world[15] = 1.0f;
+        for (std::uint32_t frame = 0; frame < 5; ++frame)
+        {
+            const float offset = static_cast<float>(frame) * 0.1f;
+            for (std::size_t bone = 1; bone < recorded.locals[frame].size(); ++bone)
+                recorded.locals[frame][bone].translation[0] += offset;
+            for (std::size_t bone = 1; bone < recorded.objects[frame].size(); ++bone)
+                recorded.objects[frame][bone].translation[0] += offset;
+
+            FrameInput input;
+            input.timeMs = frame * 10u;
+            input.world = world;
+            input.locals = recorded.locals[frame].data();
+            input.objects = recorded.objects[frame].data();
+            track.Append(input);
+        }
+
+        TrackExport smoothedExport;
+        track.Export(smoothedExport);
+        Check(MarkNoInterpolationImmediatelyBefore(smoothedExport, 25u) &&
+                MarkNoInterpolationAtOrAfter(smoothedExport, 25u),
+            "an exported track marks both sides of the cut before smoothing");
+        PoseTrack smoothingBarrier;
+        std::string importError;
+        PoseSample smoothingHeld;
+        Check(smoothingBarrier.Import(smoothedExport, importError) && smoothingBarrier.MarkHardTransitionAt(25u) &&
+                smoothingBarrier.Sample(14u, smoothingHeld) && smoothingHeld.t == 0.0f &&
+                smoothingHeld.frameTimeA == 10u,
+            "the pre-smoothing barrier preserves the final stable pose");
+
+        Check(track.MarkHardTransitionAt(25u), "a transition between pose frames is registered");
+        PoseSample normalBefore;
+        PoseSample before;
+        PoseSample atCut;
+        PoseSample afterCut;
+        Check(track.Sample(5u, normalBefore) && normalBefore.t > 0.49f && normalBefore.t < 0.51f,
+            "ordinary interpolation continues before the final cut frame");
+        Check(track.Sample(24u, before) && before.t == 0.0f && before.frameTimeA == 10u && before.frameTimeB == 20u,
+            "the final pre-cut frame holds the last stable pose");
+        Check(track.Sample(25u, atCut) && atCut.t == 1.0f && atCut.frameTimeA == 20u && atCut.frameTimeB == 30u,
+            "the first sample at the cut steps directly to pose B");
+        PoseSample frameB;
+        Check(track.Sample(30u, frameB) && atCut.objects.size() > 1 && frameB.objects.size() > 1 &&
+                TranslationDistance(atCut.objects[1], frameB.objects[1]) < 0.001f,
+            "the cut sample contains B's recorded pose");
+        Check(track.Sample(35u, afterCut) && afterCut.t > 0.49f && afterCut.t < 0.51f &&
+                afterCut.frameTimeA == 30u && afterCut.frameTimeB == 40u,
+            "ordinary interpolation resumes after the cut");
+
+        PoseSample rewound;
+        PoseSample replayed;
+        const bool stable = track.Sample(24u, rewound) && track.Sample(25u, replayed) &&
+            replayed.t == atCut.t && replayed.frameTimeA == atCut.frameTimeA &&
+            replayed.frameTimeB == atCut.frameTimeB &&
+            std::memcmp(replayed.objects.data(), atCut.objects.data(), replayed.objects.size() * sizeof(BoneQts)) == 0;
+        Check(stable, "rewinding and stepping across the cut reproduces the same hard transition");
+    }
+
     // Sample cache: a track sampled at 60 fps playback steps,
     // forwards, across chunk boundaries and with seeks, returns exactly what
     // a track that never sampled before returns for the same time.
@@ -2682,6 +2746,7 @@ int RunPoseStreamTests()
     TestLayoutDiscovery(CompositionOrder::ParentThenLocal, "discovery accepts parent-then-local frames");
     TestLayoutDiscovery(CompositionOrder::LocalThenParent, "discovery accepts local-then-parent frames");
     TestStreamRoundTrip();
+    TestHardTransitionSampling();
     TestStaticBonesCostNothing();
     TestSampleCacheMatchesFreshDecode();
     TestBackwardScrubCheckpoints();

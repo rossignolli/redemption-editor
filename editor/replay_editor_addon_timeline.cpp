@@ -551,8 +551,42 @@ namespace
         const float width = right - left;
         // Over the key bar.
         const float y = g_vh - g_footH - 54.0f; // the bar
+        const std::uint32_t lightCount = std::min(g_snapshot.authoredLightCount, kMaxAuthoredLights);
+        const bool lightTracks = g_screen == Screen::Lights;
+        // Keep the light editor's track stack compact. Show the first five
+        // authored tracks and always include the light selected in the current
+        // marker's list, even when it falls later in the clip's light array.
+        std::vector<std::uint32_t> lightTrackIndices;
+        std::uint32_t selectedTrackSource = UINT32_MAX;
+        if (lightTracks)
+        {
+            const std::uint32_t focusMarker = CurrentLightMarkerId();
+            int visibleIndex = 0;
+            for (std::uint32_t i = 0; i < lightCount; ++i)
+            {
+                const AuthoredLight& light = g_snapshot.authoredLights[i];
+                if (light.markerId == 0 || light.markerId == focusMarker)
+                {
+                    if (visibleIndex == g_lightSelected)
+                        selectedTrackSource = i;
+                    ++visibleIndex;
+                }
+                if (i < 5)
+                    lightTrackIndices.push_back(i);
+            }
+            if (selectedTrackSource != UINT32_MAX &&
+                std::find(lightTrackIndices.begin(), lightTrackIndices.end(), selectedTrackSource) == lightTrackIndices.end())
+            {
+                if (lightTrackIndices.size() >= 6)
+                    lightTrackIndices.back() = selectedTrackSource;
+                else
+                    lightTrackIndices.push_back(selectedTrackSource);
+            }
+        }
+        const std::uint32_t visibleLightTracks = lightTracks ? static_cast<std::uint32_t>(lightTrackIndices.size()) : (lightCount ? 1u : 0u);
+        const float lightLaneTop = lightTracks ? y - 56.0f - (visibleLightTracks ? (visibleLightTracks - 1) * 15.0f : 0.0f) : y - 72.0f;
         // A soft band behind the bar keeps it readable over the game.
-        draw->AddRectFilledMultiColor(P(0.0f, y - 72.0f), P(g_vw, g_vh), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0),
+        draw->AddRectFilledMultiColor(P(0.0f, std::min(y - 72.0f, lightLaneTop - 16.0f)), P(g_vw, g_vh), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0),
             IM_COL32(8, 7, 6, 200), IM_COL32(8, 7, 6, 200));
 
         const double clipMs = g_snapshot.durationMs ? static_cast<double>(g_snapshot.durationMs) : 1.0;
@@ -612,10 +646,28 @@ namespace
         }
 
         // Interaction area: the bar and the marks above it (the stacked
-        // lanes included).
-        ImGui::SetCursorScreenPos(P(left, y - 48.0f));
-        ImGui::InvisibleButton("##timeline", ImVec2(S(width), S(60.0f)));
-        const bool hovered = ImGui::IsItemHovered();
+        // camera, shake, and light lanes included).
+        const float hitTop = y - 84.0f;
+        // Keep the timeline's invisible hit target out from under the Lighting
+        // panel. Merely ignoring timeline clicks there is not enough: an
+        // overlapping ImGui item can still steal the panel button's hover ID.
+        const float hitLeft = lightTracks ? std::max(left, std::min(520.0f, g_vw - 40.0f)) : left;
+        ImGui::SetCursorScreenPos(P(hitLeft, hitTop));
+        ImGui::InvisibleButton("##timeline", ImVec2(S(std::max(1.0f, right - hitLeft)), S(y + 12.0f - hitTop)));
+        bool hovered = ImGui::IsItemHovered();
+        if (lightTracks && hitLeft > left)
+        {
+            const float menuBottom = std::min(g_vh - g_footH - 18.0f, 32.0f + 900.0f);
+            const float leftHitTop = std::max(hitTop, menuBottom + 1.0f);
+            if (leftHitTop < y + 12.0f)
+            {
+                ImGui::SetCursorScreenPos(P(left, leftHitTop));
+                ImGui::InvisibleButton("##timelineLightingLowerStrip",
+                    ImVec2(S(hitLeft - left), S(y + 12.0f - leftHitTop)));
+                hovered = hovered || ImGui::IsItemHovered();
+            }
+        }
+        hovered = hovered && !LightMenuOwnsPointer();
         const ImVec2 mouse = ImGui::GetMousePos();
 
         // Markers too close to share a spot stack in lanes above the bar instead of
@@ -794,12 +846,85 @@ namespace
         if (selectedIndex < keyCount)
             drawMark(selectedIndex);
 
+        // While editing lights, give each light its own track row, like the
+        // reference layout. Each diamond marks the camera marker that owns it;
+        // world lights span the clip. Outside the light editor, keep the compact
+        // aggregate lane.
+        if (visibleLightTracks)
+        {
+            constexpr ImU32 kLightLane = IM_COL32(255, 191, 74, 220);
+            constexpr ImU32 kLightLaneSoft = IM_COL32(255, 191, 74, 86);
+            for (std::uint32_t l = 0; l < (lightTracks ? visibleLightTracks : 1u); ++l)
+            {
+                const float laneY = lightTracks ? y - 56.0f - l * 15.0f : y - 72.0f;
+                const std::uint32_t sourceIndex = lightTracks ? lightTrackIndices[l] : 0u;
+                const bool selectedTrack = lightTracks && sourceIndex == selectedTrackSource;
+                const ImU32 tint = selectedTrack ? kText : kLightLane;
+                bool worldOn = false;
+                if (lightTracks)
+                {
+                    const AuthoredLight& light = g_snapshot.authoredLights[sourceIndex];
+                    worldOn = light.markerId == 0 && light.enabled && light.intensity > 0.0f;
+                }
+                else
+                    for (std::uint32_t i = 0; i < lightCount; ++i)
+                        worldOn = worldOn || (g_snapshot.authoredLights[i].markerId == 0 && g_snapshot.authoredLights[i].enabled &&
+                            g_snapshot.authoredLights[i].intensity > 0.0f);
+                if (worldOn)
+                    draw->AddLine(P(left, laneY), P(right, laneY), kLightLaneSoft, S(2.0f));
+                if (lightTracks)
+                {
+                    char label[8]{};
+                    std::snprintf(label, sizeof(label), "L%02u", sourceIndex + 1);
+                    Text(draw, 5.0f, laneY - 7.0f, 11.0f, selectedTrack ? kText : kMuted, label);
+                }
+                for (std::uint32_t n = 0; n < keyCount; ++n)
+                {
+                    const CameraKeyframe& key = g_snapshot.cameraKeyframes[n];
+                    bool owned = false;
+                    bool on = false;
+                    if (lightTracks)
+                    {
+                        const AuthoredLight& light = g_snapshot.authoredLights[sourceIndex];
+                        owned = light.markerId == key.id;
+                        on = light.markerId == key.id && light.enabled && light.intensity > 0.0f;
+                    }
+                    else
+                    {
+                        for (std::uint32_t i = 0; i < lightCount; ++i)
+                        {
+                            owned = owned || g_snapshot.authoredLights[i].markerId == key.id;
+                            on = on || (g_snapshot.authoredLights[i].markerId == key.id && g_snapshot.authoredLights[i].enabled &&
+                                g_snapshot.authoredLights[i].intensity > 0.0f);
+                        }
+                    }
+                    if (!owned)
+                        continue;
+                    const double startMs = static_cast<double>(key.timeMs);
+                    const double endMs = n + 1 < keyCount ? static_cast<double>(g_snapshot.cameraKeyframes[n + 1].timeMs)
+                                                           : static_cast<double>(g_snapshot.durationMs);
+                    const float x0 = std::clamp(TimeX(startMs), left, right);
+                    const float x1 = std::clamp(TimeX(endMs), left, right);
+                    if (on && x1 > x0)
+                        draw->AddLine(P(x0, laneY), P(x1, laneY), tint, S(lightTracks ? 2.5f : 2.0f));
+                    const float x = TimeX(startMs);
+                    if (x < left - 1.0f || x > right + 1.0f)
+                        continue;
+                    const ImU32 badge = on ? tint : IM_COL32(150, 143, 131, 190);
+                    draw->AddQuadFilled(P(x, laneY - 5.0f), P(x + 5.0f, laneY), P(x, laneY + 5.0f), P(x - 5.0f, laneY), badge);
+                    if (key.id == g_selectedKeyframeId)
+                        draw->AddCircle(P(x, laneY), S(7.0f), kText, 0, S(1.3f));
+                }
+            }
+        }
+
         // The shake lives in the markers: a small cyan dot over each marker whose
         // shake is on (a ring on an Anchor the shake migration added), a thin line on
         // to the next shake marker while it plays. Drawing only.
+        if (g_screen != Screen::Lights)
         {
             constexpr ImU32 kShakeBadge = IM_COL32(110, 190, 235, 255);
-            const float laneY = y - 58.0f;
+            const float laneY = y - 50.0f;
             float lastX = left;
             bool lastOn = false;
             const auto run = [&](float x0, float x1) {
@@ -944,6 +1069,7 @@ namespace
                 // Selecting a marker sounds like the menus do.
                 PlayUi(UiSound::Select);
                 g_selectedKeyframeId = hoveredKey;
+                SyncLightEditorMarkerSelection(hoveredKey);
                 g_draggingKeyframeId = hoveredKey;
                 g_lastDragTimeMs = UINT64_MAX;
                 // The playhead jumps to the key clicked (paused there).
@@ -1019,6 +1145,54 @@ namespace
         // in the key bar under the timeline (EditTips).
     }
 }
+
+    void DrawEditTimelineOverlay(ImDrawList* draw)
+    {
+        DrawEditTimeline(draw);
+        if (g_screen == Screen::Lights)
+        {
+            SyncLightEditorMarkerSelection(g_selectedKeyframeId);
+            // This overlay returns below unless Tab is pressed, so frame stepping
+            // on the Lighting page must be handled before that marker-navigation path.
+            if (!ImGui::GetIO().WantTextInput)
+            {
+                const bool stepBack = ActionPressed(Action::FrameBack, true);
+                const bool stepForward = ActionPressed(Action::FrameForward, true);
+                if (stepBack || stepForward)
+                {
+                    Command step{};
+                    step.direction = stepBack ? -1 : 1;
+                    Send(CommandType::StepFrame, &step);
+                }
+            }
+        }
+        if (g_screen != Screen::Lights || ImGui::GetIO().WantTextInput || !KeyPressed(ImGuiKey_Tab))
+            return;
+        const std::uint32_t count = g_snapshot.cameraKeyframeCount;
+        if (!count)
+            return;
+        const bool backwards = ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl;
+        const CameraKeyframe* from = FindKeyframe(g_selectedKeyframeId);
+        const std::uint64_t reference = from ? from->timeMs : g_snapshot.playheadMs;
+        const CameraKeyframe* pick = nullptr;
+        for (std::uint32_t n = 0; n < count; ++n)
+        {
+            const CameraKeyframe& key = g_snapshot.cameraKeyframes[backwards ? count - 1 - n : n];
+            if (backwards ? key.timeMs + 1 < reference : key.timeMs > reference + 1)
+            {
+                pick = &key;
+                break;
+            }
+        }
+        if (!pick)
+            pick = &g_snapshot.cameraKeyframes[backwards ? count - 1 : 0];
+        g_selectedKeyframeId = pick->id;
+        SyncLightEditorMarkerSelection(pick->id);
+        PlayUi(backwards ? UiSound::NavUp : UiSound::NavDown);
+        Command seek{};
+        seek.timeMs = pick->timeMs;
+        Send(CommandType::SeekAbsolute, &seek);
+    }
 
     // Edit Camera: the controls at the foot, a thin cross in the middle, the
     // zoom; Enter keeps the view in the marker, Backspace leaves it as it was.
@@ -1175,7 +1349,9 @@ namespace
         }
         if (KeyPressed(ImGuiKey_Space, false) || ActionPressed(Action::PlayPause)) // no repeat (a held Space would flicker play and pause)
             Send(CommandType::PlayPause);
-        if (ActionPressed(Action::FreeCam))
+        // Screen::Lights also routes F11 from the outer overlay handler. Avoid
+        // sending the same toggle twice while its timeline remains visible.
+        if (g_screen != Screen::Lights && ActionPressed(Action::FreeCam))
             Send(CommandType::ToggleFreeCam);
         // Held , . keep stepping (the key repeat), as the arrows do.
         const bool stepBack = ActionPressed(Action::FrameBack, true);
@@ -1193,9 +1369,10 @@ namespace
         const bool slower = ActionPressed(Action::SpeedDown);
         if (slower || ActionPressed(Action::SpeedUp))
             StepPlaybackSpeed(slower ? -1 : 1); // from the speed last asked
+        const bool markerMenuOwnsKeys = g_screen != Screen::Lights && g_markerMenuActive;
         // Enter adds a marker at the playhead (with the settings of the marker
         // before it); with a marker's menu open the keys are its.
-        if (!g_markerMenuActive && Confirmed())
+        if (!markerMenuOwnsKeys && g_screen != Screen::Lights && Confirmed())
             AddKeyframeHere();
         // Tab / Ctrl+Tab (or Shift+Tab): the next or previous marker (the playhead
         // goes along). Ctrl too, because Shift+Tab opens the Steam overlay on Steam
@@ -1226,14 +1403,14 @@ namespace
             seek.timeMs = pick->timeMs;
             Send(CommandType::SeekAbsolute, &seek);
         }
-        if (g_markerMenuActive && ImGui::GetIO().KeyCtrl && KeyPressed(ImGuiKey_C))
+        if (markerMenuOwnsKeys && ImGui::GetIO().KeyCtrl && KeyPressed(ImGuiKey_C))
         {
             Command c{};
             c.keyframeId = g_selectedKeyframeId;
             if (Send(CommandType::CopyCameraKeyframe, &c))
                 PlayUi(UiSound::Select);
         }
-        if (g_markerMenuActive && ImGui::GetIO().KeyCtrl && KeyPressed(ImGuiKey_V))
+        if (markerMenuOwnsKeys && ImGui::GetIO().KeyCtrl && KeyPressed(ImGuiKey_V))
         {
             Command c{};
             c.keyframeId = g_selectedKeyframeId;
@@ -1243,9 +1420,9 @@ namespace
             else if (Send(CommandType::PasteCameraKeyframe, &c))
                 PlayUi(UiSound::Select);
         }
-        if (g_markerMenuActive && KeyPressed(ImGuiKey_Delete, false)) // a held Delete would go on deleting the next ones
+        if (markerMenuOwnsKeys && KeyPressed(ImGuiKey_Delete, false)) // a held Delete would go on deleting the next ones
             DeleteMarker(g_selectedKeyframeId);
-        if (!g_markerMenuActive && !g_valueRowHovered && !ImGui::GetIO().KeyCtrl)
+        if (!markerMenuOwnsKeys && !g_valueRowHovered && !ImGui::GetIO().KeyCtrl)
         {
             Command command{};
             if (KeyPressed(ImGuiKey_LeftArrow))

@@ -46,6 +46,7 @@
 #include "src/vegetation_speed.h"
 #include "src/sky_state.h"
 #include "src/weather_state.h"
+#include "src/lightning_state.h"
 #include "src/timecycle_state.h"
 #include "src/sun_control.h"
 #include "src/hook_batch.h"
@@ -106,6 +107,8 @@
 #include "src/replay_project.h"
 #include "src/project_export_plan.h" // whole project export
 #include "src/record_gate.h"
+#include "src/cutscene_identity.h"
+#include "src/cutscene_audio.h"
 #include "src/rec_indicator.h"
 #include "src/seek_settle.h"
 #include "src/camera_cut.h"
@@ -172,6 +175,8 @@
     std::size_t PoseV2PuppetCount();
     extern bool g_debugMode;
     extern volatile bool g_editorCoversScreen;
+    extern volatile bool g_lightEditorOpen;
+    extern volatile bool g_lightGizmosVisible;
     extern volatile ULONGLONG g_editorLoadingCueAt;
     bool EditorDrawsLoadingCue();
     extern volatile LONG g_cameraKeyAddRequested;
@@ -782,6 +787,16 @@
         std::uint32_t moonLogs = 0;
         std::uint64_t moonWrites = 0;
         std::uint64_t moonWriteFails = 0;
+        // The lightning track's playback cursor (personal build): the next strike
+        // in g_clip.environment.lightning, the playhead it was last read at (a
+        // jump forward repositions the cursor; nothing is fired twice), and the
+        // counters for the log.
+        std::size_t lightningNext = 0;
+        std::uint64_t lightningPlayheadMs = 0;
+        bool lightningPlayheadValid = false;
+        ULONGLONG lightningLogAt = 0;
+        std::uint32_t lightningLogs = 0;
+        std::uint64_t lightningFired = 0;
         // Product mode applies the clip's map state once the screen is dark, in the
         // load wait before the load scene starts.
         bool worldApplyPending = false;
@@ -1161,3 +1176,4 @@
     void UpdateProjectExport(ULONGLONG now);
     void ProcessEditorCommands(ULONGLONG now);
     void PublishEditorSnapshot();
+    void DrawAuthoredLights();

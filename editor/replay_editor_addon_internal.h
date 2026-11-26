@@ -24,6 +24,7 @@
 #include "camera_overlay_channel.h" // the camera markers in the world
 #include "camera_shake_custom.h" // the Custom shake's ranges and presets
 #include "camera_effects.h" // Simple Camera's presets; the marker's shake rows
+#include "camera_spline.h" // spline tuning shared by camera markers and authored lights
 #include "camera_bones.h" // the bone list of the attach and Look At rows
 #include "ui_layout_check.h" // the key bar's rows, the label fit
 #include "ui_probe.h" // UI_PROBE_* tell the UI harness what is drawn (empty in the add-on)
@@ -39,13 +40,17 @@
 #include <dxgi.h>
 #include <shellapi.h> // SHQueryUserNotificationState
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <cstdio>
+#include <iterator>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 // Redemption Editor front end: home, clip gallery, alert, playback HUD and
@@ -141,11 +146,13 @@
     std::string Ellipsized(float size, const std::string& text, float maxWidth);
     void TextFit(ImDrawList* draw, float x, float y, float size, ImU32 color, const char* text, float maxWidth);
     float TitleWrapped(ImDrawList* draw, float x, float y, float size, ImU32 color, const char* text, float wrap);
-    void Brush(ImDrawList* draw, float x, float y, float width, float height, ImU32 color);
+    void Brush(ImDrawList* draw, float x, float y, float width, float height, ImU32 color, bool useArtwork = true);
     constexpr ImU32 kRowInkGrey = IM_COL32(206, 200, 190, 235);
-    void TitleBanner(ImDrawList* draw, float x, float y, float minWidth, float extra, float height, float textX, float textY, float size, const char* title);
-    void OrnamentDivider(ImDrawList* draw, float x, float y, float width);
-    void SectionTitle(ImDrawList* draw, float x, float y, float width, const char* title);
+    void TitleBanner(ImDrawList* draw, float x, float y, float minWidth, float extra, float height, float textX, float textY, float size,
+        const char* title, ImU32 accent = kRed, ui_art::Art mark = ui_art::Art::ReelMark);
+    void OrnamentDivider(ImDrawList* draw, float x, float y, float width, ImU32 accent = kGold);
+    void SectionTitle(ImDrawList* draw, float x, float y, float width, const char* title, ImU32 accent = kGold);
+    ImU32 WithAlpha(ImU32 color, float alpha);
     float KeyHint(ImDrawList* draw, float x, float y, const char* key, const char* label, bool on);
     float LabelHeight(float size);
 
@@ -208,13 +215,20 @@
         Project,     // the open project's timeline: its clips in order
         ProjectName, // a new project's name, or a project's new name
         Export, // render export
+        Lights, // live world light authoring
         Count
     };
     extern Screen g_screen;
+    extern int g_lightSelected;
     bool ProjectFlag(std::uint32_t flag);
     bool ProjectIsOpen();
     Screen PlaybackScreen();
     bool UiHidden();
+    void OpenLightsForMarker(std::uint32_t markerId);
+    std::uint32_t CurrentLightMarkerId();
+    void SyncLightEditorMarkerSelection(std::uint32_t markerId);
+    bool LightMenuOwnsPointer();
+    void DrawEditTimelineOverlay(ImDrawList* draw);
 
     // Alert: a message with Continue (optional action) and Cancel.
     struct Alert
@@ -240,7 +254,7 @@
     extern replay::editor::uiqa::MenuPointer g_menuPointer;
     bool HoverShown(bool hovered);
     bool ListItem(ImDrawList* draw, const char* id, float x, float y, float width, float height, bool selected, bool& clicked,
-        bool* pointed);
+        bool* pointed, float visualWidth = -1.0f, int theme = 1, ImU32 activeInk = kRed, ImU32 hoverInk = kRowInkGrey);
     void NavigateList(int& index, int count);
     extern bool g_helpOpen;
     extern bool g_helpSwallow;

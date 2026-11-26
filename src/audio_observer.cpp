@@ -631,6 +631,19 @@ namespace replay::audio
                 ownSlot.Publish();
                 return own.result;
             }
+            // The replay removes or freezes the recorded world's pedestrians,
+            // but its scripts can still submit fresh ambient speech requests.
+            // Those requests are the detached/"ghost" voices heard over the
+            // replay. Let replay-emitted lines and puppet lines through, and
+            // refuse every other speech request while replay puppets exist.
+            // This mirrors the core's own early refusal: release the request
+            // scope and return the established no-line result.
+            const std::uintptr_t release = g_ownSpeechRelease.load(std::memory_order_acquire);
+            if (t_replayEmitDepth == 0 && g_puppetSpeechCount.load(std::memory_order_acquire) > 0 && scope && release)
+            {
+                engine::Call(engine::kSpeechScopeRelease, release, scope);
+                return replay::puppetaudio::kPuppetOwnSpeechRefusal;
+            }
             const bool worldDuringPlayback = t_replayEmitDepth == 0 &&
                 g_puppetSpeechCount.load(std::memory_order_relaxed) > 0;
             auto* speech = static_cast<std::uint8_t*>(speechEntity);

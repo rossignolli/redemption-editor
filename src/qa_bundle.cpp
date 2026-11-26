@@ -483,6 +483,41 @@ namespace replay::qa::bundle
                         ++result.debugFiles;
                 }
             }
+
+            // CaptureProbe is developer-only and writes one timestamped report
+            // for the whole game session rather than beside a clip. Include the
+            // newest report only when this session enabled the probe; the public
+            // INI summary does not list developer-only settings.
+            if (input.captureProbeEnabled)
+            {
+                std::wstring newestPath;
+                FILETIME newestTime{};
+                const auto consider = [&](const std::wstring& root) {
+                    for (const WIN32_FIND_DATAW& data : List(root + L"ReplayDebug\\capture-probe-*.txt"))
+                    {
+                        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                            continue;
+                        if (newestPath.empty() || CompareFileTime(&data.ftLastWriteTime, &newestTime) > 0)
+                        {
+                            newestTime = data.ftLastWriteTime;
+                            newestPath = root + L"ReplayDebug\\" + data.cFileName;
+                        }
+                    }
+                };
+                if (input.readRoots.empty())
+                    consider(L"");
+                else
+                    for (const std::wstring& root : input.readRoots)
+                        consider(root);
+                if (!newestPath.empty() && !Cancelled(input))
+                {
+                    CreateDirectoryW(target.c_str(), nullptr);
+                    const std::wstring to = target + L"\\" + newestPath.substr(newestPath.find_last_of(L'\\') + 1);
+                    std::uint64_t bytes = 0;
+                    if (CopyShared(newestPath, to, input, bytes))
+                        ++result.debugFiles;
+                }
+            }
         }
 
         void CopyDumps(const Input& input, Result& result)

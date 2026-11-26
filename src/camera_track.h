@@ -220,6 +220,8 @@ namespace replay::camera
         // blend between two live cameras moves with both), then blended.
         bool Evaluate(std::uint64_t timeMs, editor::CameraState& camera, const Resolver& resolver = {}) const;
         const std::vector<Keyframe>& Keyframes() const noexcept;
+        std::vector<editor::AuthoredLight>& AuthoredLights() noexcept { return authoredLights_; }
+        const std::vector<editor::AuthoredLight>& AuthoredLights() const noexcept { return authoredLights_; }
         bool Empty() const noexcept;
         void Clear();
 
@@ -310,6 +312,7 @@ namespace replay::camera
         fx::EffectTrack effects_;
         ShakeMigrationReport migration_;
         std::vector<Keyframe> keyframes_;
+        std::vector<editor::AuthoredLight> authoredLights_;
         std::uint32_t nextId_ = 1;
         bool legacyBlendAnyMode_ = false;
     };

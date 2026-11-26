@@ -14,6 +14,7 @@ namespace replay::pose
     {
         constexpr std::size_t kRecordHeaderBytes =
             sizeof(std::uint32_t) * 2 + sizeof(std::uint16_t) * 2 + sizeof(float) * 16;
+        constexpr std::uint32_t kCutscenePoseHoldMaxGapMs = 100;
 
         // The largest
         // entry: channel, mask, a 64-bit rotation, a float translation, w and
@@ -809,6 +810,8 @@ namespace replay::pose
         m_config = config;
         m_encoder.Begin(*m_layout, m_config);
         m_chunks.clear();
+        m_preCutHolds.clear();
+        m_hardTransitionTimes.clear();
         m_totalBytes = 0;
         m_stats = {};
         m_firstChunkSerial = 0;
@@ -1310,6 +1313,19 @@ namespace replay::pose
             return false;
         timeMs = std::clamp(timeMs, m_stats.firstTimeMs, m_stats.lastTimeMs);
 
+        // Some cutscene actors enter the next animation on the final sampled
+        // pose before the camera cut. Hold the prior valid pose for that last
+        // sample interval, then let the normal hard transition choose the
+        // first post-cut pose.
+        for (auto hold = m_preCutHolds.rbegin(); hold != m_preCutHolds.rend(); ++hold)
+        {
+            if (timeMs >= hold->fromMs && timeMs < hold->untilMs)
+            {
+                timeMs = hold->poseTimeMs;
+                break;
+            }
+        }
+
         // Last chunk whose first frame is at or before timeMs.
         std::size_t chunkIndex = 0;
         for (std::size_t index = m_chunks.size(); index-- > 0;)
@@ -1416,11 +1432,22 @@ namespace replay::pose
         }
 
         float t = 0.0f;
+        bool hardTransition = false;
         if (hasNext && !(m_next.Flags() & kFrameNoInterpolation) &&
             m_next.TimeMs() > m_cursor.TimeMs())
         {
             t = static_cast<float>(timeMs - m_cursor.TimeMs()) /
                 static_cast<float>(m_next.TimeMs() - m_cursor.TimeMs());
+        }
+        if (hasNext && m_next.TimeMs() > m_cursor.TimeMs() && !m_hardTransitionTimes.empty())
+        {
+            const auto transition = std::upper_bound(
+                m_hardTransitionTimes.begin(), m_hardTransitionTimes.end(), m_cursor.TimeMs());
+            if (transition != m_hardTransitionTimes.end() && *transition <= m_next.TimeMs())
+            {
+                t = timeMs < *transition ? 0.0f : 1.0f;
+                hardTransition = true;
+            }
         }
 
         // Each side is rebuilt with its own layout, then blended per bone,
@@ -1431,7 +1458,7 @@ namespace replay::pose
             if (t > 0.0f)
             {
                 PreparePair(*chunk.layout, *nextLayout, serial, frameIndex, nextSerial, nextFrame);
-                if (m_pair.rebase)
+                if (m_pair.rebase && !hardTransition)
                 {
                     t = 0.0f;
                     ++m_unflaggedRebaseHolds;
@@ -1551,6 +1578,75 @@ namespace replay::pose
         }
     }
 
+    bool MarkNoInterpolationAtOrAfter(TrackExport& track, std::uint32_t timeMs)
+    {
+        for (TrackChunkExport& chunk : track.chunks)
+        {
+            const auto frame = std::lower_bound(chunk.frameTimes.begin(), chunk.frameTimes.end(), timeMs);
+            if (frame == chunk.frameTimes.end())
+                continue;
+            const std::size_t index = static_cast<std::size_t>(frame - chunk.frameTimes.begin());
+            if (index >= chunk.frameOffsets.size())
+                return false;
+
+            const std::size_t flagsOffset = static_cast<std::size_t>(chunk.frameOffsets[index]) +
+                sizeof(std::uint32_t) * 2;
+            std::vector<std::uint8_t>& bytes = chunk.bytes.Mutable();
+            if (flagsOffset + sizeof(std::uint16_t) > bytes.size())
+                return false;
+
+            std::uint16_t flags = 0;
+            std::memcpy(&flags, bytes.data() + flagsOffset, sizeof(flags));
+            flags |= kFrameNoInterpolation;
+            std::memcpy(bytes.data() + flagsOffset, &flags, sizeof(flags));
+            return true;
+        }
+        return false;
+    }
+
+    bool MarkNoInterpolationImmediatelyBefore(TrackExport& track, std::uint32_t timeMs)
+    {
+        TrackChunkExport* previousChunk = nullptr;
+        std::size_t previousFrame = 0;
+        bool hasPrevious = false;
+        bool hasPreviousPrevious = false;
+        std::uint32_t previousTime = 0;
+        std::uint32_t previousPreviousTime = 0;
+        for (TrackChunkExport& chunk : track.chunks)
+        {
+            for (std::size_t index = 0; index < chunk.frameTimes.size(); ++index)
+            {
+                const std::uint32_t frameTime = chunk.frameTimes[index];
+                if (frameTime >= timeMs)
+                    break;
+                previousPreviousTime = previousTime;
+                hasPreviousPrevious = hasPrevious;
+                previousTime = frameTime;
+                hasPrevious = true;
+                previousChunk = &chunk;
+                previousFrame = index;
+            }
+        }
+        if (!previousChunk || !hasPreviousPrevious || timeMs - previousTime > kCutscenePoseHoldMaxGapMs ||
+            previousTime - previousPreviousTime > kCutscenePoseHoldMaxGapMs ||
+            previousFrame >= previousChunk->frameOffsets.size())
+        {
+            return false;
+        }
+
+        const std::size_t flagsOffset = static_cast<std::size_t>(previousChunk->frameOffsets[previousFrame]) +
+            sizeof(std::uint32_t) * 2;
+        std::vector<std::uint8_t>& bytes = previousChunk->bytes.Mutable();
+        if (flagsOffset + sizeof(std::uint16_t) > bytes.size())
+            return false;
+
+        std::uint16_t flags = 0;
+        std::memcpy(&flags, bytes.data() + flagsOffset, sizeof(flags));
+        flags |= kFrameNoInterpolation;
+        std::memcpy(bytes.data() + flagsOffset, &flags, sizeof(flags));
+        return true;
+    }
+
     bool PoseTrack::Import(const TrackExport& in, std::string& error)
     {
         if (in.layouts.empty() || in.currentLayout >= in.layouts.size())
@@ -1645,6 +1741,80 @@ namespace replay::pose
         // until the first Sample. A later Append Begins the encoder on
         // m_layout and starts a new chunk with a full keyframe.
         Seal();
+        return true;
+    }
+
+    bool PoseTrack::MarkHardTransitionAt(std::uint32_t timeMs)
+    {
+        bool hasPrevious = false;
+        bool hasPreviousPrevious = false;
+        std::uint32_t previousTime = 0;
+        std::uint32_t previousPreviousTime = 0;
+        Chunk* previousChunk = nullptr;
+        std::size_t previousFrame = 0;
+        Chunk* targetChunk = nullptr;
+        std::size_t targetFrame = 0;
+        for (Chunk& chunk : m_chunks)
+        {
+            for (std::size_t index = 0; index < chunk.frameTimes.size(); ++index)
+            {
+                const std::uint32_t frameTime = chunk.frameTimes[index];
+                if (frameTime < timeMs)
+                {
+                    previousPreviousTime = previousTime;
+                    hasPreviousPrevious = hasPrevious;
+                    previousTime = frameTime;
+                    hasPrevious = true;
+                    previousChunk = &chunk;
+                    previousFrame = index;
+                    continue;
+                }
+
+                targetChunk = &chunk;
+                targetFrame = index;
+                break;
+            }
+            if (targetChunk)
+                break;
+        }
+        if (!targetChunk || !hasPrevious || previousTime >= timeMs || targetFrame >= targetChunk->frameOffsets.size())
+            return false;
+
+        const auto markNoInterpolation = [](Chunk& chunk, std::size_t frame) {
+            if (frame >= chunk.frameOffsets.size())
+                return false;
+            const std::size_t flagsOffset = static_cast<std::size_t>(chunk.frameOffsets[frame]) +
+                sizeof(std::uint32_t) * 2;
+            std::vector<std::uint8_t>& bytes = chunk.bytes.Mutable();
+            if (flagsOffset + sizeof(std::uint16_t) > bytes.size())
+                return false;
+            std::uint16_t flags = 0;
+            std::memcpy(&flags, bytes.data() + flagsOffset, sizeof(flags));
+            flags |= kFrameNoInterpolation;
+            std::memcpy(bytes.data() + flagsOffset, &flags, sizeof(flags));
+            return true;
+        };
+        if (!markNoInterpolation(*targetChunk, targetFrame))
+            return false;
+
+        // The game can publish the next animation one pose sample before its
+        // game-camera cut. Keep that suspect sample out of both interpolation
+        // and smoothing, and reuse the sample before it until the cut.
+        if (hasPreviousPrevious && previousChunk && timeMs - previousTime <= kCutscenePoseHoldMaxGapMs &&
+            previousTime - previousPreviousTime <= kCutscenePoseHoldMaxGapMs &&
+            markNoInterpolation(*previousChunk, previousFrame))
+        {
+            const PreCutHold hold{previousTime, timeMs, previousPreviousTime};
+            const auto position = std::lower_bound(m_preCutHolds.begin(), m_preCutHolds.end(), timeMs,
+                [](const PreCutHold& item, std::uint32_t value) { return item.untilMs < value; });
+            if (position == m_preCutHolds.end() || position->untilMs != timeMs)
+                m_preCutHolds.insert(position, hold);
+        }
+
+        const auto transition = std::lower_bound(m_hardTransitionTimes.begin(), m_hardTransitionTimes.end(), timeMs);
+        if (transition == m_hardTransitionTimes.end() || *transition != timeMs)
+            m_hardTransitionTimes.insert(transition, timeMs);
+        ReleasePlaybackCaches();
         return true;
     }
 }

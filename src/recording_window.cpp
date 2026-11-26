@@ -1246,6 +1246,11 @@ namespace replay::window
             gate::Span copy = span;
             copy.startMs = w.Clamp(span.startMs);
             copy.endMs = w.Clamp((std::min)(span.endMs, w.end));
+            if (span.kind == gate::SpanKind::Cutscene && w.base > span.startMs)
+            {
+                const std::uint64_t offset = static_cast<std::uint64_t>(span.audioOffsetMs) + (w.base - span.startMs);
+                copy.audioOffsetMs = static_cast<std::uint32_t>((std::min<std::uint64_t>)(offset, UINT32_MAX));
+            }
             copy.open = false;
             if (copy.endMs > copy.startMs)
                 out.spans.push_back(copy);
@@ -1368,6 +1373,8 @@ namespace replay::window
         out.environment.timecycle = tctrack::Cut(in.environment.timecycle, w.base, w.end);
         // The moon's angles, from the state at the base.
         out.environment.moon = moontrack::Cut(in.environment.moon, w.base, w.end);
+        // The lightnings inside the window, moved to the base (personal build).
+        out.environment.lightning = lighttrack::Cut(in.environment.lightning, w.base, w.end);
         if (!out.environment.track.empty())
         {
             const EnvironmentSample& first = out.environment.track.front();

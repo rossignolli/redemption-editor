@@ -620,6 +620,11 @@ namespace replay::events
     // set (SpeechConversationLive, default 1, speech_conversation.h); the
     // playback's counts.
     bool g_speechConversationLive = true;
+    // Bank-backed AI barks (source 3, single-wave lines) are ambient chatter,
+    // not scripted conversation. Keep them off in replays by default so they
+    // cannot dominate dialogue when the live camp mixer duck was stronger.
+    bool g_speechBankReplay = false;
+    std::uint64_t g_speechBankMuted = 0;
     replay::speech::conversation::Tally g_speechConversationTally;
     std::uint32_t g_speechConversationLogs = 0;
 

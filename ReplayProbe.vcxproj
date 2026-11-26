@@ -15,6 +15,8 @@
     <ClCompile Include="src\script_editor.cpp" />
     <ClCompile Include="src\script_free_cam.cpp" />
     <ClCompile Include="src\script_recording.cpp" />
+    <ClCompile Include="src\cutscene_identity.cpp" />
+    <ClCompile Include="src\cutscene_audio.cpp" />
     <ClCompile Include="src\script_theatre.cpp" />
     <ClCompile Include="src\script_transport.cpp" />
     <ClCompile Include="src\camera_track.cpp" />
@@ -40,6 +42,7 @@
     <ClCompile Include="src\vegetation_speed.cpp" />
     <ClCompile Include="src\sky_state.cpp" />
     <ClCompile Include="src\weather_state.cpp" />
+    <ClCompile Include="src\lightning_state.cpp" />
     <ClCompile Include="src\timecycle_state.cpp" />
     <ClCompile Include="src\sun_control.cpp" />
     <ClCompile Include="src\frag_observer.cpp" />
@@ -401,6 +404,8 @@
     <ClInclude Include="src\world_landing.h" />
     <ClInclude Include="src\replay_recording.h" />
     <ClInclude Include="src\record_gate.h" />
+    <ClInclude Include="src\cutscene_identity.h" />
+    <ClInclude Include="src\cutscene_audio.h" />
     <ClInclude Include="src\rec_indicator.h" />
     <ClInclude Include="src\world_state.h" />
     <ClInclude Include="src\world_notice.h" />

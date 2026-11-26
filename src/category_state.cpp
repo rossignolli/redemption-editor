@@ -697,6 +697,7 @@ namespace replay::catstate
             g_hashOfIndex[r.index] = r.hash;
         }
         std::string keptText;
+        std::size_t mutedKeepLive = 0;
         for (std::size_t n = 0; n < g_index.series.size(); ++n)
         {
             const Series& s = g_index.series[n];
@@ -707,9 +708,13 @@ namespace replay::catstate
                 continue;
             }
             const Entry e{n, found->second->index, found->second->pointer};
-            if (KeepLive(g_cfg.keepLive, s.hash))
+            const Values* recordedAtStart = PlayIndex::At(s, 0);
+            const bool preserveLiveMute = recordedAtStart && PreserveLiveMute(found->second->v, *recordedAtStart);
+            if (KeepLive(g_cfg.keepLive, s.hash) || preserveLiveMute)
             {
                 g_keptLive.push_back(e);
+                if (preserveLiveMute)
+                    ++mutedKeepLive;
                 // The live controllers against the recorded first value of
                 // a category kept live (a candidate to keep or to impose).
                 if (keptText.size() < 400)
@@ -750,7 +755,7 @@ namespace replay::catstate
             << ",replay=" << (g_cfg.replay ? 1 : 0) << ",installed=" << (g_target ? 1 : 0) << ",proven=" << (proven ? 1 : 0)
             << ",read=" << (read ? 1 : 0) << ",fields=volume"
             << ",recorded=" << g_index.series.size() << ",samples=" << track.samples.size() << ",imposed=" << g_entries.size()
-            << ",keep_live=" << g_keptLive.size() << ",unmapped=" << g_unmapped << ",static=" << staticCount
+            << ",keep_live=" << g_keptLive.size() << ",keep_live_hard_mute=" << mutedKeepLive << ",unmapped=" << g_unmapped << ",static=" << staticCount
             << ",rec_static=" << track.staticCount << ",index_mismatch=" << mismatches
             << ",keep_live_values=" << (keptText.empty() ? "none" : keptText)
             << ",live_minus_rec_at_0=" << (diffText.empty() ? "none" : diffText) << '\n';

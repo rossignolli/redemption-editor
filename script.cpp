@@ -32,6 +32,8 @@ namespace
     bool g_cleanView = false; // bench camera preview: no HUD of any kind
 }
     volatile bool g_editorCoversScreen = false; // the ImGui editor is open over the game (read by the key handler)
+    volatile bool g_lightEditorOpen = false;
+    volatile bool g_lightGizmosVisible = false;
     // The editor draws the loading cue while the world loads (CommandType::SetLoadingCue,
     // sent every 2 s): its tick count, 0 never. Within 5 s of it the core's own
     // "Loading replay..." text is left out (the cue has the caption).
@@ -404,6 +406,16 @@ namespace
         }
         else if (error.empty())
             ok = replay::clipfile::Load(path, base, size, loaded, poses, camera, durationMs, error, &loadInfo);
+        const std::vector<std::uint32_t> poseTransitionTimes = ok
+            ? replay::CutscenePoseTransitionTimes(loaded)
+            : std::vector<std::uint32_t>{};
+        if (ok)
+            for (replay::pose::PoseRecordExport& record : poses)
+                for (const std::uint32_t timeMs : poseTransitionTimes)
+                {
+                    replay::pose::MarkNoInterpolationImmediatelyBefore(record.track, timeMs);
+                    replay::pose::MarkNoInterpolationAtOrAfter(record.track, timeMs);
+                }
         // The deadband smoothing (pose_deadband_smooth.h): done on the read
         // thread for a preloaded read, here for a direct one. A queued save's
         // snapshot holds the session's tracks (already fine or smoothed).
@@ -429,7 +441,7 @@ namespace
                       << ",spike_records=" << summary.spikeRecords << ",ms=" << smoothMs
                       << ",thread=" << (onThread ? "read" : "script") << '\n';
         }
-        ok = ok && replay::pose::capture::ImportRecords(poses, error);
+        ok = ok && replay::pose::capture::ImportRecords(poses, error, &poseTransitionTimes);
         replay::clipcompress::worker::SetHold(SavePending() || ClipReadPending());
         if (loadInfo.compressed)
             LogFile() << "CLIP_DECOMPRESS,ms=" << loadInfo.decompressMs << ",bytes=" << loadInfo.clipBytes
@@ -591,6 +603,7 @@ namespace
 
     void StopPlayback()
     {
+        replay::cutsceneaudio::Stop(&LogFile());
         // A project's clip keeps its markers in the project.
         ProjectBeforePlaybackStop();
         // Leaving a clip keeps its marker changes (saved, never lost).
@@ -788,7 +801,10 @@ namespace
         {
             const std::string what = args.empty() ? "log" : args[0];
             if (what == "clear")
+            {
                 STREAMING::CLEAR_FOCUS();
+                STREAMING::CLEAR_HD_AREA();
+            }
             const Ped player = PLAYER::PLAYER_PED_ID();
             const bool playerFocus = player && ENTITY::DOES_ENTITY_EXIST(player) && STREAMING::IS_ENTITY_FOCUS(player) != FALSE;
             char text[160];
@@ -1291,6 +1307,7 @@ void OnModuleDetachComplete() noexcept
 {
     if (InterlockedCompareExchange(&g_refusedStart, 0, 0) != 0)
         return;
+    replay::cutsceneaudio::Stop(&LogFile());
     replay::editor::FinishShutdown();
 }
 
@@ -2686,6 +2703,9 @@ void ScriptMain()
         }
         UpdateRecording(frame);
         UpdatePlayback(now);
+        replay::cutsceneaudio::Update(g_clip.spans, g_clip.place.playerModel,
+            g_transport.PlayheadMs(), g_transport.Playing(),
+            g_transport.Paused(), g_transport.Scrubbing(), g_transport.Rate(), LogFile());
         replay::playback::Update();
         if (g_transport.Playing())
             replay::doors::UpdatePlayback(g_clip, static_cast<std::uint32_t>(g_transport.PlayheadMs()), LogFile());
@@ -2718,6 +2738,7 @@ void ScriptMain()
         UpdateReplayCamera();
         UpdateWorldFocus(now); // after every camera placed this tick
         UpdateCameraOverlay(); // the markers in the world (camera_overlay.h)
+        DrawAuthoredLights(); // the light editor's per-frame world lights
         UpdateCameraCutRate(now); // CAMERA_CUT_RATE
         UpdateClipWorld(now);
         UpdateSeekSettle(now);

@@ -205,6 +205,7 @@ namespace replay::soundgeneric
             std::uint64_t censusOursLate = 0;
             std::uint64_t lateOursNear = 0; // of lateOurs, born within 10 ticks of the row // rows held back that turned out ours (not taken for another's)
             std::uint64_t mutedByKey = 0;   // SoundGenericMute
+            std::uint64_t mutedMarkedWorldSet = 0;
             std::uint64_t queueNetStops = 0; // S13 of the safety net (pause, scrub, jump, end)
             std::uint64_t queueByHash = 0;     // c by hash: no queue entry, made as a
             // The steals by rule (owner_cap of an owned packet, world_cap of a
@@ -723,6 +724,12 @@ namespace replay::soundgeneric
                 {
                     ++m_counters.mutedByKey;
                     status = "muted_by_key";
+                    return false;
+                }
+                if (player::IsMarkedSweepingWorldSound(packet))
+                {
+                    ++m_counters.mutedMarkedWorldSet;
+                    status = "muted_marked_world_set";
                     return false;
                 }
                 const bool owned = packet.owner != census::kNoOwner;
@@ -1723,7 +1730,8 @@ namespace replay::soundgeneric
                 ";born:" + std::to_string(c.queueBorn) + ";born_no_out:" + std::to_string(c.queueBornNoOut) +
                 ";never_born:" + std::to_string(c.queueNeverBorn) + ";bound:" + std::to_string(c.queueBound) +
                 ";unbound:" + std::to_string(c.queueUnbound) + ";late_ours:" + std::to_string(c.lateOurs) + ";stolen_long:" + std::to_string(c.stolenLong) + ";world_live_yields:" + std::to_string(c.worldLiveYields) + ";ours_held:" + std::to_string(c.censusOursLate) + ";late_ours_near:" + std::to_string(c.lateOursNear) + ";net_stops:" + std::to_string(c.queueNetStops) + ";by_hash_direct:" + std::to_string(c.queueByHash) +
-                ",muted_by_key=" + std::to_string(c.mutedByKey);
+                ",muted_by_key=" + std::to_string(c.mutedByKey) +
+                ",muted_marked_world_set=" + std::to_string(c.mutedMarkedWorldSet);
             // The steals by rule and the world yield watch.
             {
                 const soundworld::YieldCounters& y = g_engine.Yields();

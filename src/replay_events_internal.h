@@ -340,6 +340,8 @@ namespace replay::events
     extern std::uint32_t g_speechConversationPlainLogs;
     extern std::uint32_t g_speechPlayerPacked;
     extern bool g_speechConversationLive;
+    extern bool g_speechBankReplay;
+    extern std::uint64_t g_speechBankMuted;
     extern replay::speech::conversation::Tally g_speechConversationTally;
     extern std::uint32_t g_speechConversationLogs;
     extern replay::events::FxParticlesConfig g_fxCfg;

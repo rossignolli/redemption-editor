@@ -1467,6 +1467,643 @@ namespace
         return 0;
     }
 
+    // mute-world <in> <out>: remove generic sound events that have no recorded
+    // entity owner. The input remains untouched; paired adjustments and ends
+    // are removed by their sound index. Ped/entity-owned audio is preserved.
+    int MuteOwnerlessWorldSounds(const std::wstring& inPath, const std::wstring& outPath,
+        const std::set<std::uint64_t>* selectedRefs = nullptr)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        clipfile::SetBuildIdentity(0, 0);
+        if (!clipfile::Load(inPath, kBase, kSize, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+
+        std::set<std::uint32_t> removed;
+        auto& sounds = recording.soundGeneric;
+        for (const soundgeneric::CreatePacket& packet : sounds.creates)
+        {
+            const bool selected = !selectedRefs || selectedRefs->count(packet.stableId) != 0 || selectedRefs->count(packet.rawRef) != 0;
+            if (packet.owner == census::kNoOwner && packet.ownerClass == census::OwnerClass::World && selected)
+                removed.insert(packet.index);
+        }
+        const std::size_t createBefore = sounds.creates.size();
+        const std::size_t adjustBefore = sounds.adjusts.size();
+        const std::size_t endBefore = sounds.ends.size();
+        sounds.creates.erase(std::remove_if(sounds.creates.begin(), sounds.creates.end(), [&](const soundgeneric::CreatePacket& p) {
+            return removed.count(p.index) != 0;
+        }), sounds.creates.end());
+        sounds.adjusts.erase(std::remove_if(sounds.adjusts.begin(), sounds.adjusts.end(), [&](const soundgeneric::AdjustPacket& p) {
+            return removed.count(p.index) != 0;
+        }), sounds.adjusts.end());
+        sounds.ends.erase(std::remove_if(sounds.ends.begin(), sounds.ends.end(), [&](const soundgeneric::EndPacket& p) {
+            return removed.count(p.index) != 0;
+        }), sounds.ends.end());
+
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        const bool saved = clipfile::Save(recording, poses, track, durationMs, kBase, kSize, outPath, error, saveOptions, &saveInfo);
+        clipfile::SetBuildIdentity(0, 0);
+        if (!saved)
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 3;
+        }
+        std::printf("CLIP_TOOL,mute_world=ok,filter=%s,packed=%s,file_bytes=%llu,fallback=%s,removed_creates=%zu,removed_adjusts=%zu,removed_ends=%zu,ped_owned_preserved=yes\n",
+            selectedRefs ? "selected_ids" : "all_ownerless_world", saveInfo.packed ? "yes" : "no",
+            static_cast<unsigned long long>(saveInfo.fileBytes), saveInfo.fallback.c_str(), createBefore - sounds.creates.size(),
+            adjustBefore - sounds.adjusts.size(), endBefore - sounds.ends.size());
+        return 0;
+    }
+
+    // hide-object <in> <out> <slot:instance>: preserve the object's recorded
+    // track and lifecycle while hiding its replay clone.
+    int HideObject(const std::wstring& inPath, const std::wstring& outPath, const std::wstring& idText)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        const std::wstring::size_type colon = idText.find(L':');
+        if (colon == std::wstring::npos)
+        {
+            std::fprintf(stderr, "object id must be slot:instance\n");
+            return 2;
+        }
+        wchar_t* end = nullptr;
+        const std::wstring slotText = idText.substr(0, colon);
+        const unsigned long slot = std::wcstoul(slotText.c_str(), &end, 10);
+        if (!end || *end || slot > 0xFFFFu)
+        {
+            std::fprintf(stderr, "invalid object slot\n");
+            return 2;
+        }
+        const std::wstring instanceText = idText.substr(colon + 1);
+        const unsigned long instance = std::wcstoul(instanceText.c_str(), &end, 10);
+        if (!end || *end || instance > 0xFFFFu)
+        {
+            std::fprintf(stderr, "invalid object instance\n");
+            return 2;
+        }
+        const std::uint32_t packedId = (static_cast<std::uint32_t>(slot) << 16) | static_cast<std::uint32_t>(instance);
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        clipfile::SetBuildIdentity(0, 0);
+        if (!clipfile::Load(inPath, kBase, kSize, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        std::size_t hidden = 0;
+        for (WeaponTrack& object : recording.weaponTracks)
+        {
+            if (object.recordId == packedId)
+            {
+                object.track.SetAllVisible(false);
+                ++hidden;
+            }
+        }
+        if (hidden != 1)
+        {
+            std::fprintf(stderr, "expected one object track for %ls, found %zu\n", idText.c_str(), hidden);
+            return 2;
+        }
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        const bool saved = clipfile::Save(recording, poses, track, durationMs, kBase, kSize, outPath, error, saveOptions, &saveInfo);
+        clipfile::SetBuildIdentity(0, 0);
+        if (!saved)
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 3;
+        }
+        std::printf("CLIP_TOOL,hide_object=ok,id=%ls,packed=%s,file_bytes=%llu\n", idText.c_str(), saveInfo.packed ? "yes" : "no",
+            static_cast<unsigned long long>(saveInfo.fileBytes));
+        return 0;
+    }
+
+    int EnvironmentDump(const std::wstring& clipPath)
+    {
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track cameraTrack;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, 0x140000000ull, 0x10000000ull, recording, poses, cameraTrack, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        for (const EnvironmentSample& sample : recording.environment.track)
+            std::printf("ENV,t=%u,clock=%u,weather=%08X/%08X mix=%.4f,wind=%.3f/%.3f,rain=%.3f,snow=%.3f\n",
+                sample.timeMs, sample.clockS, sample.weatherFrom, sample.weatherTo, sample.weatherMix, sample.windSpeed,
+                sample.windDirection, sample.rain, sample.snow);
+        for (const TimecycleSample& sample : recording.environment.timecycle)
+            std::printf("TC,t=%u,modifier=%08X,strength=%.4f,transition=%08X,progress=%.4f,speed=%.4f,fade=%u,variations=%u\n",
+                sample.timeMs, sample.modifierKey, sample.strength, sample.transitionKey, sample.progress, sample.speed,
+                static_cast<unsigned>(sample.fadeOut), static_cast<unsigned>(sample.variationCount));
+        std::printf("ENV_SUMMARY,env=%zu,timecycle=%zu,sky=%zu,duration=%llu\n", recording.environment.track.size(),
+            recording.environment.timecycle.size(), recording.environment.sky.size(), static_cast<unsigned long long>(durationMs));
+        return 0;
+    }
+
+    void ToggleVisibilityWindow(Recording& recording, entity::ReplayId id, std::uint32_t fromMs, std::uint32_t toMs)
+    {
+        auto it = std::find_if(recording.pedVisibility.begin(), recording.pedVisibility.end(), [&](const PedVisibility& row) {
+            return row.id == id;
+        });
+        if (it == recording.pedVisibility.end())
+        {
+            recording.pedVisibility.push_back(PedVisibility{});
+            it = std::prev(recording.pedVisibility.end());
+            it->id = id;
+        }
+        std::set<std::uint32_t> old(it->flipsMs.begin(), it->flipsMs.end());
+        std::set<std::uint32_t> times = old;
+        times.insert(fromMs);
+        times.insert(toMs);
+        std::vector<std::uint32_t> flips;
+        for (const std::uint32_t time : times)
+        {
+            const bool oldToggle = old.count(time) != 0;
+            const bool experimentalToggle = time == fromMs || time == toMs;
+            if (oldToggle != experimentalToggle)
+                flips.push_back(time);
+        }
+        it->flipsMs = std::move(flips);
+    }
+
+    int TryAllMarks(const std::wstring& inPath, const std::wstring& outPath)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        clipfile::SetBuildIdentity(0, 0);
+        if (!clipfile::Load(inPath, kBase, kSize, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        constexpr std::uint32_t kPaper = (116u << 16) | 2739u;
+        std::size_t hiddenPaper = 0;
+        for (WeaponTrack& object : recording.weaponTracks)
+            if (object.recordId == kPaper)
+            {
+                object.track.SetAllVisible(false);
+                ++hiddenPaper;
+            }
+        if (hiddenPaper != 1)
+        {
+            std::fprintf(stderr, "expected one floating-paper track, found %zu\n", hiddenPaper);
+            return 2;
+        }
+        // Experimental visual masks around the two marked character moments.
+        // They may look worse (a brief character pop), so this is a separate copy.
+        ToggleVisibilityWindow(recording, entity::ReplayId{0, 2619}, 51350, 51450); // Arthur/bag note
+        ToggleVisibilityWindow(recording, entity::ReplayId{23, 2642}, 58200, 58400); // Hosea position note
+        // Let the game move clouds naturally through the end-of-interaction light change.
+        recording.environment.edit.cloudsLive = 1;
+
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        const bool saved = clipfile::Save(recording, poses, track, durationMs, kBase, kSize, outPath, error, saveOptions, &saveInfo);
+        clipfile::SetBuildIdentity(0, 0);
+        if (!saved)
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 3;
+        }
+        std::printf("CLIP_TOOL,try_all=ok,paper_hidden=yes,arthur_hidden_window=51350..51450,hosea_hidden_window=58200..58400,clouds=live,packed=%s,file_bytes=%llu\n",
+            saveInfo.packed ? "yes" : "no", static_cast<unsigned long long>(saveInfo.fileBytes));
+        return 0;
+    }
+
+    int CameraSummary(const std::wstring& clipPath)
+    {
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, 0x140000000ull, 0x10000000ull, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        std::printf("CAMERA_SUMMARY,duration_ms=%llu,markers=%zu,empty=%u,legacy_blend_any=%u\n",
+            static_cast<unsigned long long>(durationMs), track.Keyframes().size(), track.Empty() ? 1u : 0u,
+            track.LegacyBlendAnyMode() ? 1u : 0u);
+        for (const camera::Keyframe& marker : track.Keyframes())
+            std::printf("MARKER,id=%u,t=%llu,mode=%u,type=%u,blend=%u,edited=0x%llx,dof=%u,focus=%u,dof_intensity=%.3f,focus_distance=%.3f,focus_target=%u\n", marker.id,
+                static_cast<unsigned long long>(marker.timeMs), static_cast<unsigned>(marker.cameraMode),
+                static_cast<unsigned>(marker.markerType), static_cast<unsigned>(marker.blend),
+                static_cast<unsigned long long>(marker.editedMask), static_cast<unsigned>(marker.dof),
+                static_cast<unsigned>(marker.focus), marker.dofIntensity, marker.focusDistance, marker.focusTarget);
+        return 0;
+    }
+
+    int TransferCamera(const std::wstring& sourcePath, const std::wstring& destinationPath, const std::wstring& outPath)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording sourceRecording, destinationRecording;
+        std::vector<pose::PoseRecordExport> sourcePoses, destinationPoses;
+        camera::Track sourceTrack, destinationTrack;
+        std::uint64_t sourceDuration = 0, destinationDuration = 0;
+        std::string error;
+        if (!clipfile::Load(sourcePath, kBase, kSize, sourceRecording, sourcePoses, sourceTrack, sourceDuration, error))
+        {
+            std::fprintf(stderr, "source load failed: %s\n", error.c_str());
+            return 2;
+        }
+        if (!clipfile::Load(destinationPath, kBase, kSize, destinationRecording, destinationPoses, destinationTrack, destinationDuration, error))
+        {
+            std::fprintf(stderr, "destination load failed: %s\n", error.c_str());
+            return 2;
+        }
+        if (sourceTrack.Empty())
+        {
+            std::fprintf(stderr, "source clip has no camera markers\n");
+            return 2;
+        }
+        if (sourceTrack.Keyframes().back().timeMs > destinationDuration)
+        {
+            std::fprintf(stderr, "source markers extend past destination duration (%llu > %llu ms)\n",
+                static_cast<unsigned long long>(sourceTrack.Keyframes().back().timeMs),
+                static_cast<unsigned long long>(destinationDuration));
+            return 2;
+        }
+        destinationTrack = sourceTrack;
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        const bool saved = clipfile::Save(destinationRecording, destinationPoses, destinationTrack, destinationDuration,
+            kBase, kSize, outPath, error, saveOptions, &saveInfo);
+        if (!saved)
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 3;
+        }
+        std::printf("CLIP_TOOL,transfer_camera=ok,markers=%zu,source_ms=%llu,destination_ms=%llu,packed=%s,file_bytes=%llu\n",
+            destinationTrack.Keyframes().size(), static_cast<unsigned long long>(sourceDuration),
+            static_cast<unsigned long long>(destinationDuration), saveInfo.packed ? "yes" : "no",
+            static_cast<unsigned long long>(saveInfo.fileBytes));
+        return 0;
+    }
+
+    int RetimeCamera(const std::wstring& clipPath, const std::wstring& outPath, std::uint64_t startMs)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, kBase, kSize, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        const std::vector<camera::Keyframe>& keys = track.Keyframes();
+        if (keys.size() < 2 || startMs >= durationMs)
+        {
+            std::fprintf(stderr, "need at least two camera markers and a start before clip end\n");
+            return 2;
+        }
+        const std::uint64_t oldStart = keys.front().timeMs;
+        const std::uint64_t oldEnd = keys.back().timeMs;
+        if (oldEnd <= oldStart)
+        {
+            std::fprintf(stderr, "camera marker span is invalid\n");
+            return 2;
+        }
+        const std::uint64_t newSpan = durationMs - startMs;
+        std::vector<std::pair<std::uint32_t, std::uint64_t>> retimed;
+        retimed.reserve(keys.size());
+        std::uint64_t previousTime = startMs;
+        for (std::size_t n = 0; n < keys.size(); ++n)
+        {
+            std::uint64_t time = startMs;
+            if (n + 1 == keys.size())
+                time = durationMs;
+            else if (n > 0)
+            {
+                const long double fraction = static_cast<long double>(keys[n].timeMs - oldStart) /
+                    static_cast<long double>(oldEnd - oldStart);
+                time = startMs + static_cast<std::uint64_t>(std::llround(fraction * static_cast<long double>(newSpan)));
+                const std::uint64_t minTime = previousTime + camera::MarkerSpacingMs(keys[n - 1].speedIndex);
+                time = std::max(time, minTime);
+            }
+            retimed.emplace_back(keys[n].id, time);
+            previousTime = time;
+        }
+        if (retimed.back().second != durationMs || !track.Retime(retimed, durationMs))
+        {
+            std::fprintf(stderr, "compressed markers do not fit with the editor's minimum spacing\n");
+            return 3;
+        }
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        if (!clipfile::Save(recording, poses, track, durationMs, kBase, kSize, outPath, error, saveOptions, &saveInfo))
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 4;
+        }
+        std::printf("CLIP_TOOL,retime_camera=ok,markers=%zu,from=%llu..%llu,to=%llu..%llu,duration=%llu,packed=%s,file_bytes=%llu\n",
+            track.Keyframes().size(), static_cast<unsigned long long>(oldStart), static_cast<unsigned long long>(oldEnd),
+            static_cast<unsigned long long>(track.Keyframes().front().timeMs), static_cast<unsigned long long>(track.Keyframes().back().timeMs),
+            static_cast<unsigned long long>(durationMs), saveInfo.packed ? "yes" : "no", static_cast<unsigned long long>(saveInfo.fileBytes));
+        return 0;
+    }
+
+    int TransferCameraOffset(const std::wstring& sourcePath, const std::wstring& destinationPath,
+        const std::wstring& outPath, std::uint64_t destinationStartMs)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording sourceRecording, destinationRecording;
+        std::vector<pose::PoseRecordExport> sourcePoses, destinationPoses;
+        camera::Track sourceTrack, destinationTrack;
+        std::uint64_t sourceDuration = 0, destinationDuration = 0;
+        std::string error;
+        if (!clipfile::Load(sourcePath, kBase, kSize, sourceRecording, sourcePoses, sourceTrack, sourceDuration, error))
+        {
+            std::fprintf(stderr, "source load failed: %s\n", error.c_str());
+            return 2;
+        }
+        if (!clipfile::Load(destinationPath, kBase, kSize, destinationRecording, destinationPoses, destinationTrack,
+                destinationDuration, error))
+        {
+            std::fprintf(stderr, "destination load failed: %s\n", error.c_str());
+            return 2;
+        }
+        const std::vector<camera::Keyframe>& sourceKeys = sourceTrack.Keyframes();
+        if (sourceKeys.size() < 3 || destinationStartMs < sourceKeys[1].timeMs ||
+            destinationStartMs >= destinationDuration)
+        {
+            std::fprintf(stderr, "source markers or destination start time are invalid (need interior markers)\n");
+            return 2;
+        }
+        // The first and last markers are clip-bound markers, not part of the
+        // movable camera path. Align the first interior marker to the requested
+        // destination time and retain every later interior interval unchanged.
+        const std::uint64_t offsetMs = destinationStartMs - sourceKeys[1].timeMs;
+        std::size_t copied = 0;
+        std::size_t omitted = 0;
+        for (std::size_t n = 1; n + 1 < sourceKeys.size(); ++n)
+        {
+            const camera::Keyframe& sourceMarker = sourceKeys[n];
+            const std::uint64_t shiftedTime = sourceMarker.timeMs + offsetMs;
+            if (shiftedTime > destinationDuration)
+            {
+                ++omitted;
+                continue;
+            }
+            camera::Keyframe shifted = sourceMarker;
+            shifted.timeMs = shiftedTime;
+            if (destinationTrack.AddCopy(shifted) == 0)
+            {
+                std::fprintf(stderr, "marker at %llu ms does not fit in order or spacing\n",
+                    static_cast<unsigned long long>(shiftedTime));
+                return 3;
+            }
+            ++copied;
+        }
+        destinationTrack.SetLegacyBlendAnyMode(sourceTrack.LegacyBlendAnyMode());
+        if (copied == 0)
+        {
+            std::fprintf(stderr, "no source markers fit in the destination clip\n");
+            return 3;
+        }
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        if (!clipfile::Save(destinationRecording, destinationPoses, destinationTrack, destinationDuration,
+                kBase, kSize, outPath, error, saveOptions, &saveInfo))
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 4;
+        }
+        std::printf("CLIP_TOOL,transfer_camera_offset=ok,source_interior_markers=%zu,copied=%zu,omitted_after_end=%zu,start_end_ignored=yes,offset_ms=%llu,first_ms=%llu,last_ms=%llu,destination_duration=%llu,packed=%s,file_bytes=%llu\n",
+            sourceKeys.size() - 2, copied, omitted, static_cast<unsigned long long>(offsetMs),
+            static_cast<unsigned long long>(destinationTrack.Keyframes().front().timeMs),
+            static_cast<unsigned long long>(destinationTrack.Keyframes().back().timeMs),
+            static_cast<unsigned long long>(destinationDuration), saveInfo.packed ? "yes" : "no",
+            static_cast<unsigned long long>(saveInfo.fileBytes));
+        return 0;
+    }
+
+    int TransferCameraOffsetDof(const std::wstring& sourcePath, const std::wstring& destinationPath,
+        const std::wstring& outPath, std::uint64_t destinationStartMs)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording sourceRecording, destinationRecording;
+        std::vector<pose::PoseRecordExport> sourcePoses, destinationPoses;
+        camera::Track sourceTrack, destinationTrack;
+        std::uint64_t sourceDuration = 0, destinationDuration = 0;
+        std::string error;
+        if (!clipfile::Load(sourcePath, kBase, kSize, sourceRecording, sourcePoses, sourceTrack, sourceDuration, error) ||
+            !clipfile::Load(destinationPath, kBase, kSize, destinationRecording, destinationPoses, destinationTrack,
+                destinationDuration, error))
+        {
+            std::fprintf(stderr, "clip load failed: %s\n", error.c_str());
+            return 2;
+        }
+        const std::vector<camera::Keyframe>& sourceKeys = sourceTrack.Keyframes();
+        if (sourceKeys.size() < 3 || destinationStartMs < sourceKeys[1].timeMs || destinationStartMs >= destinationDuration)
+        {
+            std::fprintf(stderr, "source markers or destination start time are invalid\n");
+            return 2;
+        }
+        const std::uint64_t offsetMs = destinationStartMs - sourceKeys[1].timeMs;
+        destinationTrack.Clear();
+        std::size_t copied = 0, omitted = 0, targetRemaps = 0, unresolvedTargets = 0;
+        for (std::size_t n = 1; n + 1 < sourceKeys.size(); ++n)
+        {
+            camera::Keyframe marker = sourceKeys[n];
+            marker.timeMs += offsetMs;
+            if (marker.timeMs > destinationDuration)
+            {
+                ++omitted;
+                continue;
+            }
+            if (marker.focusTarget != 0)
+            {
+                const entity::CreatePacket* sourceTarget = nullptr;
+                for (const entity::CreatePacket& packet : sourceRecording.created)
+                    if (packet.id.Packed() == marker.focusTarget) { sourceTarget = &packet; break; }
+                const entity::CreatePacket* destinationTarget = nullptr;
+                if (sourceTarget)
+                {
+                    for (const entity::CreatePacket& packet : destinationRecording.created)
+                    {
+                        if (packet.modelHash == sourceTarget->modelHash && packet.kind == sourceTarget->kind)
+                        {
+                            destinationTarget = &packet;
+                            break;
+                        }
+                    }
+                }
+                if (destinationTarget && marker.focus == editor::FocusMode::Target)
+                {
+                    marker.focusTarget = destinationTarget->id.Packed();
+                    ++targetRemaps;
+                }
+                else if (marker.focus == editor::FocusMode::Target)
+                {
+                    ++unresolvedTargets;
+                    std::fprintf(stderr, "warning: unresolved DOF target at %llu ms (source id=%u)\n",
+                        static_cast<unsigned long long>(sourceKeys[n].timeMs), marker.focusTarget);
+                }
+            }
+            if (destinationTrack.AddCopy(marker) == 0)
+            {
+                std::fprintf(stderr, "marker at %llu ms does not fit\n", static_cast<unsigned long long>(marker.timeMs));
+                return 3;
+            }
+            ++copied;
+        }
+        destinationTrack.SetLegacyBlendAnyMode(sourceTrack.LegacyBlendAnyMode());
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        if (!clipfile::Save(destinationRecording, destinationPoses, destinationTrack, destinationDuration,
+                kBase, kSize, outPath, error, saveOptions, &saveInfo))
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 4;
+        }
+        std::printf("CLIP_TOOL,transfer_camera_offset_dof=ok,markers=%zu,omitted=%zu,offset_ms=%llu,dof_target_remaps=%zu,unresolved_targets=%zu,packed=%s,file_bytes=%llu\n",
+            copied, omitted, static_cast<unsigned long long>(offsetMs), targetRemaps, unresolvedTargets,
+            saveInfo.packed ? "yes" : "no", static_cast<unsigned long long>(saveInfo.fileBytes));
+        return 0;
+    }
+
+    int RemoveStraussReverendSpeech(const std::wstring& clipPath, const std::wstring& outPath)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        constexpr std::uint32_t kStraussModel = 0xFA0312B3u; // cs_leostrauss
+        constexpr std::uint32_t kReverendModel = 0x60713474u; // cs_revswanson
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, kBase, kSize, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        std::vector<std::uint32_t> speakers;
+        for (const entity::CreatePacket& packet : recording.created)
+        {
+            if (packet.kind == entity::EntityKind::Ped &&
+                (packet.modelHash == kStraussModel || packet.modelHash == kReverendModel))
+                speakers.push_back(packet.id.Packed());
+        }
+        const std::vector<entity::SpeechEvent> original = recording.speechLines.Events();
+        std::size_t removed = 0;
+        recording.speechLines.Begin();
+        for (const entity::SpeechEvent& line : original)
+        {
+            const bool target = std::find(speakers.begin(), speakers.end(), line.speaker.Packed()) != speakers.end();
+            if (target)
+                ++removed;
+            else
+                recording.speechLines.Add(line);
+        }
+        if (removed == 0)
+        {
+            std::fprintf(stderr, "no Strauss/Reverend speech lines found\n");
+            return 2;
+        }
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        if (!clipfile::Save(recording, poses, track, durationMs, kBase, kSize, outPath, error, saveOptions, &saveInfo))
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 3;
+        }
+        std::printf("CLIP_TOOL,remove_strauss_reverend_speech=ok,removed_lines=%zu,remaining_lines=%zu,speakers=%zu,packed=%s,file_bytes=%llu\n",
+            removed, recording.speechLines.Events().size(), speakers.size(), saveInfo.packed ? "yes" : "no",
+            static_cast<unsigned long long>(saveInfo.fileBytes));
+        return 0;
+    }
+
+    int SetCameraDofNoneRange(const std::wstring& clipPath, const std::wstring& outPath,
+        std::uint64_t fromMs, std::uint64_t toMs)
+    {
+        constexpr std::uintptr_t kBase = 0x140000000ull;
+        constexpr std::size_t kSize = 0x10000000ull;
+        Recording recording;
+        std::vector<pose::PoseRecordExport> poses;
+        camera::Track track;
+        std::uint64_t durationMs = 0;
+        std::string error;
+        if (!clipfile::Load(clipPath, kBase, kSize, recording, poses, track, durationMs, error))
+        {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return 2;
+        }
+        if (fromMs > toMs || toMs > durationMs)
+        {
+            std::fprintf(stderr, "invalid DOF time range\n");
+            return 2;
+        }
+        std::size_t changed = 0;
+        for (const camera::Keyframe& key : track.Keyframes())
+        {
+            if (key.timeMs < fromMs || key.timeMs > toMs)
+                continue;
+            camera::Keyframe* marker = track.FindMutable(key.id);
+            if (!marker)
+                continue;
+            marker->dof = editor::DofMode::None;
+            marker->focus = editor::FocusMode::Auto;
+            marker->focusTarget = 0;
+            marker->dofIntensity = 0.0f;
+            ++changed;
+        }
+        if (!changed)
+        {
+            std::fprintf(stderr, "no camera markers fall within the requested range\n");
+            return 2;
+        }
+        clipfile::SaveOptions saveOptions;
+        saveOptions.pack = true;
+        clipfile::SaveInfo saveInfo;
+        if (!clipfile::Save(recording, poses, track, durationMs, kBase, kSize, outPath, error, saveOptions, &saveInfo))
+        {
+            std::fprintf(stderr, "save failed: %s\n", error.c_str());
+            return 3;
+        }
+        std::printf("CLIP_TOOL,camera_dof_none_range=ok,markers_changed=%zu,from_ms=%llu,to_ms=%llu,packed=%s,file_bytes=%llu\n",
+            changed, static_cast<unsigned long long>(fromMs), static_cast<unsigned long long>(toMs),
+            saveInfo.packed ? "yes" : "no", static_cast<unsigned long long>(saveInfo.fileBytes));
+        return 0;
+    }
+
     // sites <clip>: the game addresses the clip names by site id
     // (clip_sites.h), per field: how many, how many a signature names and
     // which, the rest raw RVAs (valid on the clip's build only); then the clip
@@ -6423,6 +7060,35 @@ int wmain(int argc, wchar_t** argv)
         return Sites(argv[2]);
     if (argc == 4 && std::wstring(argv[1]) == L"resave")
         return Resave(argv[2], argv[3]);
+    if (argc == 4 && std::wstring(argv[1]) == L"mute-world")
+        return MuteOwnerlessWorldSounds(argv[2], argv[3]);
+    if (argc == 5 && std::wstring(argv[1]) == L"hide-object")
+        return HideObject(argv[2], argv[3], argv[4]);
+    if (argc == 3 && std::wstring(argv[1]) == L"environment")
+        return EnvironmentDump(argv[2]);
+    if (argc == 4 && std::wstring(argv[1]) == L"try-all")
+        return TryAllMarks(argv[2], argv[3]);
+    if (argc == 3 && std::wstring(argv[1]) == L"camera-summary")
+        return CameraSummary(argv[2]);
+    if (argc == 5 && std::wstring(argv[1]) == L"transfer-camera")
+        return TransferCamera(argv[2], argv[3], argv[4]);
+    if (argc == 5 && std::wstring(argv[1]) == L"retime-camera")
+        return RetimeCamera(argv[2], argv[3], std::wcstoull(argv[4], nullptr, 10));
+    if (argc == 6 && std::wstring(argv[1]) == L"transfer-camera-offset")
+        return TransferCameraOffset(argv[2], argv[3], argv[4], std::wcstoull(argv[5], nullptr, 10));
+    if (argc == 6 && std::wstring(argv[1]) == L"transfer-camera-offset-dof")
+        return TransferCameraOffsetDof(argv[2], argv[3], argv[4], std::wcstoull(argv[5], nullptr, 10));
+    if (argc == 4 && std::wstring(argv[1]) == L"remove-strauss-reverend-speech")
+        return RemoveStraussReverendSpeech(argv[2], argv[3]);
+    if (argc == 6 && std::wstring(argv[1]) == L"camera-dof-none-range")
+        return SetCameraDofNoneRange(argv[2], argv[3], std::wcstoull(argv[4], nullptr, 10), std::wcstoull(argv[5], nullptr, 10));
+    if (argc >= 5 && std::wstring(argv[1]) == L"mute-world-ids")
+    {
+        std::set<std::uint64_t> refs;
+        for (int n = 4; n < argc; ++n)
+            refs.insert(std::wcstoull(argv[n], nullptr, 0));
+        return MuteOwnerlessWorldSounds(argv[2], argv[3], &refs);
+    }
     if (argc >= 3 && std::wstring(argv[1]) == L"appearance")
         return AppearanceOf(argv[2], argc >= 4 ? Narrow(argv[3]) : std::string());
     if (argc >= 3 && std::wstring(argv[1]) == L"segments")

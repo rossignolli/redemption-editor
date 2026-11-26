@@ -84,6 +84,9 @@ namespace ui_art
         ToolEffectsWhite,
         ToolWeather,
         ToolWeatherWhite,
+        // Drawn in code from vector strokes; no external art file is needed.
+        ToolLantern,
+        ToolLanternWhite,
         Loading,
         ReelMark,
         Divider,
@@ -272,8 +275,8 @@ namespace ui_art
         for (int n = 0; n < static_cast<int>(Art::Count); ++n)
         {
             const Art art = static_cast<Art>(n);
-            if (art == Art::EdgeTorn || art == Art::PanelGrain)
-                continue; // shipped, not drawn
+            if (art == Art::EdgeTorn || art == Art::PanelGrain || art == Art::ToolLantern || art == Art::ToolLanternWhite)
+                continue; // supplied separately or drawn in code
             Texture& texture = s.textures[n];
             std::vector<std::uint32_t> rgba;
             int width = 0, height = 0;

@@ -856,7 +856,14 @@ namespace replay::clipfile
         // Attach, presets, shake, DOF, speed) and the track's
         // legacyBlendAnyMode. A v2 payload still loads, converted
         // (camera::ConvertV2ToV3).
-        constexpr std::uint16_t kCameraVersion = 9; // 9: the marker's whole shake (MarkerShake) and its origin; the old shake fields go
+        constexpr std::uint16_t kCameraVersion = 17; // 17: authored light intensity range expanded to 0..300
+        // 16: per-light look-at target
+        // 15: per-light spline tuning
+        // 14: named, mountable and blendable light states
+        // 13: authored light character attachment
+        // 11: authored light beam approximation settings
+        // 10: authored lights are saved with their marker ID
+        // 9: the marker's whole shake (MarkerShake) and its origin; the old shake fields go
         // 8: bones, near clip, DOF numbers
         // 7: Spline tuning per marker
         // 6: Custom shake (type 11) and its numbers
@@ -1056,6 +1063,42 @@ namespace replay::clipfile
                 PutMarkerShake(w, keyframe.shake);
                 w.Put(keyframe.origin);
             }
+            const std::vector<editor::AuthoredLight>& lights = track.AuthoredLights();
+            if (lights.empty())
+                return; // keep the v9 payload byte-for-byte when there are no authored lights
+            w.Count(lights.size());
+            for (const editor::AuthoredLight& light : lights)
+            {
+                w.Put(light.markerId);
+                w.Put(light.position.x);
+                w.Put(light.position.y);
+                w.Put(light.position.z);
+                w.Put(light.range);
+                w.Put(light.intensity);
+                w.Put(light.colorR);
+                w.Put(light.colorG);
+                w.Put(light.colorB);
+                w.Put(light.enabled);
+                w.Put(light.aimPitch);
+                w.Put(light.aimYaw);
+                w.Put(light.beamAngle);
+                w.Put(light.coneEnabled);
+                w.Put(light.aimRoll);
+                w.Put(light.reflectorEnabled);
+                w.Put(light.reflectorHidden);
+                w.Put(light.attachedTarget);
+                w.Put(light.id);
+                w.Put(light.attachedBone);
+                w.Put(light.attachType);
+                w.Put(light.blend);
+                w.Array(light.name);
+                PutSplineTuning(w, light.spline);
+                w.Put(light.lookAtTarget);
+            }
+        }
+        std::uint16_t CameraSaveVersion(const SaveContext& c)
+        {
+            return c.camera.AuthoredLights().empty() ? 9 : kCameraVersion;
         }
         // v3 payload bytes per marker (the reader's minimum per count).
         constexpr std::size_t kCameraV3Bytes = 127;
@@ -1214,6 +1257,126 @@ namespace replay::clipfile
                 ReadCameraV2(r, track, keyframes);
             else
                 ReadCameraV3(r, track, keyframes, c.sectionVersion);
+            if (c.sectionVersion >= 10)
+            {
+                std::vector<editor::AuthoredLight>& lights = track.AuthoredLights();
+                lights.clear();
+                // Count() takes the minimum serialized bytes per item so it
+                // can reject impossible counts before resizing. The authored
+                // light limit is a separate bound; passing it here made every
+                // valid v13 light list too short to load (v13 records are 72
+                // bytes, v14 are 120 bytes, v15 are 140 bytes and v16 are 144).
+                constexpr std::size_t kLightV10Bytes = 40;
+                constexpr std::size_t kLightV11Bytes = 56;
+                constexpr std::size_t kLightV12Bytes = 68;
+                constexpr std::size_t kLightV13Bytes = 72;
+                constexpr std::size_t kLightV14Bytes = 120;
+                constexpr std::size_t kLightV15Bytes = 140;
+                constexpr std::size_t kLightV16Bytes = 144;
+                constexpr std::size_t kLightV17Bytes = 144;
+                const std::size_t lightBytes = c.sectionVersion >= 17 ? kLightV17Bytes :
+                    c.sectionVersion >= 16 ? kLightV16Bytes :
+                    c.sectionVersion >= 15 ? kLightV15Bytes :
+                    c.sectionVersion >= 14 ? kLightV14Bytes :
+                    c.sectionVersion >= 13 ? kLightV13Bytes :
+                    c.sectionVersion >= 12 ? kLightV12Bytes :
+                    c.sectionVersion >= 11 ? kLightV11Bytes : kLightV10Bytes;
+                const std::size_t count = r.Count(lightBytes);
+                if (count > editor::kMaxAuthoredLights)
+                    r.Fail();
+                lights.resize(count);
+                std::vector<std::pair<std::uint32_t, std::uint32_t>> legacyOrdinals;
+                for (editor::AuthoredLight& light : lights)
+                {
+                    light.markerId = r.Get<std::uint32_t>();
+                    light.position.x = r.Get<float>();
+                    light.position.y = r.Get<float>();
+                    light.position.z = r.Get<float>();
+                    light.range = r.Get<float>();
+                    light.intensity = r.Get<float>();
+                    light.colorR = r.Get<std::uint32_t>();
+                    light.colorG = r.Get<std::uint32_t>();
+                    light.colorB = r.Get<std::uint32_t>();
+                    light.enabled = r.Get<std::uint32_t>();
+                    if (c.sectionVersion >= 11)
+                    {
+                        light.aimPitch = r.Get<float>();
+                        light.aimYaw = r.Get<float>();
+                        light.beamAngle = r.Get<float>();
+                        light.coneEnabled = r.Get<std::uint32_t>();
+                    }
+                    else
+                    {
+                        light.aimPitch = 0.0f;
+                        light.aimYaw = 0.0f;
+                        light.beamAngle = 35.0f;
+                        light.coneEnabled = 0;
+                    }
+                    if (c.sectionVersion >= 12)
+                    {
+                        light.aimRoll = r.Get<float>();
+                        light.reflectorEnabled = r.Get<std::uint32_t>();
+                        light.reflectorHidden = r.Get<std::uint32_t>();
+                    }
+                    else
+                    {
+                        light.aimRoll = 0.0f;
+                        light.reflectorEnabled = 0;
+                        light.reflectorHidden = 0;
+                    }
+                    if (c.sectionVersion >= 13)
+                        light.attachedTarget = r.Get<std::uint32_t>();
+                    else
+                        light.attachedTarget = 0;
+                    if (c.sectionVersion >= 14)
+                    {
+                        light.id = r.Get<std::uint32_t>();
+                        light.attachedBone = r.Get<std::uint32_t>();
+                        light.attachType = r.Get<std::uint32_t>();
+                        light.blend = r.Get<std::uint32_t>();
+                        r.Array(light.name);
+                    }
+                    else
+                    {
+                        std::uint32_t ordinal = 1;
+                        for (auto& entry : legacyOrdinals)
+                            if (entry.first == light.markerId)
+                            {
+                                ordinal = ++entry.second;
+                                break;
+                            }
+                        if (ordinal == 1)
+                            legacyOrdinals.emplace_back(light.markerId, ordinal);
+                        light.id = light.markerId == 0 ? (0x80000000u | ordinal) : ordinal;
+                        light.attachedBone = 0;
+                        light.attachType = 1; // the existing entity-local behavior
+                        light.blend = 0;
+                        std::snprintf(light.name, sizeof(light.name), "Light %02u", ordinal);
+                    }
+                    light.spline = c.sectionVersion >= 15 ? GetSplineTuning(r) : editor::DefaultSplineTuning();
+                    light.lookAtTarget = c.sectionVersion >= 16 ? r.Get<std::uint32_t>() : 0;
+                    light.name[sizeof(light.name) - 1] = '\0';
+                    if (!light.name[0])
+                        std::snprintf(light.name, sizeof(light.name), "Light");
+                    const bool markerExists = light.markerId == 0 || track.Find(light.markerId) != nullptr;
+                    const bool valuesValid = std::isfinite(light.position.x) && std::isfinite(light.position.y) && std::isfinite(light.position.z) &&
+                        std::isfinite(light.range) && light.range >= 0.5f && light.range <= 250.0f &&
+                        std::isfinite(light.intensity) && light.intensity >= 0.0f &&
+                        light.intensity <= (c.sectionVersion >= 17 ? 300.0f : 100.0f) &&
+                        light.colorR <= 255u && light.colorG <= 255u && light.colorB <= 255u && light.enabled <= 1u &&
+                        std::isfinite(light.aimPitch) && std::isfinite(light.aimYaw) && std::isfinite(light.beamAngle) &&
+                        (c.sectionVersion < 14 || (light.aimYaw >= 0.0f && light.aimYaw <= 360.0f)) &&
+                        light.beamAngle >= 0.0f && light.beamAngle <= 360.0f && light.coneEnabled <= 1u &&
+                        std::isfinite(light.aimRoll) &&
+                        (c.sectionVersion < 14 ? light.aimRoll >= -180.0f && light.aimRoll <= 180.0f :
+                            light.aimRoll >= 0.0f && light.aimRoll <= 360.0f) &&
+                        light.reflectorEnabled <= 1u && light.reflectorHidden <= 1u && light.id != 0 &&
+                        light.attachType <= 2u && light.blend <= 3u && camera::spline::Valid(light.spline) &&
+                        (light.attachedBone == 0 || (light.attachedBone >> 16) == 1u || (light.attachedBone >> 16) == 2u);
+                    if (r.Ok() && (!markerExists || !valuesValid))
+                        r.Fail();
+                }
+            }
             std::uint64_t lastMs = 0;
             for (const camera::Keyframe& keyframe : keyframes)
             {
@@ -1340,6 +1503,8 @@ namespace replay::clipfile
             c.recording.*Member = {};
         }
         void ResetEnvironmentTrack(LoadContext& c) { c.recording.environment.track.clear(); }
+        void ResetLightning(LoadContext& c) { c.recording.environment.lightning.clear(); }
+        bool OmitLightning(const SaveContext& c) { return c.recording.environment.lightning.empty(); }
         void ResetSkyTrack(LoadContext& c)
         {
             c.recording.environment.sky.clear();
@@ -1414,6 +1579,7 @@ namespace replay::clipfile
             {Tag("ENVR"), kEnvironmentVersion, "environment", WriteEnvironment, ReadEnvironment},
             {Tag("PLAC"), kPlaceVersion, "place", WritePlace, ReadPlace, true, 0, ResetMember<&Recording::place>},
             {Tag("ENVT"), kEnvironmentTrackVersion, "environment track", WriteEnvironmentTrack, ReadEnvironmentTrack, true, kEnvironmentTrackMinVersion, ResetEnvironmentTrack}, // v2: the weather transition
+            {Tag("LGTN"), kLightningVersion, "lightning", WriteLightning, ReadLightning, true, 0, ResetLightning, OmitLightning}, // personal build: omitted when none
             {Tag("SKYT"), kSkyTrackVersion, "sky track", WriteSkyTrack, ReadSkyTrack, true, 0, ResetSkyTrack},
             {Tag("ENVO"), kEnvironmentEditVersion, "environment edit", WriteEnvironmentEdit, ReadEnvironmentEdit, true, kEnvironmentEditMinVersion, ResetEnvironmentEdit},
             {Tag("WINF"), kWorldInfoVersion, "world info", WriteWorldInfo, ReadWorldInfo, true, 0, ResetWorldInfo}, // read by the clip list
@@ -1424,7 +1590,7 @@ namespace replay::clipfile
             {Tag("WCND"), kWeaponConditionsVersion, "weapon conditions", WriteWeaponConditions, ReadWeaponConditions, true, kWeaponConditionsMinVersion, ResetMember<&Recording::weaponConditions>}, // v2: the whole weapon look
             {Tag("RFXA"), kRegisteredFxAttachesVersion, "registered fx attaches", WriteRegisteredFxAttaches, ReadRegisteredFxAttaches, true, 0, ResetRegisteredFxAttaches},
             {Tag("CUTS"), kCutsVersion, "cuts", WriteCuts, ReadCuts, true, 0, ResetMember<&Recording::cuts>},
-            {Tag("SPAN"), kSpansVersion, "spans", WriteSpans, ReadSpans, true, 0, ResetMember<&Recording::spans>},
+            {Tag("SPAN"), kSpansVersion, "spans", WriteSpans, ReadSpans, true, kSpansMinVersion, ResetMember<&Recording::spans>},
             {Tag("SCOR"), kScorchedVersion, "scorched", WriteScorched, ReadScorched, true, 0, ResetMember<&Recording::scorched>},
             {Tag("AANI"), kAnimAudioVersion, "anim audio", WriteAnimAudio, ReadAnimAudio, true, 0, ResetMember<&Recording::animAudio>},
             {Tag("VWIN"), kVehicleWindowsVersion, "vehicle windows", WriteVehicleWindows, ReadVehicleWindows, true, 0, ResetMember<&Recording::vehicleWindows>},
@@ -1466,7 +1632,7 @@ namespace replay::clipfile
             {Tag("SCHT"), kSceneryHatsVersion, "scenery hats", WriteSceneryHats, ReadSceneryHats, true, 0, ResetSceneryHats, OmitSceneryHats}, // after SCNY (entry indices)
             {Tag("SPRQ"), kSpeechRequestsVersion, "speech requests", WriteSpeechRequests, ReadSpeechRequests, true, 1, ResetSpeechRequests, OmitSpeechRequests}, // after SPCH (one row per line); v2 the sound set, v1 still read
             {Tag("POSE"), kPoseVersion, "pose", WritePose, ReadPose},
-            {Tag("CAMR"), kCameraVersion, "camera", WriteCamera, ReadCamera, false, kCameraMinVersion},
+            {Tag("CAMR"), kCameraVersion, "camera", WriteCamera, ReadCamera, false, kCameraMinVersion, nullptr, nullptr, CameraSaveVersion},
             {Tag("CFXE"), kShakeEventsVersion, "shake events", WriteShakeEvents, ReadShakeEvents, true, 1, ResetShakeEvents, OmitShakeEvents}, // read only (folded into the markers)
         };
         constexpr std::size_t kSectionCount = sizeof(kSections) / sizeof(kSections[0]);

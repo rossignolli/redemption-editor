@@ -789,6 +789,16 @@ namespace replay::captureprobe
         bool ok = false;
     };
 
+    struct SceneIdentityRow
+    {
+        double elapsedS = 0.0;
+        std::string mode;
+        std::string status;
+        int inCutscene = -1; // -1 unreadable, otherwise 0 or 1
+        std::string mission;
+        std::string cutscene;
+    };
+
     struct ReportData
     {
         std::string version;
@@ -806,6 +816,8 @@ namespace replay::captureprobe
         std::vector<NameRow> names;
         std::uint64_t nameOverflow = 0;
         std::vector<SiteRow> sites;
+        std::string sceneIdentityStatus;
+        std::vector<SceneIdentityRow> sceneIdentity;
         LightningTracker lightning;
         LightTracker lights;                   // probe 26: counts and the vanished samples
         std::uint64_t rayfireStateChanges = 0; // probe 29
@@ -845,6 +857,12 @@ namespace replay::captureprobe
                 ",reason=" + skipped.reason + '\n';
         for (const SiteRow& site : data.sites)
             out += "SITE,name=" + site.name + ",rva=" + Hex(site.rva) + ",status=" + (site.ok ? "ok" : "mismatch") + '\n';
+
+        out += "SCENE_IDENTITY,status=" + data.sceneIdentityStatus + ",events=" +
+            std::to_string(data.sceneIdentity.size()) + ",source=game_globals_1491_50\n";
+        for (const SceneIdentityRow& row : data.sceneIdentity)
+            out += "SCENE_IDENTITY_EVENT,time_s=" + Number(row.elapsedS) + ",mode=" + row.mode + ",status=" + row.status +
+                ",in_cutscene=" + std::to_string(row.inCutscene) + ",mission=" + row.mission + ",cutscene=" + row.cutscene + '\n';
 
         for (const PortRow& row : data.ports)
         {
